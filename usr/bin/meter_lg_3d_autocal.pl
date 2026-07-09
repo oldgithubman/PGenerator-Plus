@@ -3173,19 +3173,50 @@ eval {
    # Re-commit: the sub left a held session (corrected DPG + identity
    # container staged). Upload the real cube into it, then the tone map
    # with the corrected DPG (the sub stored it in full_workflow_dpg_data).
-   my $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",{
-    picture_mode => $config->{"picture_mode"}||"",
-    payload_path => $export->{"payload_path"},
-    upload_command => $config->{"upload_command"}||"BT2020_3D_LUT_DATA",
-    get_command => $config->{"get_command"}||"GET_3D_LUT_DATA",
-    helper_timeout => 220,
-    api_timeout => 240,
-    keep_calibration_mode => json_true(),
-    calibration_mode_active => json_true(),
-   },240);
-   my $sl_status=(ref($shadow_lut) eq "HASH") ? ($shadow_lut->{status}//"") : "invalid-response";
+   # Re-commit the calibrated 3D LUT into the held shadow session, then the
+   # corrected tone map. Retry the LUT once on failure (a held CAL session can
+   # drop transiently during the long shadow zone-probe window); capture the
+   # full response detail (status/message/contract/verified) for BOTH uploads
+   # so a failure is diagnosable instead of a bare status=error. Flag a
+   # LUT-failed/tonemap-ok mismatch loudly — that leaves the panel with a
+   # shadow-adjusted tone map over a stale LUT, which visibly degrades the
+   # result and must never be silent.
+   my $_shadow_upload_detail=sub {
+    my($r)=@_;
+    return { status => "invalid-response" } if(ref($r) ne "HASH");
+    return {
+     status => ($r->{status}//""),
+     message => ($r->{message}//""),
+     upload_verified => $r->{upload_verified} ? JSON::PP::true : JSON::PP::false,
+     upload_verify_contract => ($r->{upload_verify_contract}//""),
+     readback_unavailable => $r->{readback_unavailable} ? JSON::PP::true : JSON::PP::false,
+     repair_hint => ($r->{repair_hint}//""),
+    };
+   };
+   my $_lut_req=sub {
+    return {
+     picture_mode => $config->{"picture_mode"}||"",
+     payload_path => $export->{"payload_path"},
+     upload_command => $config->{"upload_command"}||"BT2020_3D_LUT_DATA",
+     get_command => $config->{"get_command"}||"GET_3D_LUT_DATA",
+     helper_timeout => 220,
+     api_timeout => 240,
+     keep_calibration_mode => json_true(),
+     calibration_mode_active => json_true(),
+    };
+   };
+   my $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",$_lut_req->(),240);
+   my $sl_detail=$_shadow_upload_detail->($shadow_lut);
+   if(($sl_detail->{status}||"") ne "ok") {
+    log_line("HDR20 shadow-after re-commit: 3D LUT upload failed (".($sl_detail->{message}||$sl_detail->{status})."); retrying once after settle");
+    select(undef,undef,undef,2.0);
+    $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",$_lut_req->(),240);
+    $sl_detail=$_shadow_upload_detail->($shadow_lut);
+   }
+   my $sl_status=$sl_detail->{status}||"";
    $state->{"postcal_shadow_recommit_lut_status"}=$sl_status;
-   log_line("HDR20 shadow-after re-commit: 3D LUT upload status=".$sl_status);
+   $state->{"postcal_shadow_recommit_lut_detail"}=$sl_detail;
+   log_line("HDR20 shadow-after re-commit: 3D LUT upload status=".$sl_status.(($sl_status ne "ok" && ($sl_detail->{message}||"") ne "")?(" (".$sl_detail->{message}.")"):""));
    my $shadow_peak=0;
    $shadow_peak=$config->{"full_workflow_peak_luminance"}+0 if(defined($config->{"full_workflow_peak_luminance"}) && $config->{"full_workflow_peak_luminance"}+0 > 0);
    my $shadow_tone_req={
@@ -3198,9 +3229,20 @@ eval {
    };
    $shadow_tone_req->{"dpg_data"}=$config->{"full_workflow_dpg_data"} if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072);
    my $shadow_tone=api_json("POST","/api/lg/hdr-tone-map/upload",$shadow_tone_req,105);
-   my $st_status=(ref($shadow_tone) eq "HASH") ? ($shadow_tone->{status}//"") : "invalid-response";
+   my $st_detail=$_shadow_upload_detail->($shadow_tone);
+   my $st_status=$st_detail->{status}||"";
    $state->{"postcal_shadow_recommit_tonemap_status"}=$st_status;
-   log_line("HDR20 shadow-after re-commit: tone map upload status=".$st_status);
+   $state->{"postcal_shadow_recommit_tonemap_detail"}=$st_detail;
+   log_line("HDR20 shadow-after re-commit: tone map upload status=".$st_status.(($st_status ne "ok" && ($st_detail->{message}||"") ne "")?(" (".$st_detail->{message}.")"):""));
+   # LUT failed but tone map succeeded = stale-LUT/fresh-tonemap mismatch.
+   # Surface it loudly so it is never a silent "worse result" mystery.
+   if($sl_status ne "ok" && $st_status eq "ok") {
+    $state->{"postcal_shadow_recommit_mismatch"}=JSON::PP::true;
+    $state->{"postcal_shadow_recommit_mismatch_note"}="3D LUT re-commit failed but tone map succeeded — the panel may be running a shadow-adjusted tone map over a stale 3D LUT. Re-upload the 3D LUT manually.";
+    log_line("HDR20 shadow-after re-commit MISMATCH: 3D LUT failed (".$sl_detail->{message}.") but tone map ok — manual 3D LUT re-upload needed");
+   } else {
+    $state->{"postcal_shadow_recommit_mismatch"}=JSON::PP::false;
+   }
    write_state($state);
    1;
   } or do {
