@@ -22715,6 +22715,18 @@ function meterAutoCalSeriesAvailable(){
  return !!(lgPaired&&signalAllowed);
 }
 
+// Standalone Tone Map series is HDR10-only (PQ peak + LG HDR tone-map
+// upload). Hide the series picker in SDR/HLG/DV so it is not a dead control.
+function meterToneMapSeriesAllowedForSignal(){
+ const sm=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ if(sm==='hdr10') return true;
+ // Live chart mode can lag the select briefly after Apply; honor either.
+ try{
+  if(typeof meterActiveChartSignalMode==='function'&&meterActiveChartSignalMode()==='hdr10') return true;
+ }catch(e){}
+ return false;
+}
+
 function meterUpdateReadButtons(){
  meterAutoCalRepairOverlayPointerState();
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -22775,11 +22787,24 @@ function meterUpdateReadButtons(){
   lg3dBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  const toneMapBtn=document.getElementById('meterToneMapMeasureUploadBtn');
- const toneMapHdrOk=(typeof meterChartIsHdr==='function'?meterChartIsHdr():false)||String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='hdr10';
- const showToneMap=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='tone-map'&&!continuousUiActive;
+ const toneMapHdrOk=typeof meterToneMapSeriesAllowedForSignal==='function'?meterToneMapSeriesAllowedForSignal():(String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='hdr10');
+ // Re-assert series picker visibility whenever read buttons refresh (signal
+ // mode can change without re-entering the AutoCal tab). Do not call
+ // meterSelectAutoCalGreyscale here — it re-enters this function.
+ try{
+  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series="tone-map"]').forEach(btn=>{
+   btn.style.display=toneMapHdrOk?'':'none';
+   btn.hidden=!toneMapHdrOk;
+   btn.disabled=!toneMapHdrOk;
+  });
+  if(!toneMapHdrOk&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map'){
+   meterSetAutoCalSeriesChoice('greyscale');
+  }
+ }catch(e){}
+ const showToneMap=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='tone-map'&&toneMapHdrOk&&!continuousUiActive;
  if(toneMapBtn){
   toneMapBtn.style.display=showToneMap?'':'none';
-  toneMapBtn.disabled=!showToneMap||!meterDetected||settingsDirty||busy||!toneMapHdrOk||!!window._meterToneMapBusy;
+  toneMapBtn.disabled=!showToneMap||!meterDetected||settingsDirty||busy||!!window._meterToneMapBusy;
   toneMapBtn.title=!toneMapHdrOk?'HDR tone map requires HDR10 signal mode':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy||window._meterToneMapBusy?'Meter operation already in progress':'Measure 100% white peak and upload the HDR tone map';
  }
  try{ meterUpdateToneMapPanelVisibility(); }catch(e){}
@@ -22837,9 +22862,20 @@ function meterNormalizeAutoCalSeriesChoice(choice){
 }
 
 function meterSetAutoCalSeriesChoice(choice){
- meterAutoCalSeriesChoice=meterNormalizeAutoCalSeriesChoice(choice);
+ let next=meterNormalizeAutoCalSeriesChoice(choice);
+ // Tone Map series is HDR10-only — never leave it selected in SDR/etc.
+ if(next==='tone-map'&&typeof meterToneMapSeriesAllowedForSignal==='function'&&!meterToneMapSeriesAllowedForSignal()){
+  next='greyscale';
+ }
+ meterAutoCalSeriesChoice=next;
  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series]').forEach(btn=>{
-  const active=(btn.dataset.autocalSeries||'')===meterAutoCalSeriesChoice;
+  const series=btn.dataset.autocalSeries||'';
+  const toneMapBtn=series==='tone-map';
+  const allowed=!toneMapBtn||(typeof meterToneMapSeriesAllowedForSignal==='function'?meterToneMapSeriesAllowedForSignal():false);
+  btn.style.display=allowed?'':'none';
+  btn.hidden=!allowed;
+  btn.disabled=!allowed;
+  const active=allowed&&series===meterAutoCalSeriesChoice;
   btn.classList.toggle('btn-primary',active);
   btn.classList.toggle('btn-secondary',!active);
  });
@@ -23097,6 +23133,11 @@ function meterSelectAutoCal3dLut(){
 }
 
 function meterSelectAutoCalToneMap(){
+ if(typeof meterToneMapSeriesAllowedForSignal==='function'&&!meterToneMapSeriesAllowedForSignal()){
+  try{ toast('Tone Map series requires HDR10 signal mode',true); }catch(e){}
+  meterSelectAutoCalGreyscale();
+  return;
+ }
  meterSeriesTab='autocal';
  meterSetAutoCalSeriesChoice('tone-map');
  meterUpdateSeriesTabUi();
@@ -23129,7 +23170,9 @@ function meterUpdateToneMapPanelVisibility(){
  const panel=document.getElementById('meterToneMapPanel');
  const charts=document.getElementById('meterCharts');
  const exportRow=document.getElementById('meterExportRow');
- const show=typeof meterIsToneMapSeries==='function'?meterIsToneMapSeries():false;
+ const seriesOn=typeof meterIsToneMapSeries==='function'?meterIsToneMapSeries():false;
+ const hdrOk=typeof meterToneMapSeriesAllowedForSignal==='function'?meterToneMapSeriesAllowedForSignal():false;
+ const show=!!(seriesOn&&hdrOk);
  if(panel) panel.style.display=show?'':'none';
  if(show){
   // Peak-only UI: luminance bar + Measure & Upload — no greyscale/color charts.
