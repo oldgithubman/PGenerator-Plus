@@ -3006,7 +3006,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # Full: 0 → 100 → 50 → 25 → 75 → 100(recal) → descend 95..2.3 (no 99/105/109).
     # Series list cannot duplicate IRE 100 as two thumbs; worker still runs a
     # second peak pass after 75% (sdr26_white_recal). Flow shows single 100.
-    my @full_flow=(0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
+    # Mid-spine 50/25/75 are solved early then revisited on the way down
+    # (after 80 / 55 / 30) so neighbors can pull them. Matches worker order.
+    my @full_flow=(0,100,50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
     my %have=map { (0+$_) => 1 } @ire_vals;
     $have{0}=1; # always allow black even if missing from @ire_vals
     @ordered=grep { $have{0+$_} } @full_flow;
@@ -23988,7 +23990,8 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  if(mode==='sdr' && isFullRange){
   // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3.
   // Worker also re-runs 100% peak after 75% (sdr26_white_recal) before 95%.
-  const flow=[0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3];
+  // Mid-spine 50/25/75 early, then revisited on descend (after 80/55/30).
+  const flow=[0,100,50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3];
   const byIre={};
   byIre[0]=zero;
   byIre[100]=white;

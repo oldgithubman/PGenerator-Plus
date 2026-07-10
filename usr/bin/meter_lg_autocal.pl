@@ -16736,15 +16736,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  #  Full:    mid-spine 50/25/75, 100% recal, then descend 95..2.3
  #           (overall Full flow is 100 → 50 → 25 → 75 → 100(recal) → 95…;
  #           series measurement also puts 0 first -- see webui ordered list)
+ #
+ # Mid-spine IREs (50/25/75) appear TWICE: first as the early spine pass,
+ # then again in natural descending order so neighbors above/below can
+ # pull them after the curve has moved. Without the revisit, 80%→70%
+ # left 75% stranded on its early solve (user-reported skip on descend).
  my @sdr26_body_order=$sdr26_limited
-  ? (50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3)
-  : (50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
+  ? (50,25,75,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
+  : (50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
   my @reordered;
+  my %seen_ire;
   for my $target_ire (@sdr26_body_order) {
    my $step=$by_ire{$target_ire+0};
-   push @reordered,$step if(defined $step);
+   next unless(defined $step);
+   if(($seen_ire{$target_ire+0}++)) {
+    # Second (or later) hit: clone so the descend pass re-solves this
+    # IRE without mutating the first-pass step identity/history key.
+    my $revisit={ %$step };
+    $revisit->{"sdr26_anchor_revisit"}=1;
+    $revisit->{"name"}=sprintf("sdr26_%g%% (revisit)",$target_ire+0);
+    $revisit->{"autocal_target_label"}=sprintf("%g%% (revisit)",$target_ire+0);
+    push @reordered,$revisit;
+   } else {
+    push @reordered,$step;
+   }
   }
   # Safety: any leftover steps not matched go at the end (shouldn't happen).
   for my $step (@rest) {
