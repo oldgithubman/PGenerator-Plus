@@ -22559,6 +22559,10 @@ function meterIsTwoPointGreyscale(){
  return meterActiveSeriesType==='greyscale' && Number(meterActiveSeriesPoints)===2;
 }
 
+function meterIsToneMapSeries(){
+ return meterSeriesTab==='autocal' && meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
+}
+
 function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
 }
@@ -22760,7 +22764,8 @@ function meterSelectAutoCalToneMap(){
    :{ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:255,name:'100% White',series_mode:'tone-map'};
   meterSeriesSteps=[white];
   meterCurrentPatchStep=white;
-  if(typeof meterBuildPatchThumbs==='function') meterBuildPatchThumbs([white],new Set(),'100% White');
+  // No thumbs / greyscale chart suite for tone-map (peak bar only).
+  try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e2){}
   // Idle/stop so the panel is not sitting on 100% white while the operator waits.
   fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(()=>{});
  }catch(e){}
@@ -22773,9 +22778,32 @@ function meterSelectAutoCalToneMap(){
 
 function meterUpdateToneMapPanelVisibility(){
  const panel=document.getElementById('meterToneMapPanel');
- if(!panel) return;
- const show=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
- panel.style.display=show?'':'none';
+ const charts=document.getElementById('meterCharts');
+ const exportRow=document.getElementById('meterExportRow');
+ const show=typeof meterIsToneMapSeries==='function'?meterIsToneMapSeries():false;
+ if(panel) panel.style.display=show?'':'none';
+ if(show){
+  // Peak-only UI: luminance bar + Measure & Upload — no greyscale/color charts.
+  if(charts) charts.style.display='none';
+  if(exportRow) exportRow.style.display='none';
+  try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
+  try{ meterUpdateGreyscaleChartMode(); }catch(e){}
+ } else {
+  // Leaving Tone Map: restore chart shell when a series is active.
+  try{ meterUpdateGreyscaleChartMode(); }catch(e){}
+  if(charts&&meterActiveSeriesType&&meterDetected){
+   charts.style.display='';
+   const grey=document.getElementById('chartsGreyscaleWrap');
+   const color=document.getElementById('chartsColorWrap');
+   if(meterActiveSeriesType==='greyscale'){
+    if(grey) grey.style.display='';
+    if(color) color.style.display='none';
+   } else if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+    if(grey) grey.style.display='none';
+    if(color) color.style.display='';
+   }
+  }
+ }
 }
 
 function meterToneMapSetLiveY(nits){
@@ -22919,6 +22947,13 @@ async function meterStartToneMapMeasureUpload(){
 function meterUpdateGreyscaleChartMode(){
  const full=document.getElementById('chartsGreyscaleFullWrap');
  const twoPoint=document.getElementById('chartsGreyscaleTwoPointWrap');
+ // Tone Map series is peak-only — hide the full greyscale chart suite
+ // (same idea as 2pt, which swaps to a minimal layout).
+ if(typeof meterIsToneMapSeries==='function'&&meterIsToneMapSeries()){
+  if(full) full.style.display='none';
+  if(twoPoint) twoPoint.style.display='none';
+  return;
+ }
  const showTwoPoint=meterIsTwoPointGreyscale();
  if(full) full.style.display=showTwoPoint?'none':'';
  if(twoPoint) twoPoint.style.display=showTwoPoint?'':'none';
