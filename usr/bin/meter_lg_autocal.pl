@@ -15446,32 +15446,14 @@ sub lg_autocal_26_sdr26_dpg_damp {
  return $s+0;
 }
 
-# Body-anchor damp: classic EOTF (g^1/gamma ≈ g^0.45) is for *gentle*
-# shadow-safe moves. On mid-body it starves both directions of a real Y
-# error:
-#   under-luma boost  -- 3.6% shortfall → ~1.6% after g^0.45, then
-#     revert-and-halve shrinks to noise (Full 55% gains 1.015→1.003).
-#   over-luma pull-down -- 1.3% excess at 80% → gains 0.996→0.999 with
-#     Y stuck ~106 vs 104.7 for a full 10-iter budget of tiny crawls.
-# When the measured Y is clearly under/over target, apply most of the
-# raw linear gain on the matching direction; keep classic damp otherwise.
+# Body-anchor damp: always classic EOTF (g^exp). A prior "90% linear when
+# under/over Y" path made every mid patch's first move brutal (Full 50%
+# i1 gains ~0.85, Y 41→29 on a 34 target) then thrash-reverted. Classic
+# sqrt-style damp was the fast, stable mid-body behaviour; keep it.
+# Luma progress is handled separately in the revert gate (keep a move that
+# clearly improves |Y-target| even if dE ticks up slightly).
 sub lg_autocal_26_sdr26_dpg_body_damp {
- my ($g,$floor,$exp,$under_luma,$over_luma)=@_;
- $g=1 unless(defined($g) && $g+0 > 0);
- if($under_luma && $g+0 > 1.0) {
-  # 90% of the needed linear boost (still damped a little for stability).
-  my $s=1.0+($g-1.0)*0.90;
-  $s=1.35 if($s+0 > 1.35);
-  return $s+0;
- }
- if($over_luma && $g+0 < 1.0) {
-  # 90% of the needed linear pull-down. g^0.45 shrinks reductions toward
-  # 1.0 (0.987 → ~0.994), which is why 80% made microscopic moves.
-  my $s=1.0+($g-1.0)*0.90;
-  $floor=0.8 unless(defined($floor));
-  $s=$floor if($s+0 < $floor+0);
-  return $s+0;
- }
+ my ($g,$floor,$exp)=@_;
  return lg_autocal_26_sdr26_dpg_damp($g,$floor,$exp);
 }
 
@@ -15721,8 +15703,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # Peak = Limited 109 legal OR Full 100. Same damped warmup for both.
   my $_is_legal_peak_anchor=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
 
- # Best-so-far state for revert (low IRE only, same as HDR).
+ # Best-so-far state for revert.
   my $best_de=undef;
+  my $best_y_err=undef; # abs(Y/target_Y - 1) at best_de snapshot; used for luma-progress keep
   my $best_dpg=[@{$current_dpg_ref}];
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
@@ -15981,9 +15964,17 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # Best-so-far with revert: same pattern as HDR. Revert runs at low IRE
   # only (the constant-amplitude oscillation that the revert-and-halve
   # loop is designed to break doesn't happen at mid/high IRE on SDR).
+  # Relative Y error for luma-progress keep (80% class: chroma nearly
+  # done, Y still ~2% hot — dE-only reverts undid every useful pull-down).
+  my $_y_now=(defined($reading) ? luminance($reading) : undef);
+  my $_y_err_now=undef;
+  if(defined($_y_now) && $_y_now+0 > 0 && defined($tl) && $tl+0 > 0) {
+   $_y_err_now=abs(($_y_now+0)/($tl+0)-1.0);
+  }
   if(defined($de) && !$acceptance_pending) {
    if(!defined($best_de) || $de+0 < $best_de+0) {
     $best_de=$de+0;
+    $best_y_err=$_y_err_now;
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $consecutive_reverts=0;
@@ -16008,6 +15999,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
     $move_scaling=$_recovered;
    } elsif(defined($de) && defined($best_de) && $de+0 > $best_de+0 + 0.02 && $consecutive_reverts < $revert_budget) {
+    # Luma-progress keep (mid-body only): if |Y-target| improved by >=0.4%
+    # of target and dE only regressed modestly (<=0.18), accept the move as
+    # the new best instead of reverting. Full 80% logged uniform ~0.98 gains
+    # that never stuck because every pull-down slightly raised dE and was
+    # reverted while Y stayed ~2% hot.
+    my $_luma_keep=0;
+    if(!$_is_legal_peak_anchor
+       && $_anchor_ire+0 >= $low_ire_threshold+0
+       && defined($_y_err_now) && defined($best_y_err)
+       && ($_y_err_now+0) + 0.004 < ($best_y_err+0)
+       && ($de+0) <= ($best_de+0) + 0.18) {
+     $_luma_keep=1;
+    }
+    if($_luma_keep) {
+     log_line(sprintf("SDR26 1D DPG greyscale: iter %d luma-progress keep (Y err %.4f -> %.4f, dE %.4f vs best %.4f) — not reverting",
+      $i,$best_y_err+0,$_y_err_now+0,$de+0,$best_de+0));
+     $best_de=$de+0;
+     $best_y_err=$_y_err_now;
+     $best_dpg=[@{$current_dpg_ref}];
+     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
+     $consecutive_reverts=0;
+     $max_de_anchor_committed=$de+0 if(defined($de) && $de+0 > $max_de_anchor_committed+0);
+     my $_recovered=$move_scaling*2.0;
+     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
+     $move_scaling=$_recovered;
+    } else {
     # Revert-and-halve: ONLY on a meaningful overshoot (dE worse than best
     # by >0.02). Treating dE == best as a "revert" undoes a no-op/plateau
     # move and halves step size forever (Full 55% i1/i2 both dE=2.4283 →
@@ -16070,6 +16087,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
       log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
       last;
      }
+    }
     }
    }
   }
@@ -16342,32 +16360,43 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Body Y bias (see body_damp): under needs a real boost, over needs a
-   # real pull-down. Detect from this reading vs target Y before damp.
+   # Mid-body: classic EOTF damp only (linear under/over path removed —
+   # it caused one brutal first move then thrash-reverts on 50/25/75).
    my $_y_meas_body=luminance($reading);
-   my $_under_luma=0;
-   my $_over_luma=0;
-   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0) {
-    if($_y_meas_body+0 < ($tl+0)*0.985) {
-     $_under_luma=1;
-    } elsif($_y_meas_body+0 > ($tl+0)*1.015) {
-     # Symmetric to under: >1.5% hot on Y (80% logged ~1.3% and crawled).
-     $_over_luma=1;
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   # Pure-luma assist: when the three channel gains are nearly equal
+   # (chroma already close) but Y is still >1.5% off target, classic damp
+   # alone under-moves (0.98^0.45≈0.99) and 80% burned the budget with Y
+   # stuck ~2% hot. Scale all channels by a moderate (tl/Y)^(1/γ) factor.
+   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
+      && $_anchor_ire+0 >= $low_ire_threshold+0 && !$_is_legal_peak) {
+    my $_gmax=$rg; $_gmax=$gg if($gg+0 > $_gmax+0); $_gmax=$bg if($bg+0 > $_gmax+0);
+    my $_gmin=$rg; $_gmin=$gg if($gg+0 < $_gmin+0); $_gmin=$bg if($bg+0 < $_gmin+0);
+    my $_y_ratio=($tl+0)/($_y_meas_body+0);
+    my $_y_err_abs=abs($_y_ratio-1.0);
+    if(($_gmax-$_gmin) < 0.025 && $_y_err_abs+0 > 0.015) {
+     my $_g_eff=(defined($gamma_effective) && $gamma_effective+0 > 0.5) ? ($gamma_effective+0) : 2.2;
+     my $_extra=$_y_ratio ** (1.0/$_g_eff);
+     # 55% of the remaining pure-Y correction — enough to move 80% without
+     # reintroducing the brutal first-move overshoot of full linear damp.
+     $_extra=1.0+(($_extra-1.0)*0.55);
+     $_extra=0.85 if($_extra+0 < 0.85);
+     $_extra=1.15 if($_extra+0 > 1.15);
+     $sr*=$_extra; $sg*=$_extra; $sb*=$_extra;
+     log_line(sprintf("SDR26 1D DPG greyscale: %s pure-luma assist extra=%.4f Y=%.4f target=%.4f (channel span %.4f)",
+      $label,$_extra+0,$_y_meas_body+0,$tl+0,($_gmax-$_gmin)+0)) if($i <= 3 || $_y_err_abs+0 > 0.03);
     }
    }
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
    # Low-IRE anchors may need a larger per-node BOOST to lift a crushed
-   # shadow node; under-luma mid body also needs more than 1.25 when the
-   # gap is several percent (55% needed ~1.036 raw). Reducing channels
-   # stay bounded by $floor.
+   # shadow node. Body stays at 1.25.
    my $_node_ceiling=($_anchor_ire+0 < $low_ire_threshold+0)
     ? $low_ire_boost_ceiling
-    : ($_under_luma ? 1.40 : 1.25);
+    : 1.25;
    $sr=$_node_ceiling if($sr+0 > $_node_ceiling);
    $sg=$_node_ceiling if($sg+0 > $_node_ceiling);
    $sb=$_node_ceiling if($sb+0 > $_node_ceiling);
