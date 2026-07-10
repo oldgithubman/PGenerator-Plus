@@ -15574,7 +15574,14 @@ function meterLgAutoCalSdr26BodySlots(){
  return METER_LG_GREY_AUTOCAL_26_SLOTS;
 }
 function meterLgAutoCalSdr26SeriesSlots(){
- return [0,...meterLgAutoCalSdr26BodySlots()];
+ // Full: include peak 100% (it is a real charted/thumbed anchor, not a
+ // legal-white reference-only step). Limited: body already has 99/105/109;
+ // 100% legal-white is injected separately as a reference-only step.
+ const body=meterLgAutoCalSdr26BodySlots();
+ if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+  return [0,100,...body];
+ }
+ return [0,...body];
 }
 // Chart/target peak IRE for SDR26 gamma curves. Full -> 100; Limited legal-
 // expanded super-white ladder -> 109. Matches worker Full peak (100).
@@ -17483,12 +17490,18 @@ function meterLgAutoCalChartReferenceWhite(item){
 	 if(meterReadingDisablesAutoCalTargetReference(item)) return false;
 	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
 	 if(mode==='hdr10') return false;
+	 // Full-range SDR: 100% is the true peak. It must stay on thumbs and
+	 // plot lines. Limited alone treats 100% as a legal-white reference
+	 // step (ddc 99) that is hidden from the body curve / thumb strip.
+	 if(mode==='sdr' && typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+	  return false;
+	 }
 	 const plotIre=meterReadingPlotIre(item);
 	 const ire=Number(plotIre!=null?plotIre:item.ire);
 	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
 	  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
 	 }
-	 // SDR26 1D-DPG autocal: the 109% legal peak carries the same
+	 // SDR26 1D-DPG Limited: the 109% legal peak carries the same
 	 // chroma-only / no-target-Y fingerprint as the HDR 100% legal peak,
 	 // but at IRE 109, not 100. The worker tags the SDR26 109 reading with
 	 // autocal_legal_white_anchor + autocal_white_reference + autocal_white_y.
@@ -17668,7 +17681,10 @@ function meterGreyscaleReadingMap(readings){
    && (typeof meterActiveSeriesSignalMode!=='undefined')&&String(meterActiveSeriesSignalMode).toLowerCase()==='sdr'){
    const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:(meterAutoCalLatestStatus={});
    if(!status.__sdr26_audit_done){
-    const expectedIres=(typeof meterLgAutoCalSdr26BodySlots==='function')?meterLgAutoCalSdr26BodySlots():[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
+    // Full expects peak 100% on the chart; Limited body has 99/105/109 (100 is ref-only).
+    const expectedIres=(typeof meterLgAutoCalSdr26SeriesSlots==='function')
+     ? meterLgAutoCalSdr26SeriesSlots().filter(v=>Number(v)>0)
+     :(typeof meterLgAutoCalSdr26BodySlots==='function')?meterLgAutoCalSdr26BodySlots():[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
     const missing=[];
     expectedIres.forEach(ire=>{
      const key=String(ire);
@@ -23754,6 +23770,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  const whiteCode=mode==='sdr'?(isFullRange?stepInputMax:meterLgSdrLegalHeadroomCodeFromPercent(100)):meterCodeFromSignalPercentWithOptions(100,null);
  // Limited keeps the legal-white reference metadata (ddc_target_ire 99).
  // Full peak is true 100% — no legal-white / 99 overlay.
+ // Full peak is a real charted/thumbed step (meterLgAutoCalChartReferenceWhite
+ // leaves Full 100% visible). Still tags white_reference so setup/backend can
+ // find the peak for target Y, without reference_only / legal_white_anchor.
  const white=mode==='sdr' && isFullRange
   ? {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:stepInputMax,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,stepInputMax),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_order_ire:100,autocal_target_label:'100% full peak'}
   : {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
