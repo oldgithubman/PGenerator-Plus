@@ -10627,7 +10627,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </label>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
-      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 580px;width:580px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <canvas id="chartCIE" width="640" height="600" style="flex:0 0 600px;width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
@@ -32387,7 +32387,7 @@ function getCIEGradient(innerPxW,innerPxH){
  const ox=oc.getContext('2d');
  const img=ox.createImageData(gw,gh);
  const d=img.data;
- const xMn=0,xMx=0.8,yMn=0,yMx=0.9;
+ const xMn=0,xMx=1.0,yMn=0,yMx=0.9;
  const locus=CIE_LOCUS, M=M_XYZ_TO_RGB;
  function pip(px,py){
   let ins=false;
@@ -32625,24 +32625,24 @@ function meterSelectedCIETargetColor(rd,baseColor){
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
 }
 
-// 2D CIE layout: keep the chromaticity plot at the legacy ~450px-canvas scale
-// (do not stretch x when the canvas is wider). Extra canvas width is blank
-// gutter on the right for the zoom inset / legends.
+// 2D CIE layout: x grid runs 0..1.0, y 0..0.9, equal CIE unit scale.
+// Right side of the canvas is a blank gutter reserved for the zoom inset
+// (not part of the axis mapping — so the plot is not stretched to fill).
 function meterCie2dGeom(cw,ch){
- const pad={t:15,r:15,b:35,l:45};
- // Legacy plot box on a 450×450 CSS canvas (w=450-45-15, h=450-15-35).
- const legacyW=390, legacyH=400;
- const maxW=Math.max(1,cw-pad.l-pad.r);
+ const pad={t:15,r:12,b:35,l:45};
+ const xMin=0,xMax=1.0,yMin=0,yMax=0.9;
+ const insetReserve=148; // zoom box + padding lives here
+ const maxW=Math.max(1,cw-pad.l-pad.r-insetReserve);
  const maxH=Math.max(1,ch-pad.t-pad.b);
- const scale=Math.min(1,maxW/legacyW,maxH/legacyH);
- const w=legacyW*scale;
- const h=legacyH*scale;
- const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+ // Equal scale in x and y chromaticity units
+ const unit=Math.min(maxW/(xMax-xMin),maxH/(yMax-yMin));
+ const w=unit*(xMax-xMin);
+ const h=unit*(yMax-yMin);
  return {
   pad,w,h,xMin,xMax,yMin,yMax,
   plotRight:pad.l+w,
   gutterL:pad.l+w,
-  gutterW:Math.max(0,cw-pad.l-w-pad.r),
+  gutterW:Math.max(0,cw-(pad.l+w)-pad.r),
   toX:v=>pad.l+(v-xMin)/(xMax-xMin)*w,
   toY:v=>pad.t+h-(v-yMin)/(yMax-yMin)*h
  };
@@ -33335,12 +33335,13 @@ function drawCIETargetInset(ctx,readings,geom){
  const g=geom||meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad;
  const insetSize=130, margin=6;
- // Prefer the blank gutter to the right of the (un-stretched) plot.
- let ix=g.gutterL+Math.max(6,(g.gutterW-insetSize)/2);
- if(ix+insetSize>ctx.w-pad.r) ix=ctx.w-pad.r-insetSize-margin;
- if(ix<g.plotRight+4) ix=Math.min(g.plotRight+8,ctx.w-pad.r-insetSize-margin);
- // Leave room above the frame for the target caption strip.
- const iy=pad.t+22;
+ // Park entirely in the right gutter (blank of the chart), not over the plot.
+ let ix=g.gutterL+Math.max(8,Math.floor((g.gutterW-insetSize)/2));
+ if(ix+insetSize>ctx.w-pad.r) ix=Math.max(g.plotRight+8,ctx.w-pad.r-insetSize-margin);
+ if(ix<g.plotRight+6) ix=g.plotRight+8;
+ // Sit lower so the caption strip is fully on-canvas and clear of plot legends.
+ const labelH=16;
+ const iy=Math.min(pad.t+g.h-insetSize-8, Math.max(pad.t+labelH+10, pad.t+Math.round(g.h*0.28)));
  // Autoscale the zoom to fit the target + measured point of the focused
  // reading (plus any extra readings that share the same target group would
  // be implicit; we tune to the focus pair for clarity). Enforce a minimum
@@ -33426,15 +33427,13 @@ function drawCIETargetInset(ctx,readings,geom){
  const textW=ctx.measureText(labelText).width;
  const labelPadX=10, labelH=15;
  const idealW=Math.max(insetSize,textW+labelPadX*2);
- const maxLeft=pad.l, maxRight=ctx.w-pad.r;
- // Right-align caption to the inset so long names grow left without covering
- // the top-right gamut legend (they stay under the zoom frame).
+ // Keep caption in the gutter under/over the zoom frame — clamp to gutter.
+ const maxLeft=g.plotRight+4, maxRight=ctx.w-pad.r;
  let lx=ix+insetSize-idealW;
  if(lx<maxLeft) lx=maxLeft;
  let lw=idealW;
- if(lx+lw>maxRight){ lw=maxRight-lx; }
- if(lx+lw>ix+insetSize) lx=Math.max(maxLeft,ix+insetSize-lw);
- const ly=iy-labelH-1;
+ if(lx+lw>maxRight) lw=Math.max(40,maxRight-lx);
+ const ly=Math.max(2,iy-labelH-2);
  ctx.fillStyle='#0d0d15';
  ctx.fillRect(lx,ly,lw,labelH);
  ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
