@@ -2742,8 +2742,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 						    @ire_vals=(100,0,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    # Limited: legal-expanded 26-pt with super-white 105/109.
-					    # Full: body through 99% (peak is separate 100% white ref) -- no
-					    # super-white. Matches Full SDR 1D-DPG greyscale anchors.
+					    # Full: body 2.3..95 + peak 100 (no 99/105/109). Matches Full
+					    # SDR 1D-DPG greyscale anchors (wire/DPG domain 0..1023 1:1).
 					    if($greyscale_patch_limited) {
 					     @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 					    } else {
@@ -2999,7 +2999,20 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    # $lg_autocal_26 + hdr10 directly so the branch is actually taken.
    @ordered=(0,sort { $a <=> $b } grep { $_>0 } @ire_vals);
   } elsif($lg_autocal_26_codes) {
-   @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
+   if($greyscale_patch_limited) {
+    # Limited: legal white first, black, then ascending body/headroom.
+    @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
+   } else {
+    # Full: 0 → 100 → 50 → 25 → 75 → descend 95..2.3 (no 99/105/109).
+    my @full_flow=(0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
+    my %have=map { (0+$_) => 1 } @ire_vals;
+    $have{0}=1; # always allow black even if missing from @ire_vals
+    @ordered=grep { $have{0+$_} } @full_flow;
+    foreach my $v (@ire_vals) {
+     next if(grep { abs((0+$_)-(0+$v)) < 0.001 } @ordered);
+     push @ordered,$v;
+    }
+   }
   } else {
    @ordered=(100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
   }
@@ -3116,7 +3129,15 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		     $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 		     $extra.=",\"target_Yn\":$target_Yn_for_step";
 		    }
-		    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && $signal_mode ne "hdr10" && abs($v-100)<0.001);
+		    if($lg_autocal_26_codes && $signal_mode ne "hdr10" && abs($v-100)<0.001) {
+		     if($greyscale_patch_limited) {
+		      # Limited: 100% patch is the legal-white reference (maps to DDC 99).
+		      $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"";
+		     } else {
+		      # Full: 100% is the true peak (no legal-white / 99 overlay).
+		      $extra.=",\"autocal_white_reference\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_order_ire\":100,\"autocal_target_label\":\"100% full peak\"";
+		     }
+		    }
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$r_code,\"g\":$g_code,\"b\":$b_code,\"name\":\"$name\"$extra}";
    } @ordered;
  } elsif($type eq "colors") {
@@ -23731,12 +23752,26 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 			 // Full-RGB modes).
 			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:255),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?(isFullRange?stepInputMax:meterLgSdrLegalHeadroomCodeFromPercent(100)):meterCodeFromSignalPercentWithOptions(100,null);
- const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
+ // Limited keeps the legal-white reference metadata (ddc_target_ire 99).
+ // Full peak is true 100% — no legal-white / 99 overlay.
+ const white=mode==='sdr' && isFullRange
+  ? {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:stepInputMax,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,stepInputMax),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_order_ire:100,autocal_target_label:'100% full peak'}
+  : {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
  const bodySlots=(mode==='sdr' && isFullRange)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
- const body=[...bodySlots]
-  .sort((a,b)=>a-b)
-  .map(makeDdcStep);
- return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
+ const bodyAsc=[...bodySlots].sort((a,b)=>a-b).map(makeDdcStep);
+ if(mode==='sdr' && isFullRange){
+  // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3
+  const flow=[0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3];
+  const byIre={};
+  byIre[0]=zero;
+  byIre[100]=white;
+  bodyAsc.forEach(s=>{ if(s&&s.ire!=null) byIre[Number(s.ire)]=s; });
+  const ordered=[];
+  flow.forEach(ire=>{ if(byIre[ire]!=null){ ordered.push(byIre[ire]); delete byIre[ire]; } });
+  Object.keys(byIre).map(Number).sort((a,b)=>a-b).forEach(ire=>ordered.push(byIre[ire]));
+  return [...ordered,...passthrough];
+ }
+ return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points,opts){

@@ -16554,8 +16554,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    }
   }
  } else {
-  # Full: body through 95% plus a single peak at 100%. No 99/105/109
-  # (99 is a Limited near-white slot; Full peak is true 100%).
+  # Full: body 2.3..95 + peak 100. No 99/105/109.
+  # Flow after peak: 50 → 25 → 75 → descend 95..2.3 (see body_order).
+  # 10-bit Full: wire code == DPG sample index (both round(ire/100*1023)).
+  # 8-bit Full: wire code is 0..255; DPG index stays in the 0..1023 domain
+  # via the same IRE fraction (not Limited legal-expand).
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
@@ -16641,8 +16644,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  @white_first=sort { ($b->{"ire"}//0) <=> ($a->{"ire"}//0) } @white_first;
  # Mark the peak step so the per-anchor loop can skip it as "already done".
  $white_first[0]->{"sdr26_white_peak_done"}=1 if(scalar(@white_first) > 0);
- # Within @rest: mid-spine first, then (Limited only) headroom 105/99,
- # then top-down body and low shadows last.
+ # Within @rest after peak:
+ #  Limited: mid-spine 50/25/75, headroom 105/99, then descend 95..2.3
+ #  Full:    mid-spine 50/25/75, then descend 95..2.3
+ #           (overall Full flow is 100 → 50 → 25 → 75 → descend; series
+ #           measurement also puts 0 first -- see webui ordered list)
  my @sdr26_body_order=$sdr26_limited
   ? (50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3)
   : (50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
