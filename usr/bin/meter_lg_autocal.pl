@@ -16309,17 +16309,58 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
    # Mid-body: classic EOTF damp only (g^damp_exp).
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   # Stuck-anchor move boost: when several iters in, still above target dE,
+   # and the response model confirms a weak panel response (gamma_effective
+   # well above the 2.2 seed), multiply the dampened move so each iter
+   # pushes harder. The ceiling raise below then lets the larger move land.
+   # Only body anchors; well-conditioned ones converge before i>=3.
+   my $_stuck_move_mult=1.0;
+   if($_anchor_ire+0 >= $low_ire_threshold+0
+      && $i+0 >= 3
+      && defined($de) && $de+0 > $_effective_target_de+0
+      && $gamma_effective+0 > 2.6
+      && !$is_white_body) {
+    $_stuck_move_mult=1.0 + 0.5*(($gamma_effective+0 - 2.6)/0.4);
+    $_stuck_move_mult=1.5 if($_stuck_move_mult+0 > 1.5);
+   }
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
    # Low-IRE anchors may need a larger per-node BOOST to lift a crushed
-   # shadow node. Body stays at 1.25.
+   # shadow node. Body stays at 1.25 -- UNLESS the anchor is stuck with a
+   # weak panel response (the gain is being applied but measured Y barely
+   # moves, e.g. SDR RGB Full mid-band codes where the panel's EOTF is flat
+   # and the dampened move can't close the gap in the iter budget). The
+   # response model already raises damp_exp via gamma_effective when the
+   # panel is unresponsive, but the fixed 1.25 ceiling caps the move before
+   # it can compensate. Only when BOTH (a) we are several iters in and still
+   # above target dE (stuck) and (b) gamma_effective has climbed well above
+   # the 2.2 seed (confirmed weak response), raise the per-iter ceiling so
+   # the damp can actually move the panel. Well-conditioned anchors converge
+   # before i>=3 so this never fires for them; the ceiling stays 1.25.
    my $_node_ceiling=($_anchor_ire+0 < $low_ire_threshold+0)
     ? $low_ire_boost_ceiling
     : 1.25;
+   if($_anchor_ire+0 >= $low_ire_threshold+0
+      && $i+0 >= 3
+      && defined($de) && $de+0 > $_effective_target_de+0
+      && $gamma_effective+0 > 2.6
+      && !$is_white_body) {
+    # Scale the ceiling up with how unresponsive the panel has proven to be.
+    # gamma_effective 2.6 (mild weakness) -> ~1.33; 3.0 (very flat) -> ~1.5.
+    # Hard cap at 1.5 so a stuck anchor can push harder but cannot run away.
+    my $_stuck_ceiling=1.25 + 0.25*(($gamma_effective+0 - 2.6)/0.4);
+    $_stuck_ceiling=1.5 if($_stuck_ceiling+0 > 1.5);
+    $_stuck_ceiling=1.25 if($_stuck_ceiling+0 < 1.25);
+    if($_stuck_ceiling+0 > $_node_ceiling+0) {
+     $_node_ceiling=$_stuck_ceiling;
+     log_line(sprintf("SDR26 1D DPG greyscale: %s stuck-anchor rescue i%d (gamma_eff=%.2f > 2.6, dE=%.3f > target): raising per-iter ceiling %.2f -> %.2f",
+      $label,$i,$gamma_effective+0,$de+0,1.25,$_node_ceiling+0));
+    }
+   }
    $sr=$_node_ceiling if($sr+0 > $_node_ceiling);
    $sg=$_node_ceiling if($sg+0 > $_node_ceiling);
    $sb=$_node_ceiling if($sb+0 > $_node_ceiling);
