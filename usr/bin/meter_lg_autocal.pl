@@ -15621,10 +15621,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
  $low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
  $low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
- # High-IRE band for mid-loop revert (HDR port). Mid IRE [low, high) does
- # NOT mid-loop revert-and-halve -- only track best + final restore. Low and
- # high use descent-style revert (de > prev_de). Default high=80 matches HDR.
- my $high_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}+0) : 80.0;
+ # High-IRE band for mid-loop revert (HDR-style port). Mid IRE [low, high)
+ # does NOT mid-loop revert-and-halve -- only track best + final restore.
+ # Default high=85 so 80% stays mid-band: at high=80 the first pure-Y
+ # pull-down at 80% often ticks dE up briefly (meter/ABL), descent-revert
+ # undoes it, and the anchor thrash-crawls while Y stays ~2% hot. Peak and
+ # 85%+ still get descent revert.
+ my $high_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}+0) : 85.0;
  $high_ire_threshold=50.0 if($high_ire_threshold < 50.0);
  $high_ire_threshold=109.0 if($high_ire_threshold > 109.0);
  my $damp_floor_low=defined($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}+0) : 0.5;
@@ -16324,7 +16327,25 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Mid-body: classic EOTF damp only (g^damp_exp).
+   # Mid-body: classic EOTF damp (g^damp_exp). Gains below unity ARE allowed
+   # (floor 0.8 body / 0.5 low) -- there is no "reject < 1.0" clamp on body.
+   # Pure-Y overshoot (Y hot, channel gains nearly equal): classic exp≈0.45
+   # under-moves pull-downs (0.98^0.45≈0.99); raise exp toward linear so 80%
+   # class can actually drop luminance. Under-Y pure boost still uses classic
+   # exp to avoid the old first-move thrash.
+   my $_exp_body=$damp_exp+0;
+   my $_y_meas_body=luminance($reading);
+   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
+      && $_anchor_ire+0 >= $low_ire_threshold+0 && !$_is_legal_peak) {
+    my $_gmax=$rg; $_gmax=$gg if($gg+0 > $_gmax+0); $_gmax=$bg if($bg+0 > $_gmax+0);
+    my $_gmin=$rg; $_gmin=$gg if($gg+0 < $_gmin+0); $_gmin=$bg if($bg+0 < $_gmin+0);
+    my $_y_ratio=($_y_meas_body+0)/($tl+0);
+    if(($_gmax-$_gmin) < 0.03 && $_y_ratio+0 > 1.012) {
+     # Hot pure-Y: stronger pull-down (exp 0.9 ≈ near-linear attenuation)
+     $_exp_body=0.90;
+     $_exp_body=$damp_exp if($_exp_body+0 < $damp_exp+0);
+    }
+   }
    # Stuck-anchor move boost: when several iters in, still above target dE,
    # and the response model confirms a weak panel response (gamma_effective
    # well above the 2.2 seed), multiply the dampened move so each iter
@@ -16339,9 +16360,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $_stuck_move_mult=1.0 + 0.5*(($gamma_effective+0 - 2.6)/0.4);
     $_stuck_move_mult=1.5 if($_stuck_move_mult+0 > 1.5);
    }
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$_exp_body)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$_exp_body)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$_exp_body)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
+   # Floor allows pull-down well below unity (0.8 body). Never force >= 1.0.
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
