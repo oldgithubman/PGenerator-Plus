@@ -10247,7 +10247,19 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="greyscale" onclick="meterSelectAutoCalGreyscale()">Greyscale</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="3d-lut" onclick="meterSelectAutoCal3dLut()">3D LUT</button>
+      <button class="btn btn-sm btn-secondary" data-autocal-series="tone-map" onclick="meterSelectAutoCalToneMap()">Tone Map</button>
      </div>
+    </div>
+    <div id="meterToneMapPanel" style="display:none;margin:0 0 10px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15;max-width:520px">
+     <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">HDR tone-map upload uses a single 100% white measurement as peak luminance, then writes the tone map to the TV (same path as Full AutoCal).</div>
+     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px">
+      <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">100% white luminance</div>
+      <div style="font-size:1.35rem;font-weight:700;color:var(--text)"><span id="meterToneMapLiveY">--</span> <span style="font-size:.78rem;font-weight:500;color:var(--text2)">cd/m&sup2;</span></div>
+     </div>
+     <div style="height:18px;background:#080a11;border:1px solid var(--border);border-radius:4px;overflow:hidden">
+      <div id="meterToneMapLuminanceFill" style="height:100%;width:0%;background:#fff;transition:width .2s ease"></div>
+     </div>
+     <div id="meterToneMapStatusText" style="font-size:.72rem;color:var(--text2);margin-top:8px">Select Measure &amp; Upload to measure peak and upload the tone map.</div>
     </div>
     <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:#0d0d15;border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
@@ -10271,6 +10283,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
+    <button class="btn btn-sm btn-primary" id="meterToneMapMeasureUploadBtn" onclick="meterStartToneMapMeasureUpload()" style="display:none" title="Measure 100% white peak and upload the HDR tone map">&#9654; Measure &amp; Upload</button>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
     <button class="btn btn-sm btn-primary" id="meterDeviceReadyBtn" onclick="meterSignalDeviceReady()" style="display:none">Device Ready</button>
     <button class="btn btn-sm btn-primary" id="meterManualPromptBtn" onclick="meterSignalManualPromptReady()" style="display:none">Continue Meter Setup</button>
@@ -22392,7 +22405,8 @@ function meterUpdateReadButtons(){
  }
  if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
- if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
+ const toneMapSeriesActive=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
+ if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
  const autoCalTabActive=meterSeriesTab==='autocal';
  const showAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&!continuousUiActive;
  if(autoCalBtn){
@@ -22413,6 +22427,15 @@ function meterUpdateReadButtons(){
   lg3dBtn.disabled=!showLg3d||settingsDirty||busy;
   lg3dBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
+ const toneMapBtn=document.getElementById('meterToneMapMeasureUploadBtn');
+ const toneMapHdrOk=(typeof meterChartIsHdr==='function'?meterChartIsHdr():false)||String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='hdr10';
+ const showToneMap=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='tone-map'&&!continuousUiActive;
+ if(toneMapBtn){
+  toneMapBtn.style.display=showToneMap?'':'none';
+  toneMapBtn.disabled=!showToneMap||!meterDetected||settingsDirty||busy||!toneMapHdrOk||!!window._meterToneMapBusy;
+  toneMapBtn.title=!toneMapHdrOk?'HDR tone map requires HDR10 signal mode':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy||window._meterToneMapBusy?'Meter operation already in progress':'Measure 100% white peak and upload the HDR tone map';
+ }
+ try{ meterUpdateToneMapPanelVisibility(); }catch(e){}
  if(autoCalTarget) autoCalTarget.disabled=busy&&meterAutoCalPhase!=='confirm';
  if(readOnceBtn){
   readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
@@ -22460,7 +22483,10 @@ function meterResetSeriesButtons(){
 
 let meterAutoCalSeriesChoice='greyscale';
 function meterNormalizeAutoCalSeriesChoice(choice){
- return choice==='3d-lut'?'3d-lut':'greyscale';
+ const c=String(choice||'').toLowerCase();
+ if(c==='3d-lut'||c==='3dlut'||c==='lut') return '3d-lut';
+ if(c==='tone-map'||c==='tonemap'||c==='tone_map'||c==='hdr-tone-map') return 'tone-map';
+ return 'greyscale';
 }
 
 function meterSetAutoCalSeriesChoice(choice){
@@ -22470,6 +22496,7 @@ function meterSetAutoCalSeriesChoice(choice){
   btn.classList.toggle('btn-primary',active);
   btn.classList.toggle('btn-secondary',!active);
  });
+ try{ meterUpdateToneMapPanelVisibility(); }catch(e){}
 }
 
 let meterSeriesTab='greyscale';
@@ -22714,6 +22741,138 @@ function meterSelectAutoCal3dLut(){
  meterSetAutoCalSeriesChoice('3d-lut');
  meterUpdateSeriesTabUi();
  meterSelectSeries('colors',30,{preserveTab:true});
+}
+
+function meterSelectAutoCalToneMap(){
+ meterSeriesTab='autocal';
+ meterSetAutoCalSeriesChoice('tone-map');
+ meterUpdateSeriesTabUi();
+ // Minimal series context: single 100% white patch for pattern/meter alignment.
+ // Does not start greyscale or color series measurement.
+ meterActiveSeriesType='greyscale';
+ meterActiveSeriesPoints=1;
+ try{
+  const hdr100=(typeof meterLgHdrHundredPercentCodeForRange==='function')?meterLgHdrHundredPercentCodeForRange():1023;
+  const isHdr=(typeof meterChartIsHdr==='function'&&meterChartIsHdr())||String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='hdr10';
+  const white=isHdr
+   ?{ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:hdr100,g:hdr100,b:hdr100,input_max:1023,name:'100% White',series_mode:'tone-map'}
+   :{ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:255,name:'100% White',series_mode:'tone-map'};
+  meterSeriesSteps=[white];
+  meterCurrentPatchStep=white;
+  if(typeof meterDisplayPatch==='function') meterDisplayPatch(white,{fresh:false,allowAfterStop:true}).catch(()=>{});
+  if(typeof meterBuildPatchThumbs==='function') meterBuildPatchThumbs([white],new Set(),'100% White');
+ }catch(e){}
+ meterUpdateToneMapPanelVisibility();
+ meterUpdateReadButtons();
+ if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
+}
+
+function meterUpdateToneMapPanelVisibility(){
+ const panel=document.getElementById('meterToneMapPanel');
+ if(!panel) return;
+ const show=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
+ panel.style.display=show?'':'none';
+}
+
+function meterToneMapSetLiveY(nits){
+ const yEl=document.getElementById('meterToneMapLiveY');
+ const fill=document.getElementById('meterToneMapLuminanceFill');
+ const y=Number(nits);
+ if(yEl) yEl.textContent=(Number.isFinite(y)&&y>0)?y.toFixed(2):'--';
+ if(fill){
+  // Bar scales 0–2000 nits for HDR peaks (clamped display only).
+  const pct=Number.isFinite(y)&&y>0?Math.max(0,Math.min(100,(y/2000)*100)):0;
+  fill.style.width=pct+'%';
+ }
+}
+
+function meterToneMapSetStatus(text,isError){
+ const el=document.getElementById('meterToneMapStatusText');
+ if(!el) return;
+ el.textContent=String(text||'');
+ el.style.color=isError?'var(--red,#f66)':'var(--text2)';
+}
+
+// Standalone HDR tone-map: measure 100% white peak, then upload via the same
+// /api/lg/hdr-tone-map/upload path used by Full AutoCal / greyscale wizard.
+async function meterStartToneMapMeasureUpload(){
+ if(window._meterToneMapBusy) return;
+ const sig=String((typeof getVal==='function'?getVal('signal_mode'):'')||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'')||'').toLowerCase();
+ if(sig!=='hdr10'&&!(typeof meterChartIsHdr==='function'&&meterChartIsHdr())){
+  toast('HDR tone map requires HDR10 signal mode',true);
+  meterToneMapSetStatus('HDR tone map requires HDR10 signal mode.',true);
+  return;
+ }
+ if(typeof meterEnsureDetected==='function'){
+  try{ await meterEnsureDetected(); }catch(e){}
+ }
+ if(!meterDetected){
+  toast('Connect a meter before measuring peak luminance',true);
+  meterToneMapSetStatus('No meter detected.',true);
+  return;
+ }
+ window._meterToneMapBusy=true;
+ try{ meterUpdateReadButtons(); }catch(e){}
+ const btn=document.getElementById('meterToneMapMeasureUploadBtn');
+ if(btn){ btn.disabled=true; btn.textContent='Measuring...'; }
+ meterToneMapSetStatus('Displaying 100% white and measuring peak luminance...');
+ meterToneMapSetLiveY(null);
+ let peak=null;
+ try{
+  peak=await meterAutoCalMeasureHdrPeakLuminance(
+   (typeof meterLgPictureModeValue==='function')?meterLgPictureModeValue():'',
+   'hdr10'
+  );
+ }catch(e){
+  peak=null;
+ }
+ if(!(Number.isFinite(peak)&&peak>0)){
+  toast('Could not measure 100% white peak',true);
+  meterToneMapSetStatus('Measurement failed — check meter placement and try again.',true);
+  window._meterToneMapBusy=false;
+  if(btn){ btn.disabled=false; btn.textContent='\u25B6 Measure & Upload'; }
+  try{ meterUpdateReadButtons(); }catch(e){}
+  return;
+ }
+ meterToneMapSetLiveY(peak);
+ meterToneMapSetStatus('Measured '+peak.toFixed(1)+' cd/m\u00B2 — uploading HDR tone map...');
+ if(btn) btn.textContent='Uploading...';
+ const pictureMode=(typeof meterLgPictureModeValue==='function')?meterLgPictureModeValue():'';
+ // Optional DPG from last greyscale/full-autocal state (same session binding as Full AutoCal).
+ let dpg=null;
+ try{
+  const grey=meterFullAutoCalResults&&meterFullAutoCalResults.first;
+  if(grey&&Array.isArray(grey.hdr20_1d_dpg)&&grey.hdr20_1d_dpg.length===3072) dpg=grey.hdr20_1d_dpg;
+  else if(grey&&Array.isArray(grey.dpg_data)&&grey.dpg_data.length===3072) dpg=grey.dpg_data;
+ }catch(e){}
+ try{
+  const body={picture_mode:pictureMode,peak_luminance:peak,helper_timeout:90};
+  if(dpg) body.dpg_data=dpg;
+  const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(body),
+   _timeoutMs:100000
+  });
+  if(response&&response.status==='ok'){
+   toast('HDR tone map uploaded (peak='+peak.toFixed(1)+' nits)');
+   meterToneMapSetStatus('Uploaded tone map at peak '+peak.toFixed(1)+' cd/m\u00B2'+(dpg?' (with greyscale DPG)':'')+'.',false);
+   try{
+    meterAutoCalPersistHdrToneMapChoice('standalone-manual',{user_choice:'uploaded',peak_luminance:peak,source:'tone-map-series',response});
+    meterAutoCalRecordHdrToneMapReport({user_choice:'uploaded',peak_luminance:peak,source:'tone-map-series'});
+   }catch(e){}
+  }else{
+   const msg=(response&&response.message)||'HDR tone map upload failed';
+   toast(msg,true);
+   meterToneMapSetStatus(msg,true);
+  }
+ }catch(e){
+  const msg='HDR tone map upload failed: '+(e&&e.message?e.message:e);
+  toast(msg,true);
+  meterToneMapSetStatus(msg,true);
+ }
+ window._meterToneMapBusy=false;
+ if(btn){ btn.disabled=false; btn.textContent='\u25B6 Measure & Upload'; }
+ try{ meterUpdateReadButtons(); }catch(e){}
 }
 
 function meterUpdateGreyscaleChartMode(){
