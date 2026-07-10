@@ -16554,8 +16554,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    }
   }
  } else {
-  # Full: body through 99% plus a single peak at 100%. No 105/109.
-  @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,100);
+  # Full: body through 95% plus a single peak at 100%. No 99/105/109
+  # (99 is a Limited near-white slot; Full peak is true 100%).
+  @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
@@ -16644,7 +16645,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # then top-down body and low shadows last.
  my @sdr26_body_order=$sdr26_limited
   ? (50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3)
-  : (50,25,75,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
+  : (50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
   my @reordered;
