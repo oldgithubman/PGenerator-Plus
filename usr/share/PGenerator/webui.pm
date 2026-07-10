@@ -15594,7 +15594,12 @@ function meterLgAutoCalStimulusFromCode(code){
 	 const limited=meterIsLimitedRange();
 	 const peak=bits===10?1023:255;
 	 if(!limited){
-		// Full range: linear code/peak clamp. >100% clamps to peak.
+		// Full 10-bit uses 8bit<<2 codes (not linear *1023). Invert via >>2.
+		if(bits===10){
+			if(numeric>=1020) return 100; // peak 1020..1023 → 100%
+			const b8=Math.max(0,Math.min(255,numeric>>2));
+			return Math.max(0,Math.min(100,(b8/255)*100));
+		}
 		return Math.max(0,Math.min(100,(numeric/peak)*100));
 	 }
 	 const fmt=meterOutputFormatValue();         // '0'=RGB, '1'=YCbCr 4:2:2, '2'=YCbCr 4:4:4
@@ -15757,11 +15762,16 @@ function meterLgAutoCalCodeForSlot(slot){
  const bits=meterPatchBitDepth();
  const max=bits===10?1023:255;
  const numSlot=Number(slot);
- // Full range (RGB Full or YCbCr Full): linear S/100 * max. Super-white
- // clamps to peak -- Full transport has no headroom above 100%.
+ // Full range (RGB Full or YCbCr Full): SDR 10-bit uses 8bit<<2 so
+ // thumbs/chart step codes match the worker DPG index + pattern code.
+ // Super-white clamps to peak -- Full transport has no headroom above 100%.
  if(!meterPatchUsesVideoRange()){
-  const clamped=Math.max(0,Math.min(100,numSlot))/100;
-  return Math.round(clamped*max);
+  const s=Math.max(0,Math.min(100,numSlot));
+  if(bits===10){
+   if(s>=99.95) return 1023;
+   return (Math.round(s/100*255)<<2);
+  }
+  return Math.round(s/100*max);
  }
  // Limited transport: dispatch on colorspace + bit-depth.
  const fmt=meterOutputFormatValue();          // '0' = RGB, '1' = YCbCr 4:2:2, '2' = YCbCr 4:4:4
