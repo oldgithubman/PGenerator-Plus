@@ -10627,7 +10627,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </label>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
-      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 450px;width:450px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 500px;width:500px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
@@ -33317,10 +33317,10 @@ function drawCIETargetInset(ctx,readings,pad){
  if(!focus||!(focus.x>0)||!(focus.y>0)) return;
  const tgt=meterTargetChromaticityForReading(focus);
  if(!tgt) return;
- const insetSize=130, margin=8;
- // Shift down further so the zoom clears the gamut label and leaves room
- // for the target caption above the inset frame.
- const ix=ctx.w-pad.r-insetSize-margin, iy=pad.t+34;
+ const insetSize=130, margin=4;
+ // Park the zoom inset in the top-right, far enough down that the caption
+ // clears the gamut label ("P3 / D65") and optional halo legend.
+ const ix=ctx.w-pad.r-insetSize-margin, iy=pad.t+56;
  // Autoscale the zoom to fit the target + measured point of the focused
  // reading (plus any extra readings that share the same target group would
  // be implicit; we tune to the focus pair for clarity). Enforce a minimum
@@ -33407,10 +33407,13 @@ function drawCIETargetInset(ctx,readings,pad){
  const labelPadX=10, labelH=15;
  const idealW=Math.max(insetSize,textW+labelPadX*2);
  const maxLeft=pad.l, maxRight=ctx.w-pad.r;
- let lx=ix+(insetSize-idealW)/2;
+ // Right-align caption to the inset so long names grow left without covering
+ // the top-right gamut legend (they stay under the zoom frame).
+ let lx=ix+insetSize-idealW;
  if(lx<maxLeft) lx=maxLeft;
  let lw=idealW;
- if(lx+lw>maxRight) lw=maxRight-lx;
+ if(lx+lw>maxRight){ lw=maxRight-lx; }
+ if(lx+lw>ix+insetSize) lx=Math.max(maxLeft,ix+insetSize-lw);
  const ly=iy-labelH-1;
  ctx.fillStyle='#0d0d15';
  ctx.fillRect(lx,ly,lw,labelH);
