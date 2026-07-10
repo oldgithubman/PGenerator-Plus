@@ -2773,7 +2773,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
 				    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
 				   );
-				   # 10-bit Full: linear 0..1023, super-white clamps to peak.
+				   # 10-bit Full: 8bit<<2 (LG DPG index map), peak=1023.
+				   # Not linear *1023 — that is off-by-2..4 at mid anchors
+				   # (55% 563 vs 560) so the patch and DPG solver diverge.
 				   my %lg_autocal_26_code_10bit_full=();
 				   # 8-bit Limited: legal-expanded (16..235) extended ladder.
 				   my %lg_autocal_26_code_8bit_limited=();
@@ -2785,7 +2787,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    my $key=sprintf("%.1f",$k);
 				    # 10-bit Full
 				    my $sclamp=$s; $sclamp=100 if($sclamp > 100);
-				    $lg_autocal_26_code_10bit_full{$key}=int($sclamp/100*1023+0.5);
+				    if($sclamp+0 >= 99.95) {
+				     $lg_autocal_26_code_10bit_full{$key}=1023;
+				    } else {
+				     my $b8=int($sclamp/100*255+0.5);
+				     $b8=0 if($b8 < 0); $b8=255 if($b8 > 255);
+				     $lg_autocal_26_code_10bit_full{$key}=($b8 << 2);
+				    }
 				    # 10-bit Limited already in the table above.
 				    # 8-bit Full
 				    $lg_autocal_26_code_8bit_full{$key}=int($sclamp/100*255+0.5);
@@ -8376,9 +8384,15 @@ sub webui_grey_code_for_stimulus (@) {
    return ($code,$input_max);
   }
   if(!$signal_range) {
-   # 10-bit full: linear 0..1023 to match the worker's full-range drive code.
-   # (The legal-expanded table below is the standard 10-bit *limited* path.)
-   $code=int(($stimulus_pct/100)*1023 + .5); $code=0 if($code < 0); $code=1023 if($code > 1023);
+   # 10-bit Full SDR: 8bit<<2 (same map as worker DPG index). Peak=1023.
+   my $s=$stimulus_pct+0; $s=0 if($s < 0); $s=100 if($s > 100);
+   if($s >= 99.95) {
+    $code=1023;
+   } else {
+    my $b8=int($s/100*255 + .5);
+    $b8=0 if($b8 < 0); $b8=255 if($b8 > 255);
+    $code=$b8 << 2;
+   }
    $input_max=1023;
    return ($code,$input_max);
   }
@@ -15542,10 +15556,14 @@ function meterLgSdrLegalHeadroomCodeFromPercent(percent){
 	 const bits=meterPatchBitDepth();
 	 const limited=meterIsLimitedRange();
 	 if(!limited){
-		// Full range: no headroom above 100% -- clamp to peak.
-		const peak=bits===10?1023:255;
-		const clamped=Math.max(0,Math.min(100,s))/100;
-		return Math.round(clamped*peak);
+		// Full range: no headroom above 100%. 10-bit uses 8bit<<2 so the
+		// patch samples the same LUT entry the SDR26 DPG solver adjusts.
+		const clamped=Math.max(0,Math.min(100,s));
+		if(bits===10){
+			if(clamped>=99.95) return 1023;
+			return (Math.round(clamped/100*255)<<2);
+		}
+		return Math.round(clamped/100*255);
 	 }
 	 // Limited: dispatch on RGB vs YCbCr (RGB clamps at legal peak,
 	 // YCbCr ramps into super-white).
@@ -15792,7 +15810,16 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  opts=opts||{};
  if(opts.lgExtendedSdr) return meterLgSdrExtendedCodeFromPercent(percent);
  if(opts.lgLegalSdrDdc) return meterLgSdrLegalDdcCodeFromPercent(percent);
- const clamped=clampNum(percent,0,100)/100;
+ const ire=clampNum(percent,0,100);
+ // SDR Full 10-bit: 8bit<<2 (LG DPG index), not linear *1023.
+ if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10
+    && typeof meterIsLimitedRange==='function' && !meterIsLimitedRange()
+    && typeof meterChartIsHdr==='function' && !meterChartIsHdr()
+    && typeof meterChartIsDv==='function' && !meterChartIsDv()){
+  if(ire>=99.95) return 1023;
+  return (Math.round(ire/100*255)<<2);
+ }
+ const clamped=ire/100;
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
   return Math.round(range.min+clamped*range.span);

@@ -1096,15 +1096,31 @@ sub lg_autocal_sdr26_dpg_is_limited_range {
  return (defined($range) && $range ne "" && int($range)==1) ? 1 : 0;
 }
 
-# Full-range SDR 1D DPG sample index for an IRE label. On Full the uploaded
-# 1D_DPG_DATA table is addressed by the same 0..1023 domain as the 10-bit
-# wire code (not the Limited legal-expanded map). 8-bit Full patches still
-# map into this 1024-pt domain via the IRE fraction so 100% lands on peak.
+# Full-range SDR 1D DPG sample index (and 10-bit Full wire code) for an IRE.
+#
+# LG's 1D_DPG_DATA is indexed like CalMAN's Shift_8Bit_To_10Bit: take the
+# 8-bit full code round(ire/100*255) and left-shift 2 (×4). The naive
+# round(ire/100*1023) is close but off-by-2..4 at many mid anchors — e.g.
+# 55% → 563 vs 560, 80% → 818 vs 816 — so the pattern samples one LUT entry
+# while the solver adjusts a different one. Field symptom: DPG codes move
+# at the formula idx but measured Y barely changes (55%/80% luma stuck);
+# <<2-clean anchors (25%/50%) still converge.
+#
+# Peak 100% always lands on max_idx (1023), not 255<<2=1020, so true peak
+# white stays at the table end.
+# Limited SDR26 is unaffected (empirical index/code tables).
 sub lg_autocal_sdr26_dpg_full_index_for_ire {
  my ($ire,$max_idx)=@_;
  $max_idx=1023 if(!defined($max_idx) || $max_idx+0 <= 0);
  return 0 if(!defined($ire) || $ire+0 <= 0);
- my $idx=int(($ire+0)/100.0*$max_idx + 0.5);
+ # True peak: always the last DPG sample / peak code.
+ if(($ire+0) >= 99.95) {
+  return int($max_idx);
+ }
+ my $b8=int(($ire+0)/100.0*255.0 + 0.5);
+ $b8=0 if($b8 < 0);
+ $b8=255 if($b8 > 255);
+ my $idx=$b8 << 2;
  $idx=0 if($idx < 0);
  $idx=int($max_idx) if($idx > $max_idx);
  return $idx;
@@ -2075,6 +2091,7 @@ sub patch_code_for_stimulus {
 	  if($limited) {
 	   $code=int(64 + ($stimulus/100)*876 + .5);
 	  } else {
+	   # Full HDR10 stays linear 0..1023 (PQ domain; not the SDR 8bit<<2 map).
 	   $code=int(($stimulus/100)*1023 + .5);
 	  }
 	  $code=64   if($code < 64   && $limited);
@@ -2098,11 +2115,10 @@ sub patch_code_for_stimulus {
 	   $code=int(940 + ($stimulus-100)/9*(1023-940) + .5);
 	  }
 	 } elsif($sdr_headroom) {
-	  # Full-range 10-bit: linear 0..1023. Full range has no >100% headroom
-	  # (1023 is the ceiling), so 105/109 clamp to peak like 8-bit clamps to
-	  # 255. Without this, full 10-bit fell through to the 8-bit branch below
-	  # (codes maxing ~255) while input_max stayed 1023 -> ~25% signal.
-	  $code=int(($stimulus/100)*1023 + .5);
+	  # Full-range SDR 10-bit: same 8bit<<2 map as the DPG index so the
+	  # patch samples the LUT entry the solver adjusts (see
+	  # lg_autocal_sdr26_dpg_full_index_for_ire). Not linear *1023.
+	  $code=lg_autocal_sdr26_dpg_full_index_for_ire($stimulus,1023);
 	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
 	  $code=($stimulus <= 0) ? 0 : int(16 + ($stimulus/100)*239 + .5);
 	 } else {
@@ -16652,18 +16668,23 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  } else {
   # Full: body 2.3..95 + peak 100. No 99/105/109.
   # Flow after peak: 50 → 25 → 75 → descend 95..2.3 (see body_order).
-  # 10-bit Full: wire code == DPG sample index (both round(ire/100*1023)).
-  # 8-bit Full: wire code is 0..255; DPG index stays in the 0..1023 domain
-  # via the same IRE fraction (not Limited legal-expand).
+  # 10-bit Full: wire code == DPG sample index == 8bit<<2 (not *1023).
+  # 8-bit Full: wire code is 0..255; DPG index is still 8bit<<2 in 0..1023.
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
    my $idx=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$sdr26_dpg_max_idx);
    push @sdr26_indexes,$idx;
-   my $code=int($ire/100*$sdr26_max+0.5);
-   $code=$sdr26_max if($code > $sdr26_max);
-   $code=0 if($code < 0);
+   my $code;
+   if($sdr26_bits >= 10) {
+    # Match DPG sample so pattern and solver share one index.
+    $code=$idx;
+   } else {
+    $code=int($ire/100*$sdr26_max+0.5);
+    $code=$sdr26_max if($code > $sdr26_max);
+    $code=0 if($code < 0);
+   }
    push @sdr26_codes,$code;
   }
  }
