@@ -15446,6 +15446,24 @@ sub lg_autocal_26_sdr26_dpg_damp {
  return $s+0;
 }
 
+# Body-anchor damp: EOTF (g^1/gamma) is right for REDUCTIONS (avoid crushing
+# shadows). For BOOSTS it is wrong -- a 3.6% Y shortfall becomes ~1.6% after
+# g^0.45, then revert-and-halve shrinks that to noise and the anchor never
+# climbs (Full 55% logged gains 1.015/1.007/1.003 while needing ~1.036).
+# Under-luma body: apply most of the raw linear gain on boosts; keep classic
+# damp on reductions.
+sub lg_autocal_26_sdr26_dpg_body_damp {
+ my ($g,$floor,$exp,$under_luma)=@_;
+ $g=1 unless(defined($g) && $g+0 > 0);
+ if($under_luma && $g+0 > 1.0) {
+  # 90% of the needed linear boost (still damped a little for stability).
+  my $s=1.0+($g-1.0)*0.90;
+  $s=1.35 if($s+0 > 1.35);
+  return $s+0;
+ }
+ return lg_autocal_26_sdr26_dpg_damp($g,$floor,$exp);
+}
+
 # SDR26 iteration budget for an anchor. Returns the per-anchor inner-iter
 # budget. Default 10 iters for body IREs (the per-anchor solve needs more
 # headroom than the previous 6-iter default to actually converge through
@@ -15698,6 +15716,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
   my $low_ire_escalations=0;
+  my $body_escalations=0;
+  my $body_max_escalations=defined($config->{"lg_autocal_sdr26_dpg_body_max_escalations"}) ? int($config->{"lg_autocal_sdr26_dpg_body_max_escalations"}) : 2;
+  $body_max_escalations=0 if($body_max_escalations < 0);
+  $body_max_escalations=4 if($body_max_escalations > 4);
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
@@ -15974,12 +15996,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     my $_recovered=$move_scaling*2.0;
     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
     $move_scaling=$_recovered;
-   } elsif($consecutive_reverts < $revert_budget) {
-    # Revert-and-halve: when a move overshoots (dE worsens from the best
-    # seen so far), snap the DPG back to the best snapshot and halve the
-    # move scaling. The next iter applies the same natural gain at half
-    # strength, which keeps the chromaticity trajectory inside the best
-    # state's "good" neighborhood while still making progress.
+   } elsif(defined($de) && defined($best_de) && $de+0 > $best_de+0 + 0.02 && $consecutive_reverts < $revert_budget) {
+    # Revert-and-halve: ONLY on a meaningful overshoot (dE worse than best
+    # by >0.02). Treating dE == best as a "revert" undoes a no-op/plateau
+    # move and halves step size forever (Full 55% i1/i2 both dE=2.4283 →
+    # false reverts, gains 1.015→1.007→1.003, never climbs the Y gap).
+    #
+    # When a move overshoots, snap the DPG back to the best snapshot and
+    # halve the move scaling. The next iter applies the same natural gain
+    # at half strength, which keeps the chromaticity trajectory inside the
+    # best state's "good" neighborhood while still making progress.
     #
     # Previously this was gated to low-IRE anchors only (the constant-
     # amplitude oscillation that the revert-and-halve loop is designed to
@@ -16019,6 +16045,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
       $consecutive_reverts=0;
       $move_scaling=$initial_move_scaling;
       log_line("SDR26 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
+     } elsif(!$_is_legal_peak_anchor
+             && defined($best_de) && $best_de+0 > ($_effective_target_de+0)
+             && $body_escalations < $body_max_escalations) {
+      # Mid/high body (e.g. Full 55%): same trap -- first move is too small
+      # after EOTF damp, every "worse" iter halves into noise, never climbs
+      # the remaining luminance gap. Re-escalate full step a few times.
+      $body_escalations++;
+      $consecutive_reverts=0;
+      $move_scaling=$initial_move_scaling;
+      log_line("SDR26 1D DPG greyscale: body anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$body_escalations."/".$body_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
      } else {
       log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
       last;
@@ -16295,17 +16331,27 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   # Under-luma body: need a real boost (see body_damp). Detect from this
+   # reading vs target Y before damp so 55%-class shortfalls can climb.
+   my $_y_meas_body=luminance($reading);
+   my $_under_luma=0;
+   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
+      && $_y_meas_body+0 < ($tl+0)*0.985) {
+    $_under_luma=1;
+   }
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
    # Low-IRE anchors may need a larger per-node BOOST to lift a crushed
-   # shadow node; raise the upper clamp for low-IRE only. Higher IRE keeps
-   # the 1.25 ceiling. Reducing channels are bounded by $floor and never
-   # reach this ceiling.
-   my $_node_ceiling=($_anchor_ire+0 < $low_ire_threshold+0) ? $low_ire_boost_ceiling : 1.25;
+   # shadow node; under-luma mid body also needs more than 1.25 when the
+   # gap is several percent (55% needed ~1.036 raw). Reducing channels
+   # stay bounded by $floor.
+   my $_node_ceiling=($_anchor_ire+0 < $low_ire_threshold+0)
+    ? $low_ire_boost_ceiling
+    : ($_under_luma ? 1.40 : 1.25);
    $sr=$_node_ceiling if($sr+0 > $_node_ceiling);
    $sg=$_node_ceiling if($sg+0 > $_node_ceiling);
    $sb=$_node_ceiling if($sb+0 > $_node_ceiling);
