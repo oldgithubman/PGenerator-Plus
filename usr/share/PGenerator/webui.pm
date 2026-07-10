@@ -3868,7 +3868,10 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
  my $json="";
  if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
  return if($json eq "");
- return if($json=~/"status"\s*:\s*"complete"/);
+ # Always force cancelled on an explicit Stop — including over a raced
+ # process-died promotion to "complete" (final_1d flags set while the
+ # worker was killed). Leaving complete here is what resurrects the
+ # "Auto Cal complete" popup on the next page refresh.
  if($json=~/"status"\s*:\s*"[^"]*"/) {
   $json=~s/"status"\s*:\s*"[^"]*"/"status":"cancelled"/;
  } else {
@@ -4293,7 +4296,36 @@ sub webui_meter_lg_autocal_status (@) {
 	      return $json;
 	     }
 	     unlink($_dmf);
-	     if(
+	     # Explicit Stop (stop-file present) always wins over the
+	     # final-1D "looks complete" promotion. Otherwise a kill during
+	     # end-of-run upload leaves status=complete and the next page
+	     # refresh opens the success popup for a cancelled cal.
+	     if(-f $_meter_lg_autocal_stop_file) {
+	      $json=~s/"status"\s*:\s*"running"/"status":"cancelled"/;
+	      if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+	       $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal cancelled"/;
+	      } else {
+	       $json=~s/\}$/,"current_name":"Auto Cal cancelled"}/;
+	      }
+	      if($json=~/"message"\s*:\s*"[^"]*"/) {
+	       $json=~s/"message"\s*:\s*"[^"]*"/"message":"Auto Cal stopped"/;
+	      } else {
+	       $json=~s/\}$/,"message":"Auto Cal stopped"}/;
+	      }
+	      if($json=~/"phase"\s*:\s*"[^"]*"/) {
+	       $json=~s/"phase"\s*:\s*"[^"]*"/"phase":"cancelled"/;
+	      } else {
+	       $json=~s/\}$/,"phase":"cancelled"}/;
+	      }
+	      if($json=~/"autocal"\s*:\s*(?:true|false)/) {
+	       $json=~s/"autocal"\s*:\s*(?:true|false)/"autocal":false/;
+	      } else {
+	       $json=~s/\}$/,"autocal":false}/;
+	      }
+	      if($json=~/"calibration_mode"\s*:\s*(?:true|false)/) {
+	       $json=~s/"calibration_mode"\s*:\s*(?:true|false)/"calibration_mode":false/;
+	      }
+	     } elsif(
 	      $json=~/"final_1d_lut_uploaded"\s*:\s*true/ &&
 	      $json=~/"final_1d_lut_upload_verified"\s*:\s*true/ &&
 	      $json=~/"calibration_mode"\s*:\s*false/
@@ -25535,11 +25567,15 @@ function meterAutoCalSetOverlay(active,status){
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const fullSkipBtn=document.getElementById('meterFullAutoCalSkipBtn');
  const phase=(status&&status.phase)||meterAutoCalPhase||'';
+ const statusName=String((status&&status.status)||'').toLowerCase();
  const showDisclaimer=phase==='disclaimer';
  const showLuminance=phase==='luminance';
  const showOptions=phase==='options';
  const showConfirm=phase==='confirm';
- const showComplete=phase==='complete'||(status&&status.status==='complete');
+ // Success popup only — never for cancelled/error, and never from a
+ // stale phase=complete left behind after Stop (status may be cancelled
+ // while phase still says complete for one paint).
+ const showComplete=(statusName==='complete'||phase==='complete')&&statusName!=='cancelled'&&statusName!=='error'&&statusName!=='idle';
  if(disclaimerBox) disclaimerBox.style.display=showDisclaimer?'':'none';
  if(lumBox) lumBox.style.display=showLuminance?'':'none';
  if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
@@ -26845,6 +26881,13 @@ async function meterAutoCalApplyStatus(status){
 	  meterAutoCalSaveState();
 	  meterAutoCalSetOverlay(false,status);
 	 }else if(status.status==='complete'){
+	  // User Stop (or a cancel race) must never open the success popup.
+	  if(meterAutoCalStopRequested){
+	   meterAutoCalPhase='';
+	   meterAutoCalRunning=false;
+	   meterAutoCalClearSavedState();
+	   meterAutoCalSetOverlay(false,status);
+	  }else{
 	  meterAutoCalPhase='complete';
 	  meterAutoCalRunning=true;
 	  meterAutoCalSaveState();
@@ -26857,6 +26900,7 @@ async function meterAutoCalApplyStatus(status){
 	   if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
 	  }
 	  meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
+	  }
 	 }else{
 	  meterAutoCalSetOverlay(status.status==='error',status);
 	 }
@@ -29262,6 +29306,19 @@ async function meterPollAutoCal(options){
 				     meterAutoCalSetOverlay(false,r);
 				     return;
 				    }
+				   // Success popup only when this browser was actively
+				   // tracking the run. A cancelled cal (or a cancel race
+				   // that left status=complete) must not open "Auto Cal
+				   // complete" on the next poll or page refresh.
+				   if(!localAutoCalActive||meterAutoCalStopRequested){
+				    meterAutoCalRunning=false;
+				    meterAutoCalPhase='';
+				    meterAutoCalPendingConfig=null;
+				    meterAutoCalClearSavedState();
+				    meterAutoCalSetOverlay(false,r);
+				    if(meterAutoCalStopRequested) toast('LG Auto Cal stopped');
+				    return;
+				   }
 				    // Wizard-owned HDR tone-map prompt: only for the
 				    // standalone greyscale path. The full-workflow
 				    // path is already covered by
@@ -29302,7 +29359,7 @@ let completeStatus=r;
 	    meterAutoCalPendingConfig=null;
 	    meterAutoCalSetOverlay(false,r);
 	   }
-	   if(notify) toast(r.status==='complete'?'LG Auto Cal complete':r.status==='error'?'LG Auto Cal error: '+(r.message||'process failed'):r.status==='cancelled'?'LG Auto Cal stopped':'LG Auto Cal idle',r.status==='error');
+	   if(notify&&!(r.status==='complete'&&meterAutoCalStopRequested)) toast(r.status==='complete'?'LG Auto Cal complete':r.status==='error'?'LG Auto Cal error: '+(r.message||'process failed'):r.status==='cancelled'?'LG Auto Cal stopped':'LG Auto Cal idle',r.status==='error');
 	  }
  }catch(e){
   const backendGreyscaleActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
@@ -29898,6 +29955,14 @@ async function meterPollLg3dAutoCal(options){
 	    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
 	     meterAutoCalPhase='';
 	     meterAutoCalSetOverlay(false,r);
+	     return;
+	    }
+	    // Same cancel/refresh guard as greyscale: do not open the
+	    // success popup unless this browser was tracking the run.
+	    if(!localActive||meterAutoCalStopRequested){
+	     meterAutoCalPhase='';
+	     meterAutoCalSetOverlay(false,r);
+	     if(meterAutoCalStopRequested) toast('LG 3D LUT AutoCal stopped');
 	     return;
 	    }
 	    meterAutoCalPhase='complete';
