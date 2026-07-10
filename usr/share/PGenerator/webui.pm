@@ -2633,9 +2633,18 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  my $lg_autocal_26_target_yn_for_stimulus=sub {
   my ($stimulus)=@_;
   return 0 if(!defined $stimulus);
-  my $signal=($stimulus+0)/100;
+  # Match meter_lg_autocal.pl autocal_sdr_signal_peak():
+  #  - Limited + YCbCr: normalize to 109 (super-white peak)
+  #  - Full, or Limited + RGB: normalize to 100 (no usable super-white)
+  my $peak_div=100.0;
+  if($greyscale_patch_limited && int($series_color_format||0) != 0) {
+   $peak_div=109.0;
+  }
+  my $signal=($stimulus+0)/$peak_div;
   $signal=0 if($signal < 0);
-  $signal=1.1 if($signal > 1.1);
+  # Limited YCbCr may sit slightly above 1.0 at 109; Full clamps at 1.0.
+  my $sig_cap=($peak_div > 100.0) ? 1.1 : 1.0;
+  $signal=$sig_cap if($signal > $sig_cap);
   return 0 if($signal <= 0);
   if($target_gamma eq "srgb") {
    return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055)**2.4);
@@ -2732,7 +2741,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
 						    @ire_vals=(100,0,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4);
 			   } elsif($points==26 && $lg_autocal_26) {
-					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+					    # Limited: legal-expanded 26-pt with super-white 105/109.
+					    # Full: body through 99% (peak is separate 100% white ref) -- no
+					    # super-white. Matches Full SDR 1D-DPG greyscale anchors.
+					    if($greyscale_patch_limited) {
+					     @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+					    } else {
+					     @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99);
+					    }
 			   } elsif($points==21 && $lg_greyscale_21) {
 					    @ire_vals=(0,2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
 	   } else {
@@ -15528,6 +15544,24 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
  };
 }
 
+// SDR26 body slots for the active range. Limited keeps super-white 105/109;
+// Full drops them (wire peak is 100%). Used by thumbs, series slots, TV stops.
+function meterLgAutoCalSdr26BodySlots(){
+ if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+  return METER_LG_GREY_AUTOCAL_26_SLOTS_FULL;
+ }
+ return METER_LG_GREY_AUTOCAL_26_SLOTS;
+}
+function meterLgAutoCalSdr26SeriesSlots(){
+ return [0,...meterLgAutoCalSdr26BodySlots()];
+}
+// Chart/target peak IRE for SDR26 gamma curves. Full -> 100; Limited legal-
+// expanded super-white ladder -> 109. Matches worker Full peak (100).
+function meterSdr26ChartPeakIre(){
+ if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return 100;
+ return 109;
+}
+
 // SDR26 forward code: IRE% → wire code. Dispatches on (transport ×
 // bit-depth × colorspace). Limited transport has TWO sub-modes that must
 // NOT be conflated:
@@ -18264,7 +18298,8 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		  // IRE so the curve is monotonic across the 100->105 boundary
 		  // (otherwise the split at stimulus=100 makes chartSig jump from
 		  // 1.0 down to 100/109=0.917, producing a visible kink).
-		  const peakIre=109;
+		  // Full -> peak 100; Limited super-white ladder -> peak 109.
+		  const peakIre=(typeof meterSdr26ChartPeakIre==='function')?meterSdr26ChartPeakIre():109;
 		  const chartSig=stimulus/peakIre;
 		  return targetEotf(Math.max(0,Math.min(1,chartSig)),Lw,Lb||0);
 		 }
@@ -22524,6 +22559,8 @@ const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 const METER_LG_GREY_MANUAL_22_ENABLED=false;
 		const METER_LG_GREY_DDC_SLOTS_22=[2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
+			// Full-range SDR Autocal-26 body: no super-white 105/109 (peak is 100%).
+			const METER_LG_GREY_AUTOCAL_26_SLOTS_FULL=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99];
 				const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4];
 				// HDR greyscale patch codes are 10-bit in the renderer's
 				// 10-bit pipeline. Three tables, picked at runtime by
@@ -22995,6 +23032,8 @@ function meterUseLgAutoCal26(points){
 function meterGreyAllowsHeadroomTargets(){
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const normalized=(Number(meterActiveSeriesPoints)===256)?100:Number(meterActiveSeriesPoints);
+ // Full-range SDR has no super-white ladder -- headroom chart math is Limited-only.
+ if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return false;
  return meterActiveSeriesType==='greyscale'&&normalized===26&&mode==='sdr';
 }
 
@@ -23020,7 +23059,10 @@ function meterGreySeriesSlots(points){
  if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  if(Number(points)===26&&meterUseLgAutoCal26(points)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
- if(meterUseLgAutoCal26(points)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
+ if(meterUseLgAutoCal26(points)){
+  if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
+  return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
+ }
  if(meterUseLgGreyscale21(points)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(points);
 }
@@ -23030,7 +23072,10 @@ function meterGreyProfileSlots(points){
  if(normalized===30) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  if(normalized===26&&meterUseLgAutoCal26(normalized)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
- if(meterUseLgAutoCal26(normalized)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
+ if(meterUseLgAutoCal26(normalized)){
+  if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
+  return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
+ }
  if(meterUseLgGreyscale21(normalized)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(normalized);
 }
@@ -23687,7 +23732,8 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:255),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?(isFullRange?stepInputMax:meterLgSdrLegalHeadroomCodeFromPercent(100)):meterCodeFromSignalPercentWithOptions(100,null);
  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- const body=[...METER_LG_GREY_AUTOCAL_26_SLOTS]
+ const bodySlots=(mode==='sdr' && isFullRange)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
+ const body=[...bodySlots]
   .sort((a,b)=>a-b)
   .map(makeDdcStep);
  return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
@@ -24037,7 +24083,7 @@ function meterGreyTvTarget(step,opts){
 	 if(!Number.isFinite(ire)) return null;
 	 const autoCal26=meterUseLgAutoCal26(meterActiveSeriesPoints);
 	 const autoCalHdr=autoCal26&&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10';
-	 const stops=autoCal26?(autoCalHdr?[...METER_LG_GREY_HDR_AUTOCAL_SLOTS]:[...METER_LG_GREY_AUTOCAL_26_SLOTS]):meterGreyTvIreStops();
+	 const stops=autoCal26?(autoCalHdr?[...METER_LG_GREY_HDR_AUTOCAL_SLOTS]:(typeof meterLgAutoCalSdr26BodySlots==='function'?[...meterLgAutoCalSdr26BodySlots()]:[...METER_LG_GREY_AUTOCAL_26_SLOTS])):meterGreyTvIreStops();
 		 let idx=stops.findIndex(v=>Math.abs(v-ire)<0.001);
 	 let patchStop=null;
 	 if(idx < 0 && !autoCal26 && meterUseLgGreyscale21(meterActiveSeriesPoints)){
