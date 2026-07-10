@@ -4557,12 +4557,36 @@ sub transient_read_error {
  return ($error =~ /tim(?:e|ed)\s*out|timeout|communication|fifo|session|spotread|unavailable|invalid web ui api|unable to start meter read/i) ? 1 : 0;
 }
 
+# Consecutive-transient-failure counter for the meter session. A single read
+# timeout is usually a poll hiccup that clears by re-reading on the EXISTING
+# spotread session. Tearing the session down (/api/meter/session/stop) forces a
+# fresh spotread to reopen + reclaim the i1Display3 USB interface, and that
+# reopen races the kernel/usbhid state -> "did not claim interface 0 before use"
+# -> kernel device reset -> meter offline. So only tear down after repeated
+# consecutive transient failures, not the first one. Reset to 0 on any
+# successful read (see reset_meter_session_success below).
+my $_meter_session_consecutive_transient_failures=0;
+my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
+
+sub reset_meter_session_success {
+ $_meter_session_consecutive_transient_failures=0;
+}
+
 sub reset_meter_session_after_read_error {
  my ($error)=@_;
  $error="" if(!defined($error));
  $error=~s/[\r\n]+/ /g;
- log_line("Resetting meter session after transient read error: $error");
+ $_meter_session_consecutive_transient_failures++;
+ if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {
+  # First transient failure: let the caller retry on the existing session
+  # rather than tearing it down and forcing a spotread reopen (which races
+  # the USB interface claim and can reset the meter).
+  log_line("Transient meter read error (attempt $_meter_session_consecutive_transient_failures/$_METER_SESSION_TEARDOWN_THRESHOLD), keeping session for retry: $error");
+  return;
+ }
+ log_line("Resetting meter session after $_meter_session_consecutive_transient_failures consecutive transient read errors: $error");
  api_json("POST","/api/meter/session/stop",undef,25);
+ $_meter_session_consecutive_transient_failures=0;
 }
 
 my $read_sequence=0;
@@ -20281,6 +20305,7 @@ sub read_step {
 	  my ($reading,$error)=read_step_once($config,$step,$attempt);
 	  if(!$error) {
 	   delete $state_ref->{"meter_read_retry"} if(ref($state_ref) eq "HASH");
+	   reset_meter_session_success();
 	   return ($reading,undef);
 	  }
   $last_error=$error;
@@ -20774,6 +20799,7 @@ sub read_step_once {
 	   # measured luminance: below the operator trigger -> average next read;
 	   # at/above -> single-shot next read.
 	   $lg_low_light_active_mode=lg_low_light_mode_for_reading($config,$reading,$step);
+	   reset_meter_session_success();
 	   return ($reading,undef);
 	  }
   return (undef,$result->{"message"}||"Meter read failed") if($status eq "error");
