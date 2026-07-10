@@ -9671,14 +9671,17 @@ transition:all .3s;z-index:999;pointer-events:none}
 .apply-settings-mask{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 #applySettingsOverlay{z-index:9102}
 #lgConnectOverlay{z-index:9101}
+#meterStopOverlay{z-index:9103}
 /* Per-overlay visibility triggers. Each modal has its own body class
    so showing one doesn't show the other. Both modes still dim the
    dashboard underneath via the shared .apply-settings-active rules
    below; only the modal-visible rules are split. */
 body.apply-settings-active #applySettingsOverlay{display:flex}
 body.lg-connect-active #lgConnectOverlay{display:flex}
+body.meter-stop-active #meterStopOverlay{display:flex}
 body.apply-settings-active .dashboard,body.apply-settings-active .site-footer,
-body.lg-connect-active .dashboard,body.lg-connect-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
+body.lg-connect-active .dashboard,body.lg-connect-active .site-footer,
+body.meter-stop-active .dashboard,body.meter-stop-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 .apply-settings-card{width:min(420px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:22px 20px;text-align:center}
 .apply-settings-icon{position:relative;width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center}
 .apply-settings-spinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:apply-settings-spin .9s linear infinite}
@@ -11186,6 +11189,23 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 </div>
 
+<!-- Meter Stop modal: shown while Stop waits for the backend to kill a
+     series helper, continuous meter session, greyscale Auto Cal, or 3D
+     LUT AutoCal. Without this the UI looks idle (buttons re-enabled
+     state-wise) but meterActionPending blocks clicks for the whole
+     stop RTT, so the page feels frozen with no explanation. Same
+     skeleton as Apply Settings / LG Connect (spinner mask). -->
+<div class="apply-settings-mask" id="meterStopOverlay" aria-hidden="true">
+ <div class="apply-settings-card">
+  <div class="apply-settings-icon" id="meterStopIcon" aria-hidden="true">
+   <span class="apply-settings-spinner" aria-hidden="true"></span>
+   <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
+  </div>
+  <div class="apply-settings-title" id="meterStopTitle">Stopping</div>
+  <div class="apply-settings-status" id="meterStopStatus">Waiting for the meter to finish stopping&hellip;</div>
+ </div>
+</div>
+
 <script>
 const API=window.location.origin;
 let config={};
@@ -11259,6 +11279,43 @@ function applySettingsModalHide(){
  if(!overlay) return;
  overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
+}
+
+// Meter Stop modal: blocks the dashboard while Stop waits on the
+// backend (series kill, meter session teardown, autocal pkill). Show
+// at the click frame so the operator never sees a "stopped but frozen"
+// page with no feedback.
+let meterStopModalKind='';
+function meterStopModalShow(kind,statusText){
+ const overlay=document.getElementById('meterStopOverlay');
+ if(!overlay) return;
+ meterStopModalKind=String(kind||'meter');
+ // Only one of these full-screen masks at a time.
+ if(typeof applySettingsModalHide==='function') applySettingsModalHide();
+ if(typeof lgConnectModalHide==='function') lgConnectModalHide();
+ document.body.classList.add('meter-stop-active');
+ document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error','lg-connect-active');
+ const title=document.getElementById('meterStopTitle');
+ const status=document.getElementById('meterStopStatus');
+ const labels={
+  series:{title:'Stopping Series Read',status:'Waiting for the series and meter to finish stopping\u2026'},
+  continuous:{title:'Stopping Continuous Read',status:'Waiting for the meter to finish stopping\u2026'},
+  meter:{title:'Stopping Meter',status:'Waiting for the meter to finish stopping\u2026'},
+  autocal:{title:'Stopping Auto Cal',status:'Waiting for Auto Cal to finish stopping\u2026'},
+  '3d-autocal':{title:'Stopping 3D LUT AutoCal',status:'Waiting for 3D LUT AutoCal to finish stopping\u2026'},
+  'full-autocal':{title:'Stopping Full Auto Cal',status:'Waiting for Full Auto Cal to finish stopping\u2026'}
+ };
+ const pack=labels[meterStopModalKind]||labels.meter;
+ if(title) title.textContent=pack.title;
+ if(status) status.textContent=statusText||pack.status;
+ overlay.setAttribute('aria-hidden','false');
+}
+function meterStopModalHide(){
+ const overlay=document.getElementById('meterStopOverlay');
+ if(!overlay) return;
+ overlay.setAttribute('aria-hidden','true');
+ document.body.classList.remove('meter-stop-active','apply-settings-success','apply-settings-error');
+ meterStopModalKind='';
 }
 
 // LG Connect modal helpers: the same modal skeleton (mask + spinner ->
@@ -22344,6 +22401,12 @@ async function meterStop(){
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
  meterActionPending=hadSeriesStop||hadContinuousStop;
+ // Blocking modal while the stop RTT runs. Without it the series buttons
+ // look idle but meterActionPending freezes every click until the helper
+ // is actually dead (often several seconds on a mid-read series).
+ if(hadSeriesStop||hadContinuousStop){
+  meterStopModalShow(hadSeriesStop?'series':(hadContinuousStop?'continuous':'meter'));
+ }
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -22368,6 +22431,7 @@ async function meterStop(){
    await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
   }catch(e){}
   meterActionPending=false;
+  meterStopModalHide();
   meterUpdateReadButtons();
  }
  if(fullReportSeriesActive) meterFullAutoCalAbort('Full Auto Cal stopped',false);
@@ -29773,6 +29837,10 @@ async function meterStopAutoCal(){
   meterAutoCalSpectroSetupActive=false;
   meterSpectroSetupApply(null);
  }
+ // Drop the progress overlay first so the stop modal is the only mask
+ // on screen, then block the UI until the worker is actually dead.
+ meterAutoCalSetOverlay(false,null);
+ meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'autocal');
  meterFullAutoCalResetState(false);
  meterAutoCalClearSavedState();
  meterAutoCalStopRequested=true;
@@ -29799,13 +29867,16 @@ async function meterStopAutoCal(){
 	 meterAutoCalStandaloneMagicWandEnabled=false;
  if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
  meterAutoCalRunning=false;
- meterActionPending=false;
- meterAutoCalSetOverlay(false,null);
+ meterActionPending=true;
  try{
   await fetchJSON('/api/meter/lg-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
- meterHideWorkflowProgress();
- meterUpdateReadButtons();
+ finally{
+  meterActionPending=false;
+  meterStopModalHide();
+  meterHideWorkflowProgress();
+  meterUpdateReadButtons();
+ }
  toast('LG Auto Cal stopped');
 }
 
@@ -30203,16 +30274,21 @@ async function meterStopLg3dAutoCal(){
   meterLg3dAutoCalSpectroSetupActive=false;
   meterSpectroSetupApply(null);
  }
+ meterAutoCalSetOverlay(false,null);
+ meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'3d-autocal');
  if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
  meterFullAutoCalResetState(false);
  meterLg3dAutoCalRunning=false;
- meterActionPending=false;
- meterAutoCalSetOverlay(false,null);
+ meterActionPending=true;
  try{
   await fetchJSON('/api/meter/lg-3d-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
- meterHideWorkflowProgress();
- meterUpdateReadButtons();
+ finally{
+  meterActionPending=false;
+  meterStopModalHide();
+  meterHideWorkflowProgress();
+  meterUpdateReadButtons();
+ }
  toast('LG 3D LUT AutoCal stopped');
 }
 let meterInternalSeriesWorkflow=null;
