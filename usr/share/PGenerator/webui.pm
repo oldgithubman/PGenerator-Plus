@@ -13112,7 +13112,8 @@ async function applySettings(){
  // Mirror the series-selector behavior: ask, then stop the read before applying.
  if(meterContinuousActive||meterSeriesRunning){
   const what=meterSeriesRunning?'series read':'continuous read';
-  if(!window.confirm('A '+what+' is running. Stop it and apply the new signal settings?')) return false;
+  const ok=await meterShowChoiceModal({title:'Apply new settings?',body:'A '+what+' is running. Stop it and apply the new signal settings?',acceptLabel:'Stop & apply',cancelLabel:'Cancel'});
+  if(!ok) return false;
   if(meterSeriesRunning) meterStop();
   else meterStopContinuous();
  }
@@ -23800,7 +23801,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
-function meterSelectSeries(type,points,opts){
+async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
  if(type==='greyscale' && points===256) points=100;
@@ -23815,7 +23816,8 @@ function meterSelectSeries(type,points,opts){
    toast('Series scan is running — stop it before reloading this chart',true);
    return;
   }
-  if(!window.confirm('Leave the current series and cancel the running series read?')) return;
+  const ok=await meterShowChoiceModal({title:'Switch series?',body:'Leave the current series and cancel the running series read?',acceptLabel:'Switch',cancelLabel:'Stay'});
+  if(!ok) return;
  }
  clearActive();
  if(meterSeriesRunning) meterStop();
