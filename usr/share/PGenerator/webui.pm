@@ -32625,24 +32625,16 @@ function meterSelectedCIETargetColor(rd,baseColor){
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
 }
 
-// 2D CIE layout: x grid runs 0..1.0, y 0..0.9, equal CIE unit scale.
-// Right side of the canvas is a blank gutter reserved for the zoom inset
-// (not part of the axis mapping — so the plot is not stretched to fill).
+// 2D CIE layout: full plot area, x grid 0..1.0, y 0..0.9.
+// Zoom inset is drawn over the top-right of the plot (not a side gutter).
 function meterCie2dGeom(cw,ch){
- const pad={t:15,r:12,b:35,l:45};
+ const pad={t:15,r:15,b:35,l:45};
  const xMin=0,xMax=1.0,yMin=0,yMax=0.9;
- const insetReserve=148; // zoom box + padding lives here
- const maxW=Math.max(1,cw-pad.l-pad.r-insetReserve);
- const maxH=Math.max(1,ch-pad.t-pad.b);
- // Equal scale in x and y chromaticity units
- const unit=Math.min(maxW/(xMax-xMin),maxH/(yMax-yMin));
- const w=unit*(xMax-xMin);
- const h=unit*(yMax-yMin);
+ const w=Math.max(1,cw-pad.l-pad.r);
+ const h=Math.max(1,ch-pad.t-pad.b);
  return {
   pad,w,h,xMin,xMax,yMin,yMax,
   plotRight:pad.l+w,
-  gutterL:pad.l+w,
-  gutterW:Math.max(0,cw-(pad.l+w)-pad.r),
   toX:v=>pad.l+(v-xMin)/(xMax-xMin)*w,
   toY:v=>pad.t+h-(v-yMin)/(yMax-yMin)*h
  };
@@ -33222,7 +33214,7 @@ function drawCIEChart(readings){
  const toX=g.toX,toY=g.toY;
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- // Chromaticity wash only in the (un-stretched) plot box — not the right gutter.
+ // Chromaticity wash fills the full plot box (no reserved zoom gutter).
  { const dpr=window.devicePixelRatio||1;
    ctx.save();
    ctx.globalAlpha=0.62;
@@ -33260,7 +33252,7 @@ function drawCIEChart(readings){
  // D65 white point
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
- // Gamut / legend sit at the plot's top-right (not over the blank gutter).
+ // Gamut / legend at plot top-right (zoom inset draws below these lines).
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  if(colorInclLum){
   ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';ctx.textAlign='right';
@@ -33313,9 +33305,8 @@ function drawCIEChart(readings){
  drawCIETargetInset(ctx,readings,g);
 }
 
-// Zoomed inset for the currently focused color patch. The focused reading
-// is the pinned selection (if any) otherwise the most recently measured
-// patch in the series. Sits in the blank right gutter (not over the plot).
+// Zoomed inset for the focused color patch — overlaid top-right on the CIE plot
+// (same placement as original), with a caption box sized to the text width.
 function drawCIETargetInset(ctx,readings,geom){
  if(!readings||!readings.length) return;
  const colorInclLum=!!meterColorIncludeLum();
@@ -33334,42 +33325,59 @@ function drawCIETargetInset(ctx,readings,geom){
  if(!tgt) return;
  const g=geom||meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad;
- const insetSize=130, margin=6;
- // Park entirely in the right gutter (blank of the chart), not over the plot.
- let ix=g.gutterL+Math.max(8,Math.floor((g.gutterW-insetSize)/2));
- if(ix+insetSize>ctx.w-pad.r) ix=Math.max(g.plotRight+8,ctx.w-pad.r-insetSize-margin);
- if(ix<g.plotRight+6) ix=g.plotRight+8;
- // Sit lower so the caption strip is fully on-canvas and clear of plot legends.
- const labelH=16;
- const iy=Math.min(pad.t+g.h-insetSize-8, Math.max(pad.t+labelH+10, pad.t+Math.round(g.h*0.28)));
+ const insetSize=130, margin=8;
+ // Overlay on the CIE plot top-right (over the chart, not a side gutter).
+ // Position from the plot box so it sits over chromaticity, not outside axes.
+ const ix=pad.l+g.w-insetSize-margin;
  // Autoscale the zoom to fit the target + measured point of the focused
- // reading (plus any extra readings that share the same target group would
- // be implicit; we tune to the focus pair for clarity). Enforce a minimum
- // half-range so very close measurements stay readable.
+ // reading. Enforce a minimum half-range so close measurements stay readable.
  const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
  const halfRange=Math.max(0.004,span*1.6);
  const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
- // Frame
+ // Caption: measure text first so the box hugs the words (width + height).
+ const focusLumInfo=meterColorLuminanceInfo(focus);
+ const labelText='Target: '+(focus.name||'patch')+'  \u00B1'+halfRange.toFixed(3)
+  +(colorInclLum&&focusLumInfo.deltaPct!=null?'  \u0394Y '+(focusLumInfo.deltaPct>=0?'+':'')+focusLumInfo.deltaPct.toFixed(1)+'%':'');
  ctx.save();
+ const fontPx=9;
+ ctx.font=fontPx+'px sans-serif';
+ const textW=Math.ceil(ctx.measureText(labelText).width);
+ const labelPadX=6, labelPadY=3;
+ let lw=Math.max(1,textW+labelPadX*2);
+ const labelH=fontPx+labelPadY*2+2; // text + vertical padding inside the stroke
+ // Right-align caption to the zoom frame; allow it to extend left over the chart.
+ let lx=ix+insetSize-lw;
+ if(lx<2) lx=2;
+ if(lx+lw>ctx.w-2){ lw=Math.max(1,ctx.w-2-lx); }
+ // Place frame below caption; caption sits under the gamut legend.
+ const ly=pad.t+26;
+ const iy=ly+labelH+2;
+ // Caption box sized exactly to the measured text.
+ ctx.fillStyle='#0d0d15';
+ ctx.fillRect(lx,ly,lw,labelH);
+ ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
+ ctx.strokeRect(lx+0.5,ly+0.5,lw-1,labelH-1);
+ ctx.fillStyle='#edf3ff';ctx.textAlign='center';ctx.textBaseline='middle';
+ ctx.font=fontPx+'px sans-serif';
+ ctx.fillText(labelText,lx+lw/2,ly+labelH/2);
+ // Zoom frame
  ctx.fillStyle='#0d0d15';
  ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1.1;
  ctx.beginPath();ctx.rect(ix,iy,insetSize,insetSize);ctx.fill();ctx.stroke();
- // Clip to inset
+ // Clip to inset for zoom content
+ ctx.save();
  ctx.beginPath();ctx.rect(ix,iy,insetSize,insetSize);ctx.clip();
  const plotPad=6;
  const pw=insetSize-plotPad*2, ph=insetSize-plotPad*2;
  const ZtoX=v=>ix+plotPad+(v-xMn)/(xMx-xMn)*pw;
  const ZtoY=v=>iy+plotPad+ph-(v-yMn)/(yMx-yMn)*ph;
- // Paint the CIE chromaticity gradient cropped to the zoom window so the
- // inset shows the same hue wash as the main chart, but magnified to the
- // focused patch's neighborhood.
+ // Paint the CIE chromaticity gradient cropped to the zoom window.
  try{
-  const grad=getCIEGradient(ctx.w,ctx.h,pad);
+  const grad=getCIEGradient(Math.max(1,Math.round(g.w)),Math.max(1,Math.round(g.h)));
   if(grad){
-   const CX_MIN=0,CX_MAX=0.8,CY_MIN=0,CY_MAX=0.9;
+   const CX_MIN=0,CX_MAX=1.0,CY_MIN=0,CY_MAX=0.9;
    const sx=(xMn-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
    const sw=(xMx-xMn)/(CX_MAX-CX_MIN)*grad.width;
-   // Gradient image rows run top-down with y flipped (top row = yMax).
    const sy=(CY_MAX-yMx)/(CY_MAX-CY_MIN)*grad.height;
    const sh=(yMx-yMn)/(CY_MAX-CY_MIN)*grad.height;
    ctx.save();
@@ -33378,10 +33386,7 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.restore();
   }
  }catch(e){}
- // Plot neighbors: measured dot (+ connector to their target when visible)
- // still gets drawn so the surrounding context stays readable, but the
- // hollow target square is drawn ONLY for the focused reading so the user
- // can tell at a glance which patch this zoom is anchored on.
+ // Plot neighbors; hollow target square only for the focused reading.
  readings.forEach(rd=>{
   if(!rd||!(rd.x>0)||!(rd.y>0)) return;
   const isFocus=(rd===focus);
@@ -33401,7 +33406,7 @@ function drawCIETargetInset(ctx,readings,geom){
   if(isFocus&&tInside){
    const sq=5;
    ctx.save();
-    ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
+   ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
    ctx.restore();
   }
   if(isFocus&&colorInclLum&&mInside){
@@ -33415,31 +33420,7 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.restore();
   }
  });
- ctx.restore();
- // Label strip above the inset. Widen beyond the inset on each side as
- // needed so long patch names ("100% Magenta  ±0.011") don't overflow.
- // Clamp to the chart's plot bounds so the label never spills off-canvas.
- const focusLumInfo=meterColorLuminanceInfo(focus);
- const labelText='Target: '+(focus.name||'patch')+'  \u00B1'+halfRange.toFixed(3)
-  +(colorInclLum&&focusLumInfo.deltaPct!=null?'  \u0394Y '+(focusLumInfo.deltaPct>=0?'+':'')+focusLumInfo.deltaPct.toFixed(1)+'%':'');
- ctx.save();
- ctx.font='9px sans-serif';
- const textW=ctx.measureText(labelText).width;
- const labelPadX=10;
- const idealW=Math.max(insetSize,textW+labelPadX*2);
- // Keep caption in the gutter under/over the zoom frame — clamp to gutter.
- const maxLeft=g.plotRight+4, maxRight=ctx.w-pad.r;
- let lx=ix+insetSize-idealW;
- if(lx<maxLeft) lx=maxLeft;
- let lw=idealW;
- if(lx+lw>maxRight) lw=Math.max(40,maxRight-lx);
- const ly=Math.max(2,iy-labelH-2);
- ctx.fillStyle='#0d0d15';
- ctx.fillRect(lx,ly,lw,labelH);
- ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
- ctx.strokeRect(lx,ly,lw,labelH);
- ctx.fillStyle='#edf3ff';ctx.textAlign='center';ctx.textBaseline='middle';
- ctx.fillText(labelText,lx+lw/2,ly+labelH/2);
+ ctx.restore(); // end clip
  ctx.restore();
  ctx.textBaseline='alphabetic';
 }
