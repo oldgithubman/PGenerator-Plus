@@ -10627,7 +10627,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </label>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
-      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 500px;width:500px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 580px;width:580px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
@@ -32530,15 +32530,10 @@ function colorChartRegisterInteraction(readings){
  const cieCanvas=document.getElementById('chartCIE');
  if(cieCanvas&&!meterCie3dViewEnabled()){
   const rect=cieCanvas.getBoundingClientRect();
-  const cW=rect.width,cH=rect.height;
-  const pad={t:15,r:15,b:35,l:45};
-  const w=cW-pad.l-pad.r, h=cH-pad.t-pad.b;
-  const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+  const g=meterCie2dGeom(rect.width,rect.height);
   plotReadings.forEach(rd=>{
    if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
-   const px=pad.l+(rd.x-xMin)/(xMax-xMin)*w;
-   const py=pad.t+h-(rd.y-yMin)/(yMax-yMin)*h;
-   _colorChartHitZones.push({canvasId:'chartCIE',cx:px,cy:py,radius:12,reading:rd});
+   _colorChartHitZones.push({canvasId:'chartCIE',cx:g.toX(rd.x),cy:g.toY(rd.y),radius:12,reading:rd});
   });
   cieCanvas.onmousemove=function(e){colorChartHandleHover(e,'chartCIE');};
   cieCanvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
@@ -32628,6 +32623,29 @@ function meterIsSelectedColorReading(rd){
 function meterSelectedCIETargetColor(rd,baseColor){
  if(meterReadingTargetsBlack(rd)) return meterIsSelectedColorReading(rd)?'#ffffff':'#aab6cb';
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
+}
+
+// 2D CIE layout: keep the chromaticity plot at the legacy ~450px-canvas scale
+// (do not stretch x when the canvas is wider). Extra canvas width is blank
+// gutter on the right for the zoom inset / legends.
+function meterCie2dGeom(cw,ch){
+ const pad={t:15,r:15,b:35,l:45};
+ // Legacy plot box on a 450×450 CSS canvas (w=450-45-15, h=450-15-35).
+ const legacyW=390, legacyH=400;
+ const maxW=Math.max(1,cw-pad.l-pad.r);
+ const maxH=Math.max(1,ch-pad.t-pad.b);
+ const scale=Math.min(1,maxW/legacyW,maxH/legacyH);
+ const w=legacyW*scale;
+ const h=legacyH*scale;
+ const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+ return {
+  pad,w,h,xMin,xMax,yMin,yMax,
+  plotRight:pad.l+w,
+  gutterL:pad.l+w,
+  gutterW:Math.max(0,cw-pad.l-w-pad.r),
+  toX:v=>pad.l+(v-xMin)/(xMax-xMin)*w,
+  toY:v=>pad.t+h-(v-yMin)/(yMax-yMin)*h
+ };
 }
 
 // CIE ΔY% luminance-error ring. Only drawn when Include luminance error is on.
@@ -33199,19 +33217,16 @@ function drawCIEChart(readings){
  const dpr=window.devicePixelRatio||1;
  ctx.setTransform(dpr,0,0,dpr,0,0);
  const colorInclLum=!!meterColorIncludeLum();
- const pad={t:15,r:15,b:35,l:45};
- const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
- const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
- const toX=v=>pad.l+(v-xMin)/(xMax-xMin)*w;
- const toY=v=>pad.t+h-(v-yMin)/(yMax-yMin)*h;
+ const g=meterCie2dGeom(ctx.w,ctx.h);
+ const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
+ const toX=g.toX,toY=g.toY;
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- // Restore the chromaticity hue wash underneath the grid so the CIE plot keeps
- // its visible color background even after layout/size changes.
- { const dpr=window.devicePixelRatio||1; const iw=(ctx.w-pad.l-pad.r), ih=(ctx.h-pad.t-pad.b);
+ // Chromaticity wash only in the (un-stretched) plot box — not the right gutter.
+ { const dpr=window.devicePixelRatio||1;
    ctx.save();
    ctx.globalAlpha=0.62;
-   ctx.drawImage(getCIEGradient(iw*dpr,ih*dpr),pad.l,pad.t,iw,ih);
+   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
    ctx.restore();
  }
  // Grid
@@ -33245,14 +33260,14 @@ function drawCIEChart(readings){
  // D65 white point
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
- ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
+ // Gamut / legend sit at the plot's top-right (not over the blank gutter).
+ ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  if(colorInclLum){
   ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Ring = |\u0394Y|%  (cyan bright / orange dim)',ctx.w-pad.r,pad.t+22);
-  ctx.fillText('Filled dots = measured xy (always)',ctx.w-pad.r,pad.t+34);
+  ctx.fillText('Ring = |\u0394Y|%',pad.l+w-2,pad.t+22);
  } else {
   ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Chroma only \u2014 no \u0394Y% rings',ctx.w-pad.r,pad.t+22);
+  ctx.fillText('Chroma only',pad.l+w-2,pad.t+22);
  }
  // Plot target and measured points
  readings.forEach(rd=>{
@@ -33295,13 +33310,13 @@ function drawCIEChart(readings){
    ctx.restore();
   }
  });
- drawCIETargetInset(ctx,readings,pad);
+ drawCIETargetInset(ctx,readings,g);
 }
 
 // Zoomed inset for the currently focused color patch. The focused reading
 // is the pinned selection (if any) otherwise the most recently measured
-// patch in the series. Rendered in the top-right corner of the CIE chart.
-function drawCIETargetInset(ctx,readings,pad){
+// patch in the series. Sits in the blank right gutter (not over the plot).
+function drawCIETargetInset(ctx,readings,geom){
  if(!readings||!readings.length) return;
  const colorInclLum=!!meterColorIncludeLum();
  let focus=null;
@@ -33317,10 +33332,15 @@ function drawCIETargetInset(ctx,readings,pad){
  if(!focus||!(focus.x>0)||!(focus.y>0)) return;
  const tgt=meterTargetChromaticityForReading(focus);
  if(!tgt) return;
- const insetSize=130, margin=4;
- // Park the zoom inset in the top-right, far enough down that the caption
- // clears the gamut label ("P3 / D65") and optional halo legend.
- const ix=ctx.w-pad.r-insetSize-margin, iy=pad.t+56;
+ const g=geom||meterCie2dGeom(ctx.w,ctx.h);
+ const pad=g.pad;
+ const insetSize=130, margin=6;
+ // Prefer the blank gutter to the right of the (un-stretched) plot.
+ let ix=g.gutterL+Math.max(6,(g.gutterW-insetSize)/2);
+ if(ix+insetSize>ctx.w-pad.r) ix=ctx.w-pad.r-insetSize-margin;
+ if(ix<g.plotRight+4) ix=Math.min(g.plotRight+8,ctx.w-pad.r-insetSize-margin);
+ // Leave room above the frame for the target caption strip.
+ const iy=pad.t+22;
  // Autoscale the zoom to fit the target + measured point of the focused
  // reading (plus any extra readings that share the same target group would
  // be implicit; we tune to the focus pair for clarity). Enforce a minimum
@@ -33435,16 +33455,14 @@ function drawCIEChartPreset(steps){
  if(canvas) cie3dUnbindHandlers(canvas);
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
- const pad={t:15,r:15,b:35,l:45};
- const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
- const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
- const toX=v=>pad.l+(v-xMin)/(xMax-xMin)*w;
- const toY=v=>pad.t+h-(v-yMin)/(yMax-yMin)*h;
+ const g=meterCie2dGeom(ctx.w,ctx.h);
+ const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
+ const toX=g.toX,toY=g.toY;
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- { const dpr=window.devicePixelRatio||1; const iw=(ctx.w-pad.l-pad.r), ih=(ctx.h-pad.t-pad.b);
+ { const dpr=window.devicePixelRatio||1;
    ctx.save();
    ctx.globalAlpha=0.42;
-   ctx.drawImage(getCIEGradient(iw*dpr,ih*dpr),pad.l,pad.t,iw,ih);
+   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
    ctx.restore();
  }
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
@@ -33472,7 +33490,7 @@ function drawCIEChartPreset(steps){
  // D65
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
- ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
+ ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  // Target placeholders (hollow squares)
  steps.forEach(s=>{
   const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
