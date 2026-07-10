@@ -25674,7 +25674,7 @@ eval {
    my $rid = (ref($config) eq 'HASH' ? $config->{'run_id'} : '') || PGAutoCalRun::current();
    if(defined($rid) && $rid ne '') {
     PGAutoCalRun::run_snapshot($rid, 'grey-state.json', $state_file, 0);
-    PGAutoCalRun::run_snapshot($rid, 'grey-log.txt', '/tmp/meter_lg_autocal.log', 2000);
+    PGAutoCalRun::run_snapshot($rid, 'grey-log.txt', '/tmp/meter_lg_autocal.log', 0);
     PGAutoCalRun::run_stage($rid, '1d_generate', {
      ok           => (($state->{'status'}||'') eq 'complete') ? JSON::PP::true : JSON::PP::false,
      tv_message   => $state->{'message'} || '',

@@ -7006,20 +7006,28 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- LG 3D LUT AutoCal Log (/tmp/meter_lg_3d_autocal.log, last 1000 lines) ---";
  my $ac3_log=`tail -n 1000 /tmp/meter_lg_3d_autocal.log 2>/dev/null`; chomp($ac3_log);
  push @out, ($ac3_log ne "") ? $ac3_log : "(none found)";
- push @out, "", "--- LG Auto Cal Run Record (latest) ---";
+ # Inline the last few autocal runs (newest first), each with its full per-
+ # session grey/3D logs (run_snapshot saves the whole log, not a tail). Bounded
+ # by the KEEP retention; cap at 3 so the bundle stays a manageable size.
+ my $_RUN_RECORD_KEEP=3;
+ push @out, "", "--- LG Auto Cal Run Records (last $_RUN_RECORD_KEEP) ---";
  my @run_dirs = sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) }
   grep { -d $_ } glob("/var/lib/PGenerator/lg/autocal-runs/*");
  if(@run_dirs) {
-  my $rundir = $run_dirs[0];
-  push @out, "run dir: $rundir";
-  for my $f (qw(manifest.json summary.json stages.ndjson grey-state.json 3d-state.json grey-log.txt 3d-log.txt)) {
-   my $path = "$rundir/$f";
-   next if(!-f $path);
-   my $content = `cat '$path' 2>/dev/null`;
-   chomp($content);
-   $content = &webui_redact_sensitive_log_text($content);
-   push @out, "", "[$f]";
-   push @out, ($content ne "") ? $content : "(empty)";
+  my $shown=0;
+  for my $rundir (@run_dirs) {
+   last if($shown >= $_RUN_RECORD_KEEP);
+   $shown++;
+   push @out, "", "=== run dir: $rundir ===";
+   for my $f (qw(manifest.json summary.json stages.ndjson grey-state.json 3d-state.json grey-log.txt 3d-log.txt)) {
+    my $path = "$rundir/$f";
+    next if(!-f $path);
+    my $content = `cat '$path' 2>/dev/null`;
+    chomp($content);
+    $content = &webui_redact_sensitive_log_text($content);
+    push @out, "", "[$f]";
+    push @out, ($content ne "") ? $content : "(empty)";
+   }
   }
  } else {
   push @out, "(no autocal run records found)";
