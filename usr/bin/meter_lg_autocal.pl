@@ -1096,6 +1096,18 @@ sub lg_autocal_sdr26_dpg_is_limited_range {
  return (defined($range) && $range ne "" && int($range)==1) ? 1 : 0;
 }
 
+# SDR26 1D-DPG color_format (0=RGB, 1=YCbCr 4:2:2, 2=YCbCr 4:4:4).
+# Used to distinguish RGB Limited from YCbCr Limited: both have transport
+# range==1, but only YCbCr Limited carries super-white above 100%. RGB
+# Limited clamps 101..109% to legal white, so it takes the Full-SHAPE
+# 24-anchor ladder (2.3..100) but emits Limited CODES capped at legal white.
+sub lg_autocal_sdr26_dpg_color_format {
+ my ($config)=@_;
+ $config=$LG_AUTOCAL_CONFIG if(ref($config) ne "HASH");
+ return 0 if(ref($config) ne "HASH");
+ return (defined($config->{"color_format"}) && $config->{"color_format"} ne "") ? int($config->{"color_format"}) : 0;
+}
+
 # Full-range SDR 1D DPG sample index (and 10-bit Full wire code) for an IRE.
 #
 # LG's 1D_DPG_DATA is indexed like CalMAN's Shift_8Bit_To_10Bit: take the
@@ -1134,6 +1146,9 @@ sub lg_autocal_sdr26_dpg_full_index_for_ire {
 # wire code 816 and at 700 did nothing; Full 100% samples at ~935 and idx
 # 936..1023 is unreachable from Full-range signals.
 # NOTE: lg_autocal_sdr26_dpg_full_index_for_ire() stays as-is for WIRE codes.
+# RGB Limited also uses the empirical legal-expanded ladder directly (the
+# wire code IS the 10-bit Limited-legal code, so no Full->Limited conversion
+# is needed before sampling).
 sub lg_autocal_sdr26_dpg_full_sample_index_for_ire {
  my ($ire,$max_idx)= @_;
  $max_idx=1023 if(!defined($max_idx) || $max_idx+0 <= 0);
@@ -1142,16 +1157,36 @@ sub lg_autocal_sdr26_dpg_full_sample_index_for_ire {
  my $full_code=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$max_idx);
  # Limited-equivalent 10-bit code the panel derives internally.
  my $lim_code=64.0 + ($full_code+0)*876.0/1023.0;
- # Empirical Limited ladder (10-bit legal codes -> DPG indexes), identical to
- # the Limited-mode @sdr26_codes/@sdr26_indexes tables.
- my @lc=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
- my @li=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
- return $li[0] if($lim_code <= $lc[0]);
- return $li[-1] if($lim_code >= $lc[-1]);
- for(my $k=0;$k< @lc-1;$k++) {
-  if($lim_code >= $lc[$k] && $lim_code <= $lc[$k+1]) {
-   my $f=($lim_code-$lc[$k])/($lc[$k+1]-$lc[$k]);
-   my $idx=int($li[$k]+($li[$k+1]-$li[$k])*$f+0.5);
+ return lg_autocal_sdr26_dpg_sample_index_for_limited_code($lim_code,$max_idx);
+}
+
+# Empirical Limited-ladder 10-bit legal codes and their matching
+# 1D_DPG_DATA sample indexes. Identical to the Limited-mode
+# @sdr26_codes/@sdr26_indexes tables in lg_autocal_26_run_sdr_1d_dpg_greyscale.
+# Both Full-range (via 64 + c*876/1023 conversion) and RGB Limited (wire
+# code IS the 10-bit Limited-legal code) sample this ladder on the panel
+# because the panel always reaches its DPG sampler through a Limited-domain
+# code. (Hardware-probed 2026-07-10, LG C1.)
+my @LG_AUTOCAL_SDR26_LIMITED_LADDER_CODES=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+my @LG_AUTOCAL_SDR26_LIMITED_LADDER_INDEXES=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+
+# DPG sample index for a Limited-domain 10-bit legal code, via the empirical
+# legal-expanded ladder above. Bit-identical to the previous in-line interp
+# in lg_autocal_sdr26_dpg_full_sample_index_for_ire(); extracted so the
+# RGB Limited branch can sample the same ladder directly (the wire code IS
+# already a 10-bit Limited-legal code in that branch).
+sub lg_autocal_sdr26_dpg_sample_index_for_limited_code {
+ my ($lim_code,$max_idx)=@_;
+ $max_idx=1023 if(!defined($max_idx) || $max_idx+0 <= 0);
+ return 0 if(!defined($lim_code) || $lim_code+0 <= 0);
+ my $lc=\@LG_AUTOCAL_SDR26_LIMITED_LADDER_CODES;
+ my $li=\@LG_AUTOCAL_SDR26_LIMITED_LADDER_INDEXES;
+ return $li->[0] if($lim_code+0 <= $lc->[0]);
+ return $li->[-1] if($lim_code+0 >= $lc->[-1]);
+ for(my $k=0;$k< @$lc-1;$k++) {
+  if($lim_code+0 >= $lc->[$k] && $lim_code+0 <= $lc->[$k+1]) {
+   my $f=($lim_code+0 - $lc->[$k])/($lc->[$k+1] - $lc->[$k]);
+   my $idx=int($li->[$k]+($li->[$k+1]-$li->[$k])*$f+0.5);
    $idx=0 if($idx<0); $idx=int($max_idx) if($idx>$max_idx);
    return $idx;
   }
@@ -16711,16 +16746,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  $target_de=0.05 if($target_de+0 < 0.05);
  $target_de=5.0 if($target_de+0 > 5.0);
 
- # SDR26 anchor tables. Two mutually exclusive models:
+ # SDR26 anchor tables. Three mutually exclusive models keyed on
+ # (transport_range, color_format):
  #
- #  * Limited (pattern_signal_range=1): empirical legal-expanded 26-pt
- #    ladder matching @LG_DDC_1D_LABELS / @LG_DDC_1D_INDEXES in
- #    pgenerator-lg (2.3..109, DPG idx 21..1023). Super-white 105/109
- #    and the headroom pre-curve stay on this path only.
- #  * Full (any other range, typically pattern_signal_range=2): wire
- #    codes and DPG samples share the 0..1023 domain 1:1. No super-white
- #    -- peak is 100% at idx 1023. 105/109 are omitted so we never edit
- #    a headroom slot that Full cannot address separately from peak.
+ #  * YCbCr Limited (pattern_signal_range=1, color_format != 0):
+ #    empirical legal-expanded 26-pt ladder (2.3..109, DPG idx 21..1023).
+ #    Super-white 105/109 and the headroom pre-curve stay on this path only.
+ #  * RGB Limited (pattern_signal_range=1, color_format == 0):
+ #    the renderer clamps 101..109% to legal white (940/235), so the panel
+ #    has no separate super-white anchor. Take the Full-SHAPE 24-anchor
+ #    ladder (2.3..95 + peak 100, no 99/105/109) but emit Limited CODES
+ #    (10-bit capped at 940, 8-bit capped at 235) so the renderer never
+ #    has to clamp and the wire codes match what the panel samples on
+ #    its internal Limited-equivalent DPG ladder.
+ #  * Full range (pattern_signal_range=2, any color_format):
+ #    wire codes and DPG samples share the 0..1023 domain 1:1. No
+ #    super-white -- peak is 100% at idx 1023.
  #
  # Limited multipoint DDC, HDR20, and non-DPG series are untouched: this
  # branch is only consumed by lg_autocal_26_run_sdr_1d_dpg_greyscale.
@@ -16728,14 +16769,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  $sdr26_bits=10 if($sdr26_bits == 12);
  my $sdr26_max=$sdr26_bits==10 ? 1023 : 255;
  my $sdr26_limited=lg_autocal_sdr26_dpg_is_limited_range($config);
+ my $sdr26_color_format=lg_autocal_sdr26_dpg_color_format($config);
+ # Super-white (99/105/109) exists only on YCbCr Limited. RGB Limited has
+ # no separate super-white anchor (renderer clamps 101..109% to legal
+ # white), and Full has none at all. The shape deciders below key on
+ # this -- $sdr26_limited alone would group RGB Limited with YCbCr
+ # Limited and force a 26-pt super-white ladder the panel cannot address.
+ my $sdr26_ycbcr_limited=($sdr26_limited && $sdr26_color_format != 0) ? 1 : 0;
+ my $sdr26_rgb_limited=($sdr26_limited && $sdr26_color_format == 0) ? 1 : 0;
  my @sdr26_labels;
  my @sdr26_indexes;
  my @sdr26_codes;
  my @sdr26_target_stims;
  my $sdr26_peak_ire;
  my $sdr26_dpg_max_idx=1023; # 1D_DPG_DATA is always a 1024-pt table
- if($sdr26_limited) {
-  # Limited legal-expanded 26-pt -- MUST stay byte-identical to the
+ if($sdr26_ycbcr_limited) {
+  # YCbCr Limited legal-expanded 26-pt -- MUST stay byte-identical to the
   # historical table (empirical, not formula-derived).
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
   @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
@@ -16752,35 +16801,79 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    }
   }
  } else {
-  # Full: body 2.3..95 + peak 100. No 99/105/109.
-  # Flow after peak: 50 → 25 → 75 → descend 95..2.3 (see body_order).
-  # 10-bit Full: wire codes stay 8bit<<2 (100% -> peak code), but DPG SAMPLE
-  # indexes use the hardware-probed empirical Limited ladder because the
-  # panel range-normalises before the DPG (Full 80% code 816 samples ~idx
-  # 746; Full 100% samples ~idx 935; idx 936..1023 unreachable in Full).
-  # 8-bit Full: wire code is 0..255; DPG sample index still on the
-  # empirical ladder via the Full->Limited code conversion.
+  # Full OR RGB Limited: same 24-anchor SHAPE (2.3..95 + peak 100). No
+  # 99/105/109 -- RGB Limited has no super-white (renderer clamps above
+  # 100% to legal white) and Full has none at all. The two branches differ
+  # only in wire CODES:
+  #  * Full: 8bit<<2 on 10-bit links (100% -> peak code 1023), ire/100*max
+  #    on 8-bit links.
+  #  * RGB Limited: legal-expanded Limited codes (10-bit 64..940, 8-bit
+  #    16..235) capped at legal white so the renderer never has to clamp.
+  # DPG SAMPLE indexes land on the SAME empirical Limited ladder for both
+  # because the panel samples its 1D DPG on the Limited-equivalent of the
+  # wire code (Full: 64 + c*876/1023; RGB Limited: c IS the Limited code).
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
-   my $idx=lg_autocal_sdr26_dpg_full_sample_index_for_ire($ire,$sdr26_dpg_max_idx);
-   push @sdr26_indexes,$idx;
    my $code;
-   if($sdr26_bits >= 10) {
-    # Wire code: same 8bit<<2 map as the DPG index used to use (100% -> peak).
+   if($sdr26_rgb_limited) {
+    # Limited legal-expanded codes. Peak 100% caps at legal white
+    # (940 on 10-bit, 235 on 8-bit) -- codes above 100% would have to
+    # clamp, so the ladder simply stops at 100%. The 10-bit formula
+    # is the equivalent Limited-domain expansion of the Full-path
+    # (64 + ire/100*876); the 8-bit formula is the standard 16 +
+    # ire/100*219 Limited-legal expansion (matches the YCbCr-Limited
+    # 8-bit shape so cross-transport calibration stays comparable).
+    if($sdr26_bits >= 10) {
+     $code=int(64+$ire/100.0*876.0+0.5);
+     $code=940 if($code > 940);
+    } else {
+     $code=int(16+$ire/100.0*219.0+0.5);
+     $code=235 if($code > 235);
+    }
+   } elsif($sdr26_bits >= 10) {
+    # Full 10-bit wire code: same 8bit<<2 map the DPG index uses (100% -> 1023).
     $code=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$sdr26_max);
    } else {
+    # Full 8-bit wire code: ire/100*max, clamped.
     $code=int($ire/100*$sdr26_max+0.5);
     $code=$sdr26_max if($code > $sdr26_max);
     $code=0 if($code < 0);
    }
    push @sdr26_codes,$code;
+   # DPG sample index. RGB Limited 10-bit: the wire code IS the 10-bit
+   # Limited-legal code, so it samples the empirical ladder directly. RGB
+   # Limited 8-bit: scale 16..235 to 64..940 before sampling so the same
+   # ladder applies. Full: convert to Limited-domain via the helper.
+   my $idx;
+   if($sdr26_rgb_limited && $sdr26_bits >= 10) {
+    $idx=lg_autocal_sdr26_dpg_sample_index_for_limited_code($code,$sdr26_dpg_max_idx);
+   } elsif($sdr26_rgb_limited) {
+    my $code10=int(64+($code+0)*(940-64)/(235-16)+0.5);
+    $code10=940 if($code10 > 940);
+    $idx=lg_autocal_sdr26_dpg_sample_index_for_limited_code($code10,$sdr26_dpg_max_idx);
+   } else {
+    $idx=lg_autocal_sdr26_dpg_full_sample_index_for_ire($ire,$sdr26_dpg_max_idx);
+   }
+   push @sdr26_indexes,$idx;
    # Emitted signal fraction of the quantized wire code, as a stimulus %.
-   # 10-bit Full: 104/1023 = 10.166% for the "10%" anchor. Targets must
-   # reference the curve at the EMITTED signal, not the nominal label,
-   # or the calibrated table carries a systematic luma bend at 10-20%.
-   push @sdr26_target_stims,(($code+0)/($sdr26_max+0))*100.0;
+   # Full: code/max*100 (so 104/1023 = 10.166% for the "10%" anchor; the
+   # panel is calibrated onto the curve at the EMITTED signal). RGB
+   # Limited: the wire code IS the Limited-legal code, so its signal
+   # fraction is (code-64)/876 -- the Limited-domain signal -- which is
+   # what the panel internally samples. Both MUST match the panel's
+   # internal signal or the calibrated table carries a systematic luma
+   # bend at 10-20%.
+   if($sdr26_rgb_limited) {
+    if($sdr26_bits >= 10) {
+     push @sdr26_target_stims,(($code+0 - 64.0)/876.0*100.0);
+    } else {
+     push @sdr26_target_stims,(($code+0 - 16.0)/219.0*100.0);
+    }
+   } else {
+    push @sdr26_target_stims,(($code+0)/($sdr26_max+0))*100.0;
+   }
   }
  }
  # Limited branch leaves @sdr26_target_stims empty; fill with undef entries
@@ -16796,7 +16889,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # same table without threading 8 extra args.
  $LG_AUTOCAL_SDR26_DPG_SEED_IDXES=[$sdr26_indexes[0]+0];
  log_line(sprintf("SDR26 1D DPG greyscale: range=%s peak_ire=%.0f anchors=%d bits=%d pattern_max=%d seed_idx=%d (2.3%%) full_2.3_idx=%d limited_2.3_idx=21",
-  $sdr26_limited ? "limited" : "full",
+  $sdr26_ycbcr_limited ? "limited-ycbcr"
+   : ($sdr26_rgb_limited ? "limited-rgb" : "full"),
   $sdr26_peak_ire+0,
   scalar(@sdr26_labels),
   $sdr26_bits,
@@ -16878,7 +16972,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # then again in natural descending order so neighbors above/below can
  # pull them after the curve has moved. Without the revisit, 80%→70%
  # left 75% stranded on its early solve (user-reported skip on descend).
- my @sdr26_body_order=$sdr26_limited
+ # SHAPE decision: super-white anchors 105/99 only exist on YCbCr Limited.
+ # RGB Limited and Full share the same 24-anchor descend (no 105/99
+ # entries -- their 99/105 IRE slots do not exist on the wire).
+ my @sdr26_body_order=$sdr26_ycbcr_limited
   ? (50,25,75,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
   : (50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
  {
@@ -16908,11 +17005,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   }
   @rest=@reordered;
  }
- # Full only: second 100% peak pass after mid-spine (75%), before descend
- # (95…). Upper-mid anchors warp the global 1D curve; re-touch peak so the
- # remaining body targets sit on a warm, post-spine white_ref (HDR already
- # does this after ~80% via hdr20_white_recal).
- if(!$sdr26_limited && ref($white_first[0]) eq "HASH") {
+ # Full AND RGB Limited: second 100% peak pass after mid-spine (75%),
+ # before descend (95…). Upper-mid anchors warp the global 1D curve;
+ # re-touch peak so the remaining body targets sit on a warm, post-spine
+ # white_ref (HDR already does this after ~80% via hdr20_white_recal).
+ # YCbCr Limited skips this because the 109% peak step already does the
+ # recal implicitly via the super-white ladder.
+ if(!$sdr26_ycbcr_limited && ref($white_first[0]) eq "HASH") {
   my $recal={ %{$white_first[0]} };
   delete $recal->{"sdr26_white_peak_done"};
   $recal->{"sdr26_white_recal"}=1;
@@ -17033,11 +17132,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
   }
 
-  # Headroom pre-curve is Limited-only. It seeds idx 940 (legal 100%) and
-  # idx 1023 (109% peak) for the legal-expanded super-white model. Full
-  # range has no separate 100/109 samples (peak is 100% @ 1023) -- applying
-  # this pre-curve on Full would write the wrong domain and is skipped.
-  if($sdr26_limited) {
+  # Headroom pre-curve is YCbCr-Limited-only. It seeds idx 940 (legal 100%)
+  # and idx 1023 (109% peak) for the legal-expanded super-white model.
+  # Full range has no separate 100/109 samples (peak is 100% @ 1023).
+  # RGB Limited has the same Limited-domain wire codes as YCbCr Limited,
+  # but the renderer clamps 101..109% to legal white, so the 109% peak
+  # slot never receives a separate input -- the pre-curve's idx 1023 gain
+  # is a no-op there. Skip on both Full AND RGB Limited.
+  if($sdr26_ycbcr_limited) {
    # Pre-curve defaults. NO pre-curve at all (headroom=1.0, push=1.0):
    # the panel can only produce up to identity at any code, so a push_factor
    # > 1.0 doesn't actually lift the panel's output -- the panel caps at
@@ -17074,7 +17176,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     }
    }
   } else {
-   log_line("SDR26 1D DPG greyscale: full-range path -- skipping Limited headroom pre-curve (peak=100% idx1023)");
+   my $_skip_kind=$sdr26_rgb_limited ? "RGB-Limited" : "Full-range";
+   log_line("SDR26 1D DPG greyscale: $_skip_kind path -- skipping YCbCr-Limited headroom pre-curve (peak=100% idx1023)");
   }
 
   my @done;

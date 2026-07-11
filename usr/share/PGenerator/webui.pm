@@ -11141,7 +11141,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  </div>
 	  <div id="meterAutoCalGammaBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Choose the gamma target</div>
-	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">The greyscale will be calibrated to this curve. Post-cal verification in other software must grade against the same target.</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">The greyscale will be calibrated to this curve, and the post-cal verification charts grade against the same gamma.</div>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="bt1886"> BT.1886 <span style="color:var(--text2)">&nbsp;(the SDR video standard; on an OLED this is a pure 2.4 power curve. Best for movies/TV in a dim room.)</span></label>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="2.2"> Gamma 2.2 <span style="color:var(--text2)">&nbsp;(brighter shadows; the common choice for PC monitors, consoles and brighter rooms.)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalGammaTarget" value="srgb"> sRGB <span style="color:var(--text2)">&nbsp;(the sRGB spec curve with a linear toe, near 2.2; for PC desktop and color-managed work.)</span></label>
@@ -15366,6 +15366,17 @@ function meterRangeSpan(){
  return meterIsLimitedRange()?219:255;
 }
 
+// SDR26 super-white ladder (99/105/109 anchors) exists only on YCbCr
+// Limited transports. RGB Limited clamps above legal white, so it uses
+// the Full-shape 24-anchor model with Limited codes; its peak is 100%.
+// Full range never has super-white at all. Returns true IFF the active
+// transport is YCbCr Limited (color_format 1 or 2 with limited range).
+function meterSdr26UsesSuperWhiteLadder(){
+ if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return false;
+ const fmt=(typeof meterOutputFormatValue==='function')?String(meterOutputFormatValue()):'0';
+ return fmt==='1'||fmt==='2';
+}
+
 function meterPatchRangeMin(){
  return meterPatchUsesVideoRange()?16:0;
 }
@@ -15857,28 +15868,32 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
  };
 }
 
-// SDR26 body slots for the active range. Limited keeps super-white 105/109;
-// Full drops them (wire peak is 100%). Used by thumbs, series slots, TV stops.
+// SDR26 body slots for the active range. Only YCbCr Limited keeps the
+// super-white ladder (99/105/109); RGB Limited AND Full use the 24-anchor
+// shape with no super-white (RGB Limited clamps 101..109% to legal white,
+// Full has no super-white at all). Used by thumbs, series slots, TV stops.
 function meterLgAutoCalSdr26BodySlots(){
- if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+ if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()){
   return METER_LG_GREY_AUTOCAL_26_SLOTS_FULL;
  }
  return METER_LG_GREY_AUTOCAL_26_SLOTS;
 }
 function meterLgAutoCalSdr26SeriesSlots(){
- // Full: include peak 100% (it is a real charted/thumbed anchor, not a
- // legal-white reference-only step). Limited: body already has 99/105/109;
- // 100% legal-white is injected separately as a reference-only step.
+ // RGB Limited AND Full: include peak 100% (it is a real charted/thumbed
+ // anchor, not a legal-white reference-only step). YCbCr Limited: body
+ // already has 99/105/109; 100% legal-white is injected separately as a
+ // reference-only step.
  const body=meterLgAutoCalSdr26BodySlots();
- if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+ if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()){
   return [0,100,...body];
  }
  return [0,...body];
 }
-// Chart/target peak IRE for SDR26 gamma curves. Full -> 100; Limited legal-
-// expanded super-white ladder -> 109. Matches worker Full peak (100).
+// Chart/target peak IRE for SDR26 gamma curves. RGB Limited AND Full ->
+// 100; YCbCr Limited legal-expanded super-white ladder -> 109. Matches
+// worker peak (100 or 109 depending on transport).
 function meterSdr26ChartPeakIre(){
- if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return 100;
+ if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()) return 100;
  return 109;
 }
 
@@ -17847,10 +17862,13 @@ function meterLgAutoCalChartReferenceWhite(item){
 	 if(meterReadingDisablesAutoCalTargetReference(item)) return false;
 	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
 	 if(mode==='hdr10') return false;
-	 // Full-range SDR: 100% is the true peak. It must stay on thumbs and
-	 // plot lines. Limited alone treats 100% as a legal-white reference
-	 // step (ddc 99) that is hidden from the body curve / thumb strip.
-	 if(mode==='sdr' && typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()){
+	 // RGB-Limited AND Full SDR: 100% is the true peak. It must stay on
+	 // thumbs and plot lines. YCbCr-Limited alone treats 100% as a
+	 // legal-white reference step (ddc 99) that is hidden from the body
+	 // curve / thumb strip -- RGB Limited has the same Limited-domain
+	 // wire codes as YCbCr Limited, but the renderer clamps 101..109% to
+	 // legal white, so 100% IS the genuine peak there.
+	 if(mode==='sdr' && typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()){
 	  return false;
 	 }
 	 const plotIre=meterReadingPlotIre(item);
@@ -18695,18 +18713,28 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		  // Full -> peak 100; Limited super-white ladder -> peak 109.
 		  const peakIre=(typeof meterSdr26ChartPeakIre==='function')?meterSdr26ChartPeakIre():109;
 		  let chartSig=stimulus/peakIre;
-		  // Full range (peak 100): reference the target to the EMITTED code
-		  // fraction — the 8bit<<2 wire codes quantize the nominal IRE by up
-		  // to ~2% relative at 10%, and the panel is calibrated onto the
-		  // curve at the emitted signal. Limited keeps the nominal /109
+		  // RGB-Limited AND Full range (peak 100): reference the target to the
+		  // EMITTED code fraction — the wire codes quantize the nominal IRE
+		  // by up to ~2% relative at 10%, and the panel is calibrated onto
+		  // the curve at the emitted signal. RGB Limited uses Limited LEGAL
+		  // codes (10-bit 64..940, 8-bit 16..235) with input_max=1023/255,
+		  // so rc/im would misreference targets by ~9% on 10-bit and ~9%
+		  // on 8-bit -- the Limited formula (rc-lo)/span is required. Full
+		  // range uses the rc/im formula (codes are 0..1023 / 0..255 with
+		  // no headroom offset). YCbCr Limited keeps the nominal /109
 		  // ladder reference. Neutral rows only (r==g==b) with a usable
-		  // input_max; synthesized mid-curve rows without codes fall back to
-		  // the nominal stimulus.
+		  // input_max; synthesized mid-curve rows without codes fall back
+		  // to the nominal stimulus.
 		  if(peakIre<=100.01){
 		   const rc=Number(row.r_code), gc=Number(row.g_code), bc=Number(row.b_code);
 		   const im=Number(row.input_max);
 		   if(Number.isFinite(rc)&&rc===gc&&gc===bc&&Number.isFinite(im)&&im>0){
-		    chartSig=rc/im;
+		    if(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange()){
+		     const lo=(im>255)?64:16, span=(im>255)?876:219;
+		     chartSig=Math.max(0,Math.min(1,(rc-lo)/span));
+		    } else {
+		     chartSig=rc/im;
+		    }
 		   }
 		  }
 		  return targetEotf(Math.max(0,Math.min(1,chartSig)),Lw,Lb||0);
@@ -19419,9 +19447,11 @@ function meterReadingIsSdr26LegalPeak(rd){
   if(_label.indexOf('full peak')>=0) return true;
   // DPG greyscale step name sdr26_100%
   if(_name.startsWith('sdr26_')) return true;
-  // Full-range white_reference without Limited legal-white markers
+  // RGB-Limited AND Full white_reference without YCbCr-Limited legal-white
+  // markers. RGB Limited uses the Full-shape ladder with Limited codes, so
+  // its 100% reading is the genuine peak (no separate legal-white reference).
   if(rd.autocal_white_reference && !rd.autocal_legal_white_anchor && rd.ddc_target_ire==null){
-   if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return true;
+   if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()) return true;
   }
   return false;
  }
@@ -23503,8 +23533,10 @@ function meterUseLgAutoCal26(points){
 function meterGreyAllowsHeadroomTargets(){
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const normalized=(Number(meterActiveSeriesPoints)===256)?100:Number(meterActiveSeriesPoints);
- // Full-range SDR has no super-white ladder -- headroom chart math is Limited-only.
- if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return false;
+ // Only YCbCr-Limited SDR has the super-white ladder (99/105/109). Full and
+ // RGB Limited never carry headroom above 100%, so the headroom chart math
+ // (above-100% target line / above-100% measured stamps) is YCbCr-Limited-only.
+ if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()) return false;
  return meterActiveSeriesType==='greyscale'&&normalized===26&&mode==='sdr';
 }
 
