@@ -10959,11 +10959,24 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <label>Port</label>
     <input type="number" id="resolvePort" value="20002" min="1" max="65535">
    </div>
+   <div class="field">
+    <label>Patch Size Override</label>
+    <select id="resolvePatchSize" onchange="resolvePatchSizeChanged(this.value)">
+     <option value="">Auto (follow software)</option>
+     <option value="2">2% Window</option>
+     <option value="5">5% Window</option>
+     <option value="10">10% Window</option>
+     <option value="18">18% Window</option>
+     <option value="25">25% Window</option>
+     <option value="50">50% Window</option>
+     <option value="75">75% Window</option>
+     <option value="100">100% Full Field</option>
+    </select>
+   </div>
   </div>
-  <label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--text);margin-top:8px">
-   <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)" style="accent-color:var(--accent)">
-   Force centered patch
-   <span style="font-size:.68rem;color:var(--text2)">(ignore the window position sent by the calibration software; size still follows it)</span>
+  <label class="meter-toggle" style="margin-top:8px">
+   <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)">
+   Force centered patch <span class="meter-help-tip" title="Ignore the window position sent by the calibration software; the patch size still follows it unless overridden above." aria-label="Force centered patch help">?</span>
   </label>
   <div class="btn-row" style="margin-top:8px">
    <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
@@ -11747,6 +11760,8 @@ function applyConfigState(nextConfig){
  window._remoteConfigSnapshot=JSON.stringify(nextConfig);
  const rfc=document.getElementById('resolveForceCenter');
  if(rfc) rfc.checked=String(config.resolve_force_center||'0')==='1';
+ const rps=document.getElementById('resolvePatchSize');
+ if(rps&&document.activeElement!==rps) rps.value=(config.resolve_patch_size&&/^\d+$/.test(String(config.resolve_patch_size)))?String(config.resolve_patch_size):'';
  // Derive signal mode from flags
  let sm='sdr';
  if(config.dv_status==='1'||config.is_ll_dovi==='1'||config.is_std_dovi==='1') sm='dv';
@@ -13785,6 +13800,14 @@ async function resolveConnect(){
  meterStopModalHide();
  if(connected){toast('Resolve connected to '+ip+':'+port);loadInfo();}
  else{toast('Resolve connect timed out — check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
+}
+async function resolvePatchSizeChanged(v){
+ try{
+  const r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({resolve_patch_size:String(v||'')})});
+  if(r&&r.status==='ok') toast(v?('Resolve patch size forced to '+v+'%'):'Resolve patch size follows the software');
+  else toast('Failed to save setting','err');
+ }catch(e){ toast('Failed to save setting','err'); }
 }
 async function resolveForceCenterChanged(on){
  try{

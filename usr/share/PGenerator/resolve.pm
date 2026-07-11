@@ -178,6 +178,31 @@ sub resolve_connect (@) {
    }
   }
   #
+  # Operator patch-size override (WebUI Resolve card "Patch Size Override"):
+  # N% of screen AREA, same convention as the meter Patch Size dropdown
+  # (linear scale = sqrt(pct/100)). Keeps the sent window's centre and
+  # resizes around it (clamped to the screen), so it composes with the
+  # software's positioning and with "Force centered patch". Applies from
+  # the next received pattern; empty/invalid conf = follow the software.
+  #
+  my $size_ovr=defined($pgenerator_conf{"resolve_patch_size"}) ? $pgenerator_conf{"resolve_patch_size"} : "";
+  $size_ovr="" if($size_ovr!~/^\d+$/ || $size_ovr+0 < 1 || $size_ovr+0 > 100);
+  if($size_ovr ne "") {
+   if($size_ovr+0 >= 100) {
+    ($geom_x,$geom_y,$geom_cx,$geom_cy)=(0,0,1,1);
+   } else {
+    my $s=sqrt(($size_ovr+0)/100.0);
+    my $ctr_x=$geom_x+$geom_cx/2.0;
+    my $ctr_y=$geom_y+$geom_cy/2.0;
+    ($geom_cx,$geom_cy)=($s,$s);
+    $geom_x=$ctr_x-$s/2.0;
+    $geom_y=$ctr_y-$s/2.0;
+    $geom_x=0 if($geom_x < 0); $geom_y=0 if($geom_y < 0);
+    $geom_x=1.0-$s if($geom_x > 1.0-$s);
+    $geom_y=1.0-$s if($geom_y > 1.0-$s);
+   }
+  }
+  #
   # Sync bit depth from XML to PGenerator config if changed
   #
   if($bits > 0 && $bits != $bits_default) {
