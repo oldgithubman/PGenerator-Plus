@@ -29970,6 +29970,18 @@ async function meterAutoCalUseCaseContinue(){
      if(ping&&ping.ok&&(Date.now()-t0)>=8000) break;
     }
    }
+   // Quiet loadConfig() no-ops while the wizard overlay is open
+   // (shouldPauseAutoRefresh -> isCalibrationWorkflowActive), so the
+   // Display Settings selects keep the OLD values and the autocal start
+   // payload (which reads these DOM values) would send the old color
+   // format to the worker: observed as an RGB-Limited wire calibrated
+   // with the YCbCr super-white model. Sync the selects directly and
+   // refresh the saved-settings snapshot so the Apply bar stays hidden.
+   setVal('color_format',want.color_format);
+   setVal('rgb_quant_range',want.rgb_quant_range);
+   setVal('max_bpc',want.max_bpc);
+   try{ if(typeof captureSettings==='function') window._savedConfig=captureSettings(); }catch(e){}
+   try{ if(typeof checkSettingsChanged==='function') checkSettingsChanged(); }catch(e){}
    try{ await loadConfig(true); }catch(e){}
    if(statusEl) statusEl.textContent='Output settings applied.';
    if(btn) btn.disabled=false;
