@@ -24096,9 +24096,12 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  // depth (8-bit -> 255, 10-bit -> 1023) so Full-range codes in 8-bit
  // are not scaled to ~24% on a 10-bit wire.
  const stepInputMax=meterPatchBitDepth()===10?1023:255;
- // Full-range SDR replaces the Limited legal-expanded ladder with a linear
- // 0..peak ladder; Limited keeps the super-white 105/109% anchors.
+ // Range decides CODES (zero 0 vs 64, white peak vs legal 940); the
+ // super-white predicate decides SHAPE. RGB Limited has Limited codes but
+ // the Full 24-anchor shape (no 99/105/109 - the renderer clamps above
+ // legal white), so the two must not be conflated.
  const isFullRange=!meterPatchUsesVideoRange();
+ const fullShape=!(typeof meterSdr26UsesSuperWhiteLadder==='function'?meterSdr26UsesSuperWhiteLadder():meterPatchUsesVideoRange());
  const inputByDdcSlot={};
 	 input.forEach(step=>{
 	  if(!step||!meterSeriesStepIsGreyscale(step)) return;
@@ -24247,12 +24250,12 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  // Full peak is a real charted/thumbed step (meterLgAutoCalChartReferenceWhite
  // leaves Full 100% visible). Still tags white_reference so setup/backend can
  // find the peak for target Y, without reference_only / legal_white_anchor.
- const white=mode==='sdr' && isFullRange
-  ? {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:stepInputMax,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,stepInputMax),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_order_ire:100,autocal_target_label:'100% full peak'}
+ const white=mode==='sdr' && fullShape
+  ? {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:stepInputMax,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,stepInputMax),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_order_ire:100,autocal_target_label:isFullRange?'100% full peak':'100% peak'}
   : {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- const bodySlots=(mode==='sdr' && isFullRange)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
+ const bodySlots=(mode==='sdr' && fullShape)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
  const bodyAsc=[...bodySlots].sort((a,b)=>a-b).map(makeDdcStep);
- if(mode==='sdr' && isFullRange){
+ if(mode==='sdr' && fullShape){
   // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3.
   // Worker also re-runs 100% peak after 75% (sdr26_white_recal) before 95%.
   // Mid-spine 50/25/75 early, then revisited on descend (after 80/55/30).
