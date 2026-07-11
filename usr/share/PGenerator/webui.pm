@@ -6836,10 +6836,17 @@ sub webui_apply_config (@) {
 
   foreach my $k (sort keys %changes) {
    next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
+   my $cur=defined($pgenerator_conf{$k}) ? "$pgenerator_conf{$k}" : "";
+   my $value_changed=("$changes{$k}" ne $cur);
    &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
    $pgenerator_conf{$k}=$changes{$k};
    $webui_rgb_quant_range_preferred=$changes{$k} if($k eq "rgb_quant_range");
-   $need_restart=1 if($restart_keys{$k});
+   # Only a restart-key whose value actually CHANGED bounces the renderer.
+   # The derivation above backfills keys unconditionally (signal_mode on
+   # every POST; max_bpc=10 whenever the live color format is YCbCr 422),
+   # so a single-knob POST (e.g. the Resolve card's patch-size override)
+   # was restarting the renderer and blanking the output for a no-op.
+   $need_restart=1 if($restart_keys{$k} && $value_changed);
   }
  # Resolve card knobs: redraw the live Resolve patch immediately so the
  # operator sees the change without waiting for the calibration software's
