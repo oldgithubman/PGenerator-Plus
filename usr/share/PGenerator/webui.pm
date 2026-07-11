@@ -10974,7 +10974,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </select>
    </div>
   </div>
-  <label class="meter-toggle" style="margin-top:8px">
+  <label class="meter-toggle" style="margin-top:8px;color:var(--text2)">
    <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)">
    Force centered patch <span class="meter-help-tip" title="Ignore the window position sent by the calibration software; the patch size still follows it unless overridden above." aria-label="Force centered patch help">?</span>
   </label>
