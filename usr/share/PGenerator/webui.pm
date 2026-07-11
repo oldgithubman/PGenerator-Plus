@@ -25648,6 +25648,13 @@ function meterAutoCalClearCompleteAutoClose(){
 }
 
 function meterAutoCalCloseComplete(){
+ if(meterFullAutoCalRunning){
+  try{
+   const crumb={at:Date.now(),via:'meterAutoCalCloseComplete',phase:meterFullAutoCalPhase,runId:meterFullAutoCalRunId,stack:String(new Error().stack||'')};
+   console.warn('meterAutoCalCloseComplete while full workflow running',crumb);
+   localStorage.setItem('meterFullAutoCalLastReset',JSON.stringify(crumb));
+  }catch(e){}
+ }
  meterAutoCalClearCompleteAutoClose();
  meterAutoCalClearSavedState();
  const holdHdrChartContext=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10'&&
@@ -27908,8 +27915,14 @@ function meterFullAutoCalEnsureStatusPhase(status,phase){
  // (Stop + refresh left status=complete + full_workflow on the 3D file and
  // this would open the Generate Post-Cal Report popup). Mid-session
  // greyscale→3D advance already has meterFullAutoCalRunning true.
+ // EXCEPTION (2026-07-11): if THIS session is actively driving/polling the
+ // greyscale run (meterAutoCalRunning / a live poll interval), a terminal
+ // status is the run we ourselves launched — adopt it even when the wizard
+ // state died mid-session (cause unknown; see meterFullAutoCalResetState
+ // breadcrumb), otherwise the full workflow drops to the plain greyscale
+ // popup and the 3D stage never starts. Fresh browsers have neither flag.
  const st=String((status&&status.status)||'').toLowerCase();
- if(!meterFullAutoCalRunning && st!=='running') return false;
+ if(!meterFullAutoCalRunning && st!=='running' && !(meterAutoCalRunning||meterAutoCalPolling)) return false;
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase=phase;
  meterFullAutoCalRunId=status.full_autocal_run_id||status.run_id||meterFullAutoCalRunId||null;
@@ -27953,6 +27966,17 @@ function meterFullAutoCalRestoreSavedState(){
 }
 
 function meterFullAutoCalResetState(keepResults){
+ // Breadcrumb: full-workflow runs have been observed losing their client
+ // state mid-session (completion then shows the plain greyscale popup and
+ // the 3D stage never starts). Record who reset the state so the next
+ // occurrence is diagnosable after the fact.
+ if(meterFullAutoCalRunning){
+  try{
+   const crumb={at:Date.now(),phase:meterFullAutoCalPhase,runId:meterFullAutoCalRunId,stack:String(new Error().stack||'')};
+   console.warn('meterFullAutoCalResetState while running',crumb);
+   localStorage.setItem('meterFullAutoCalLastReset',JSON.stringify(crumb));
+  }catch(e){}
+ }
  meterFullAutoCalClearSavedState();
  meterFullAutoCalRunning=false;
  meterFullAutoCalPhase='';
