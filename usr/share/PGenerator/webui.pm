@@ -11354,7 +11354,8 @@ function meterStopModalShow(kind,statusText){
   meter:{title:'Stopping Meter',status:'Waiting for the meter to stop\u2026'},
   autocal:{title:'Stopping Auto Cal',status:'Waiting for Auto Cal to stop\u2026'},
   '3d-autocal':{title:'Stopping 3D LUT AutoCal',status:'Waiting for 3D LUT AutoCal to stop\u2026'},
-  'full-autocal':{title:'Stopping Full Auto Cal',status:'Waiting for Full Auto Cal to stop\u2026'}
+  'full-autocal':{title:'Stopping Full Auto Cal',status:'Waiting for Full Auto Cal to stop\u2026'},
+  'resolve-connect':{title:'Connecting to Calibration Software',status:'Waiting for the calibration software to accept the Resolve connection\u2026'}
  };
  const pack=labels[meterStopModalKind]||labels.meter;
  if(title) title.textContent=pack.title;
@@ -13752,10 +13753,31 @@ async function resolveConnect(){
  const ip=document.getElementById('resolveIp').value.trim();
  const port=parseInt(document.getElementById('resolvePort').value)||20002;
  if(!ip||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid IP address','err');return;}
- const r=await fetchJSON('/api/resolve/connect',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
- if(r&&r.status==='ok'){toast('Connecting to '+ip+':'+port+'...');setTimeout(loadInfo,2000);}
- else toast(r&&r.message?r.message:'Connect failed','err');
+ // Blocking spinner until the daemon's outbound connect is accepted by the
+ // calibration PC (or we give up). The connect endpoint only queues the
+ // request; /api/resolve/status flips connected once the socket is up.
+ meterStopModalShow('resolve-connect','Connecting to '+ip+':'+port+'…');
+ let r=null;
+ try{
+  r=await fetchJSON('/api/resolve/connect',{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
+ }catch(e){ r=null; }
+ if(!(r&&r.status==='ok')){
+  meterStopModalHide();
+  toast(r&&r.message?r.message:'Connect failed','err');
+  return;
+ }
+ const t0=Date.now();
+ let connected=false;
+ while(Date.now()-t0<20000){
+  await new Promise(res=>setTimeout(res,700));
+  let s=null;
+  try{ s=await fetchJSON('/api/resolve/status',{_quiet:true,_timeoutMs:4000}); }catch(e){ s=null; }
+  if(s&&s.connected){connected=true;break;}
+ }
+ meterStopModalHide();
+ if(connected){toast('Resolve connected to '+ip+':'+port);loadInfo();}
+ else{toast('Resolve connect timed out — check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
 }
 async function resolveDisconnect(){
  const r=await fetchJSON('/api/resolve/disconnect',{method:'POST'});
