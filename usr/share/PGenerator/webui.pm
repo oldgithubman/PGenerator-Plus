@@ -36196,6 +36196,10 @@ async function loadMeterSettings(){
  }else{
   applyMeterTargetGammaDefault();
  }
+ // Saved prefs can restore an HDR-only curve (st2084) into an SDR session
+ // AFTER applyConfigState already ran the option filter — re-run it so
+ // ST 2084 never survives into SDR.
+ try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  meterSyncTargetGammaControl();
  setChk('meterCustomD65Enabled', s.custom_d65_enabled);
  setVal('meterTargetWhiteX', s.target_white_x);
