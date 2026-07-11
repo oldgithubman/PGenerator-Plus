@@ -30152,6 +30152,26 @@ async function meterAutoCalConfirmAndStart(){
 	  meterActiveSeriesTargetGamma='2.2';
 	  try{ meterSaveColorPrefs(); }catch(e){}
 	 }
+	 // The wizard pre-steps can change the output format (use-case step),
+	 // which changes the SDR26 anchor set (YCbCr Limited keeps the 99/105/109
+	 // super-white ladder; RGB Limited and Full use the 24-anchor model with
+	 // a real 100% peak). The series steps, adjustable list and white step
+	 // were snapshotted at wizard start, BEFORE the pre-steps ran - rebuild
+	 // them now so the worker and the chart get the anchor set that matches
+	 // the final output settings.
+	 if(!hdrWorkflow){
+	  try{
+	   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
+	   const rebuiltAdjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
+	   if(rebuiltAdjustable.length) meterAutoCalPendingConfig.adjustable=rebuiltAdjustable;
+	   const rebuiltWhite=meterAutoCalWhiteStep();
+	   if(rebuiltWhite) meterAutoCalPendingConfig.whiteStep=rebuiltWhite;
+	   meterAutoCalPendingConfig.patternSignalRange=meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange();
+	   const rebuiltSorted=meterGreyscaleSeriesSteps(meterSeriesSteps);
+	   meterBuildPatchThumbs(rebuiltSorted,new Set(),null);
+	   drawAllChartsPreset(rebuiltSorted);
+	  }catch(e){}
+	 }
 	 const setupY=hdrWorkflow?undefined:meterAutoCalSetupYValue();
 	 const targetY=hdrWorkflow?undefined:meterAutoCalTargetYValue();
 	 const headroomY=hdrWorkflow?undefined:meterAutoCalHeadroomTargetYValue(setupY);
