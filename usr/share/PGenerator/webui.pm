@@ -10972,12 +10972,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="75">75% Window</option>
      <option value="100">100% Full Field</option>
     </select>
+    <label class="meter-toggle" style="margin-top:6px;color:var(--text2)">
+     <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)">
+     Force centered patch <span class="meter-help-tip" title="Ignore the window position sent by the calibration software; the patch size still follows it unless overridden above." aria-label="Force centered patch help">?</span>
+    </label>
    </div>
   </div>
-  <label class="meter-toggle" style="margin-top:8px;color:var(--text2)">
-   <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)">
-   Force centered patch <span class="meter-help-tip" title="Ignore the window position sent by the calibration software; the patch size still follows it unless overridden above." aria-label="Force centered patch help">?</span>
-  </label>
   <div class="btn-row" style="margin-top:8px">
    <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
    <button class="btn btn-sm btn-danger" id="resolveDisconnectBtn" onclick="resolveDisconnect()" style="display:none">&#9724; Disconnect</button>
