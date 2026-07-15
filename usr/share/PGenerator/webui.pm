@@ -1105,12 +1105,12 @@ sub webui_http (@) {
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
    }
-   elsif($path eq "/api/lg/3d-lut/luts") {
+   elsif($path eq "/api/3d-lut/luts") {
     my $result=&webui_lg_lut_list(undef);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
-   elsif($path eq "/api/lg/3d-lut/cube") {
+   elsif($path eq "/api/3d-lut/cube") {
     my ($fname,$content)=&webui_lg_lut_download(undef,$query);
     my $len=length($content);
     if($fname ne "") {
@@ -24827,7 +24827,7 @@ async function meterLoadSolvedLutList(){
  const panel=document.getElementById('meterSolvedLutList');
  if(!panel) return;
  try{
-  const r=await fetchJSON('/api/lg/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
   const luts=(r&&Array.isArray(r.luts))?r.luts:[];
   if(!luts.length){ panel.textContent='No solved LUTs yet — run a 3D LUT AutoCal to create one.'; return; }
   const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -24845,7 +24845,7 @@ async function meterLoadSolvedLutList(){
 
 async function meterDownloadSolvedLut(name){
  try{
-  const resp=await fetch('/api/lg/3d-lut/cube?file='+encodeURIComponent(name));
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
   if(!resp.ok){ toast('LUT download failed',true); return; }
   const blob=await resp.blob();
   meterDownloadBlob(blob,name);
