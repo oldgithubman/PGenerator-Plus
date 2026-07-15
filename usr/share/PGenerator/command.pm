@@ -822,9 +822,16 @@ sub process_pid(@) {
 #        Pattern Clean Files Function         #
 ###############################################
 sub clean_files(@) {
+ # Meter settings are durable user preferences (meter ports, custom series,
+ # grey profiles). The blanket $var_dir wipe below deleted the persist copy on
+ # EVERY daemon restart, so settings only survived when an open browser tab
+ # happened to re-save them. Carry the file across the wipe.
+ my $keep_meter_settings="";
+ if(open(my $ms,"<","$var_dir/meter_settings.json")) { local $/; $keep_meter_settings=<$ms>; close($ms); }
  &remove_files("$var_dir",".*");
  &remove_files("$var_dir/frames/",".*");
  &remove_files("$var_dir/running/",".*");
+ if($keep_meter_settings ne "" && open(my $ms,">","$var_dir/meter_settings.json")) { print $ms $keep_meter_settings; close($ms); }
  opendir(TMP,"$var_dir/tmp");
  @dir=readdir(TMP);
  closedir(TMP);
