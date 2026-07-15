@@ -10749,6 +10749,47 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
+  <div id="meterLatticeGenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(560px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div id="meterLatticeGenTitle" style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:10px">Generate Lattice Series</div>
+    <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Creates an N&times;N&times;N RGB cube patch sequence (plus optional greyscale ramp) for the current signal mode. Export it for CalMAN/ColourSpace or measure it here.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Series name</span>
+      <input type="text" id="meterLatticeName" maxlength="48" style="width:180px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Cube size (per axis)</span>
+      <input type="number" id="meterLatticeSize" min="3" max="50" step="1" value="9" oninput="meterLatticeGenSyncReadout()" style="width:90px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Greyscale points (0 = off)</span>
+      <input type="number" id="meterLatticeGrey" min="0" max="101" step="1" value="0" oninput="meterLatticeGenSyncReadout()" style="width:110px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Skip below luminance %</span>
+      <input type="number" id="meterLatticeThreshold" min="0" max="50" step="0.5" value="0" oninput="meterLatticeGenSyncReadout()" style="width:110px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Measurement order</span>
+      <select id="meterLatticeOrder" onchange="meterLatticeGenSyncReadout()" style="width:150px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="spread" selected>Spread (thermal-safe)</option>
+       <option value="grid">Grid order</option>
+      </select>
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px;align-self:flex-end;padding-bottom:6px">
+      <input type="checkbox" id="meterLatticeReverse" onchange="meterLatticeGenSyncReadout()">
+      Reverse order
+     </label>
+    </div>
+    <div id="meterLatticeCountReadout" style="font-size:.8rem;color:var(--text);margin-bottom:12px">&nbsp;</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseLatticeGenerator()">Cancel</button>
+     <button class="btn btn-sm btn-primary" onclick="meterSaveLatticeGenerator()">Save</button>
+    </div>
+   </div>
+  </div>
+
   <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(520px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -24518,6 +24559,102 @@ function meterExportCustomSeriesById(id,format){
  if(!filename) return;
  const blob=new Blob([meterCustomSeriesCsv({name:series.name,patches:patches},fmt)],{type:'text/csv'});
  meterDownloadBlob(blob,filename);
+}
+
+let meterLatticeGenEditingId=null;
+
+function meterLatticeGenParamsFromForm(){
+ const val=(id)=>{ const el=document.getElementById(id); return el?el.value:''; };
+ const chk=(id)=>{ const el=document.getElementById(id); return !!(el&&el.checked); };
+ return meterLatticeSanitizeParams({
+  size:val('meterLatticeSize'),
+  grey_points:val('meterLatticeGrey'),
+  threshold_pct:val('meterLatticeThreshold'),
+  order:val('meterLatticeOrder'),
+  reverse:chk('meterLatticeReverse')
+ });
+}
+
+function meterLatticeEstimateSeconds(count){
+ const delay=(typeof meterDelayMs==='function')?meterDelayMs():1000;
+ return Math.round(Math.max(0,Number(count)||0)*((delay+1500)/1000));
+}
+
+function meterLatticeFormatDuration(seconds){
+ const s=Math.max(0,Math.round(Number(seconds)||0));
+ if(s<60) return s+'s';
+ if(s<3600){ const m=Math.floor(s/60); return m+'m '+(s%60)+'s'; }
+ const h=Math.floor(s/3600);
+ return h+'h '+Math.floor((s%3600)/60)+'m';
+}
+
+function meterLatticeGenSyncReadout(){
+ const readout=document.getElementById('meterLatticeCountReadout');
+ if(!readout) return;
+ const count=meterLatticeCountForParams(meterLatticeGenParamsFromForm());
+ readout.textContent=count+' patches ≈ '+meterLatticeFormatDuration(meterLatticeEstimateSeconds(count))+' to measure';
+}
+
+function meterOpenLatticeGenerator(id){
+ const modal=document.getElementById('meterLatticeGenModal');
+ if(!modal) return;
+ const existing=(id!=null)?meterCustomSeriesById(id):null;
+ meterLatticeGenEditingId=(existing&&existing.kind==='lattice')?existing.id:null;
+ const params=meterLatticeGenEditingId?existing.params:meterLatticeSanitizeParams({});
+ const set=(fid,v)=>{ const el=document.getElementById(fid); if(el) el.value=v; };
+ set('meterLatticeName',meterLatticeGenEditingId?existing.name:'');
+ set('meterLatticeSize',params.size);
+ set('meterLatticeGrey',params.grey_points);
+ set('meterLatticeThreshold',params.threshold_pct);
+ set('meterLatticeOrder',params.order);
+ const rev=document.getElementById('meterLatticeReverse');
+ if(rev) rev.checked=!!params.reverse;
+ const title=document.getElementById('meterLatticeGenTitle');
+ if(title) title.textContent=meterLatticeGenEditingId?'Edit Lattice Series':'Generate Lattice Series';
+ meterLatticeGenSyncReadout();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseLatticeGenerator(){
+ meterLatticeGenEditingId=null;
+ const modal=document.getElementById('meterLatticeGenModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+ if(meterCustomSeriesReturnToManager){
+  meterCustomSeriesReturnToManager=false;
+  meterOpenCustomSeriesManager();
+ }
+}
+
+function meterSaveLatticeGenerator(){
+ const nameInput=document.getElementById('meterLatticeName');
+ const params=meterLatticeGenParamsFromForm();
+ let name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
+ if(!name) name='Lattice '+params.size+'³';
+ const state=meterCustomSeriesNormalizeState();
+ let series;
+ if(meterLatticeGenEditingId!=null){
+  series=state.series.find(s=>s.id===meterLatticeGenEditingId);
+  if(!series){ toast('Series no longer exists',true); meterCloseLatticeGenerator(); return; }
+ } else {
+  series={id:state.next_id,category:'color',mode:meterCustomSeriesModeKey(),kind:'lattice',params:{},patches:[],name:''};
+  state.next_id+=1;
+  state.series.push(series);
+ }
+ series.name=name;
+ series.kind='lattice';
+ series.category='color';
+ series.params=params;
+ meterCustomSeriesNormalizeState();
+ const seriesId=series.id;
+ meterCustomSeriesReturnToManager=false;
+ meterCloseLatticeGenerator();
+ meterCloseCustomSeriesManager();
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ meterSelectSeries('colors',seriesId);
+ toast('Lattice series saved');
 }
 
 function meterCustomSeriesStepTargets(step,series,patch){
