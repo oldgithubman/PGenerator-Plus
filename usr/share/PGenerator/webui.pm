@@ -1105,6 +1105,22 @@ sub webui_http (@) {
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
    }
+   elsif($path eq "/api/lg/3d-lut/luts") {
+    my $result=&webui_lg_lut_list(undef);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/lg/3d-lut/cube") {
+    my ($fname,$content)=&webui_lg_lut_download(undef,$query);
+    my $len=length($content);
+    if($fname ne "") {
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $len\r\n$cors\r\n";
+     print $client $content;
+    } else {
+     my $err="{\"status\":\"error\",\"message\":\"LUT file not found\"}";
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
+    }
+   }
    elsif($path eq "/api/ccss/list") {
     my $result=&webui_ccss_list();
     my $len=length($result);
@@ -4979,6 +4995,37 @@ sub webui_meter_settings_save (@) {
  return '{"status":"ok"}' if($saved_runtime || $saved_persist);
  &log("WebUI: meter settings save failed (runtime=$_meter_settings_runtime persist=$_meter_settings_persist)");
  return '{"status":"error","message":"Failed to save meter settings"}';
+}
+
+# Solved 3D-LUT listing/download for the WebUI (files written by
+# meter_lg_3d_autocal.pl's export_lut). Name whitelist keeps this endpoint
+# from serving anything outside the luts directory.
+sub webui_lg_lut_list (@) {
+ my ($dir)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my @out;
+ if(opendir(my $dh,$dir)) {
+  foreach my $f (sort readdir($dh)) {
+   next unless($f=~/^[A-Za-z0-9._-]+\.cube$/);
+   my @st=stat("$dir/$f");
+   push @out,"{\"name\":\"".&_webui_json_escape($f)."\",\"size\":".(($st[7]||0)+0).",\"mtime\":".(($st[9]||0)+0)."}";
+  }
+  closedir($dh);
+ }
+ return "{\"status\":\"ok\",\"luts\":[".join(",",@out)."]}";
+}
+
+sub webui_lg_lut_download (@) {
+ my ($dir,$query)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my $file="";
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.cube)(?:&|$)/);
+ return ("","") if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$dir/$file";
+ return ("","") unless(-f $path);
+ my $data="";
+ if(open(my $fh,"<",$path)) { local $/; $data=<$fh>; close($fh); }
+ return ($file,$data);
 }
 
 sub webui_meter_settings_load (@) {
@@ -24774,6 +24821,37 @@ function meterImportCubeFile(evt){
   else toast('.cube file is invalid — see preview panel',true);
  };
  reader.readAsText(file);
+}
+
+async function meterLoadSolvedLutList(){
+ const panel=document.getElementById('meterSolvedLutList');
+ if(!panel) return;
+ try{
+  const r=await fetchJSON('/api/lg/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  const luts=(r&&Array.isArray(r.luts))?r.luts:[];
+  if(!luts.length){ panel.textContent='No solved LUTs yet — run a 3D LUT AutoCal to create one.'; return; }
+  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  panel.innerHTML=luts.map(l=>{
+   const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
+   return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0">'
+    +'<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">Download</button>'
+   +'</div>';
+  }).join('');
+ }catch(e){
+  panel.textContent='Could not load LUT list.';
+ }
+}
+
+async function meterDownloadSolvedLut(name){
+ try{
+  const resp=await fetch('/api/lg/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const blob=await resp.blob();
+  meterDownloadBlob(blob,name);
+ }catch(e){
+  toast('LUT download failed',true);
+ }
 }
 
 function meterCustomSeriesStepTargets(step,series,patch){
