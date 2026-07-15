@@ -35391,15 +35391,18 @@ function cubeViewBindHandlers(canvas){
 // CIE-specific options and the colour dE chart are hidden, since chromaticity
 // collapses same-ratio cube nodes onto each other.
 function meterUpdateColorChartMode(isLattice){
- const show=(id,vis)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?'':'none'; };
- show('colorTopLayout',!isLattice);
- show('meterColorDeltaESection',!isLattice);
- show('chartCIELabel',!isLattice);
- show('meterCie3dViewLabel',!isLattice);
- show('meterCieOptDropLinesLabel',!isLattice);
- show('meterCieOptGamutLabel',!isLattice);
- show('meterCieOptLocusLabel',!isLattice);
- show('meterCieOptLumRingsLabel',!isLattice);
+ // Restore each element's ORIGINAL inline display value — colorTopLayout is
+ // an inline flex row and the option labels are inline-flex; clearing to ''
+ // dropped them to block and stacked the colour charts vertically.
+ const set=(id,vis,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?shown:'none'; };
+ set('colorTopLayout',!isLattice,'flex');
+ set('meterColorDeltaESection',!isLattice,'');
+ set('chartCIELabel',!isLattice,'');
+ set('meterCie3dViewLabel',!isLattice,'inline-flex');
+ set('meterCieOptDropLinesLabel',!isLattice,'inline-flex');
+ set('meterCieOptGamutLabel',!isLattice,'inline-flex');
+ set('meterCieOptLocusLabel',!isLattice,'inline-flex');
+ set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
 }
 
 function meterRedrawCubeView(){
