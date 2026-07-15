@@ -35349,6 +35349,10 @@ function drawCIEChart3D(readings,opts){
  const yMax=cie3dComputeYMax(items,isPreset);
  _cie3d.yMax=yMax;
  const layout=cie3dMakeLayout(ctx,yMax);
+ // Markers keep a constant WORLD size: scale their pixel size with the wheel
+ // zoom so they shrink when zooming out and grow when zooming in (positions
+ // already scale via baseScale; without this the dots stay fixed-size).
+ const markerScale=Math.max(0.35,Math.min(3,_cie3d.scale||1));
  const prims=[]; // {z, draw:fn}
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
@@ -35398,7 +35402,7 @@ function drawCIEChart3D(readings,opts){
  // D65
  const d65=cie3dProject(0.3127,0.329,0,layout);
  prims.push({z:d65.z, draw:()=>{
-  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText('D65',d65.sx+5,d65.sy+3);
  }});
@@ -35476,13 +35480,13 @@ function drawCIEChart3D(readings,opts){
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
    prims.push({z:pT.z+0.02, draw:()=>{
-    const sq=5.5*pT.persp;
+    const sq=5.5*pT.persp*markerScale;
     ctx.save();
     ctx.strokeStyle=targetStroke;ctx.lineWidth=selected?2.4:2.0;
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
     ctx.restore();
    }});
-   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:12,reading:rd});
+   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:Math.max(8,12*markerScale),reading:rd});
   }
   if(mx!=null&&my!=null&&plotMY!=null){
    const p0=cie3dProject(mx,my,0,layout);
@@ -35547,11 +35551,11 @@ function drawCIEChart3D(readings,opts){
     }
     // Screen-space ΔY% ring (same language as 2D CIE)
     prims.push({z:pM.z+0.05, draw:()=>{
-     meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,deltaPct!=null?deltaPct:((mY-tY)/Math.max(Math.abs(tY),1e-9)*100),pM.persp);
+     meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,deltaPct!=null?deltaPct:((mY-tY)/Math.max(Math.abs(tY),1e-9)*100),pM.persp*markerScale);
     }});
    }
    prims.push({z:pM.z+0.03, draw:()=>{
-    const r=4.6*pM.persp;
+    const r=4.6*pM.persp*markerScale;
     ctx.save();
     ctx.fillStyle=measuredColor;
     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
@@ -35561,7 +35565,7 @@ function drawCIEChart3D(readings,opts){
     }
     ctx.restore();
    }});
-   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:12,reading:rd});
+   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:Math.max(8,12*markerScale),reading:rd});
   }
  });
  // Painter's algorithm: far (large z) → near (small z)
