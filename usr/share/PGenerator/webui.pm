@@ -10675,6 +10675,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <span id="meterCustomSeriesColorSlot" style="display:contents"></span>
      </div>
      <div id="meterSeriesGroupCube" style="display:none;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="Built-in 5x5x5 RGB cube lattice (125 patches)">Cube 5&sup3;</button>
+      <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="Built-in 9x9x9 RGB cube lattice (729 patches)">Cube 9&sup3;</button>
+      <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="Built-in 17x17x17 RGB cube lattice (4913 patches)">Cube 17&sup3;</button>
       <span id="meterCustomSeriesCubeSlot" style="display:contents"></span>
       <button class="btn btn-sm btn-secondary" onclick="meterOpenLatticeGenerator()" title="Generate a new lattice cube series for the current signal mode">+ Generate</button>
      </div>
@@ -24583,8 +24586,21 @@ function meterCustomSeriesNormalizeState(){
  return meterCustomSeriesState;
 }
 
+// Built-in lattice presets live on reserved ids 900-999 (below the 1001+ user
+// range) so the 3D Cube tab always has series to select. They behave exactly
+// like user lattice series (params-only, range-aware measurement) but are not
+// persisted, listed in the manager, or deletable.
+const METER_BUILTIN_CUBE_SERIES=[
+ {id:905,name:'Cube 5³',category:'color',mode:'any',kind:'lattice',params:{size:5,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
+ {id:909,name:'Cube 9³',category:'color',mode:'any',kind:'lattice',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
+ {id:917,name:'Cube 17³',category:'color',mode:'any',kind:'lattice',params:{size:17,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]}
+];
+
 function meterCustomSeriesById(id){
  const numeric=Math.round(Number(id));
+ if(Number.isFinite(numeric)&&numeric>=900&&numeric<1000){
+  return METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+ }
  if(!Number.isFinite(numeric)||numeric<1001) return null;
  const state=meterCustomSeriesNormalizeState();
  return state.series.find(s=>s.id===numeric)||null;
@@ -35371,9 +35387,19 @@ function meterDrawCubeView(items,isPreset){
  const series=meterActiveLatticeSeries();
  if(!series){ wrap.style.display='none'; meterCubeViewLast=null; return; }
  wrap.style.display='';
+ void wrap.offsetWidth;
  meterCubeViewLast={items:items,isPreset:!!isPreset};
  const ctx=getChartCtx('chartCubeView');
  if(!ctx) return;
+ if(!(ctx.w>10)){
+  // First show: the canvas was sized while the wrapper was still hidden.
+  // Redraw next frame once layout has settled (single retry, no loop).
+  if(!meterDrawCubeView._retry){
+   meterDrawCubeView._retry=true;
+   requestAnimationFrame(()=>{ meterDrawCubeView._retry=false; meterRedrawCubeView(); });
+  }
+  return;
+ }
  cubeViewBindHandlers(document.getElementById('chartCubeView'));
  ctx.setTransform(1,0,0,1,0,0);
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
