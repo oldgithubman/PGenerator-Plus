@@ -9851,6 +9851,7 @@ font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white
 .btn-success:hover{opacity:.9}
 .btn-coffee{background:#ffdd00;color:#111;border:1px solid rgba(0,0,0,.18)}
 .btn-coffee:hover{background:#ffd200;color:#111;transform:translateY(-1px)}
+.btn-custom-series{border:1px dashed var(--accent)}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;
 padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:translateY(20px);
 transition:all .3s;z-index:999;pointer-events:none}
@@ -10528,6 +10529,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
+     <button class="btn btn-sm btn-secondary" id="meterCustomSeriesManagerBtn" onclick="meterOpenCustomSeriesManager()" style="margin-left:auto" title="Create, edit, delete, import and export custom patch series">Custom Series&hellip;</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
@@ -10538,13 +10540,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
       <span id="meterCustomSeriesGreySlot" style="display:contents"></span>
-      <button class="btn btn-sm btn-secondary" onclick="meterOpenCustomSeriesEditor('greyscale')" title="Create a custom greyscale series for the current signal mode">+ Custom</button>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
      <span id="meterCustomSeriesColorSlot" style="display:contents"></span>
-     <button class="btn btn-sm btn-secondary" onclick="meterOpenCustomSeriesEditor('color')" title="Create a custom color series for the current signal mode">+ Custom</button>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -10713,6 +10713,39 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <button class="btn btn-sm btn-primary" onclick="meterSaveCustomSeriesEditor()">Save</button>
      </div>
     </div>
+   </div>
+  </div>
+
+  <div id="meterCustomSeriesManagerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(940px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesManager()">Close</button>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0">
+     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
+     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
+     <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">Generate Lattice&hellip;</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()">Import .cube (preview)</button>
+     <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
+    </div>
+    <div style="overflow:auto;margin-bottom:12px">
+     <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
+      <thead>
+       <tr style="border-bottom:1px solid #2a3140">
+        <th style="text-align:left;padding:6px">Name</th>
+        <th style="text-align:left;padding:6px">Category</th>
+        <th style="text-align:left;padding:6px">Mode</th>
+        <th style="text-align:left;padding:6px">Patches</th>
+        <th style="text-align:left;padding:6px"></th>
+       </tr>
+      </thead>
+      <tbody id="meterCustomSeriesManagerBody"></tbody>
+     </table>
+    </div>
+    <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs (3D LUT AutoCal output)</div>
+    <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
    </div>
   </div>
 
@@ -24383,6 +24416,110 @@ function meterLatticeWireRange(){
  return limited?{min:16,span:219,max:255}:{min:0,span:255,max:255};
 }
 
+let meterCustomSeriesReturnToManager=false;
+
+function meterOpenCustomSeriesManager(){
+ const modal=document.getElementById('meterCustomSeriesManagerModal');
+ if(!modal) return;
+ meterCustomSeriesReturnToManager=false;
+ meterRenderCustomSeriesManager();
+ if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseCustomSeriesManager(){
+ const modal=document.getElementById('meterCustomSeriesManagerModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+function meterRenderCustomSeriesManager(){
+ const body=document.getElementById('meterCustomSeriesManagerBody');
+ if(!body) return;
+ const state=meterCustomSeriesNormalizeState();
+ if(!state.series.length){
+  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series yet. Use New Greyscale, New Color or Generate Lattice to create one.</td></tr>';
+  return;
+ }
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ body.innerHTML=state.series.map(series=>{
+  const isLattice=series.kind==='lattice';
+  const patchInfo=isLattice
+   ?('Lattice '+series.params.size+'³ ('+meterLatticeCountForParams(series.params)+' patches)')
+   :(series.patches.length+' patches');
+  return '<tr style="border-bottom:1px solid #1a1a28">'
+   +'<td style="padding:6px">'+esc(series.name)+'</td>'
+   +'<td style="padding:6px">'+(series.category==='color'?'Color':'Greyscale')+'</td>'
+   +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
+   +'<td style="padding:6px">'+patchInfo+'</td>'
+   +'<td style="padding:6px;white-space:nowrap">'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterManagerEditSeries('+series.id+')">Edit</button> '
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'calman\')" title="Export as CalMAN 8-bit CSV">CalMAN</button> '
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'colourspace\')" title="Export as ColourSpace CSV">CSpace</button> '
+    +'<button class="btn btn-sm btn-danger" onclick="meterManagerDeleteSeries('+series.id+')">Delete</button>'
+   +'</td>'
+  +'</tr>';
+ }).join('');
+}
+
+function meterManagerNewSeries(category){
+ meterCustomSeriesReturnToManager=true;
+ meterCloseCustomSeriesManager();
+ meterOpenCustomSeriesEditor(category);
+}
+
+function meterManagerEditSeries(id){
+ const series=meterCustomSeriesById(id);
+ if(!series) return;
+ meterCustomSeriesReturnToManager=true;
+ meterCloseCustomSeriesManager();
+ if(series.kind==='lattice'&&typeof meterOpenLatticeGenerator==='function'){
+  meterOpenLatticeGenerator(id);
+ } else {
+  meterOpenCustomSeriesEditor(series.category,id);
+ }
+}
+
+async function meterManagerDeleteSeries(id){
+ const ok=await meterDeleteCustomSeriesById(id);
+ if(ok) meterRenderCustomSeriesManager();
+}
+
+async function meterDeleteCustomSeriesById(id){
+ const series=meterCustomSeriesById(id);
+ if(!series) return false;
+ const ok=await meterShowChoiceModal({title:'Delete series?',body:'Delete "'+series.name+'" and all its patches? This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
+ if(!ok) return false;
+ const state=meterCustomSeriesNormalizeState();
+ const seriesKey=((series.category==='color')?'colors':'greyscale')+'-'+series.id;
+ state.series=state.series.filter(s=>s.id!==series.id);
+ const wasActive=meterActiveSeriesKey===seriesKey;
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ if(wasActive){
+  meterActiveSeriesKey='';
+  meterSeriesSteps=null;
+  meterReadings=[];
+  meterSetSeriesTab(meterSeriesTab);
+ }
+ toast('Custom series deleted');
+ return true;
+}
+
+function meterExportCustomSeriesById(id,format){
+ const series=meterCustomSeriesById(id);
+ if(!series){ toast('Series not found',true); return; }
+ const patches=meterCustomSeriesPatches(series);
+ if(!patches.length){ toast('Series has no patches',true); return; }
+ const fmt=(format==='colourspace')?'colourspace':'calman';
+ const base=(String(series.name||'custom-series').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'custom-series')+'-'+fmt;
+ const filename=meterPromptExportFilename('custom-series-'+fmt,base,'csv','Enter a file name for the patch list export');
+ if(!filename) return;
+ const blob=new Blob([meterCustomSeriesCsv({name:series.name,patches:patches},fmt)],{type:'text/csv'});
+ meterDownloadBlob(blob,filename);
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  try{
@@ -24464,8 +24601,7 @@ function meterRenderCustomSeriesButtons(){
    const key=slot.type+'-'+series.id;
    const active=meterActiveSeriesKey===key;
    const label=String(series.name||('Custom '+series.id)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-   return '<button class="btn btn-sm '+(active?'btn-primary':'btn-secondary')+'" data-series="'+key+'" onclick="meterSelectSeries(\''+slot.type+'\','+series.id+')">'+label+'</button>'
-    +'<button class="btn btn-sm btn-secondary" title="Edit '+label+'" onclick="meterOpenCustomSeriesEditor(\''+slot.category+'\','+series.id+')">&#9998;</button>';
+   return '<button class="btn btn-sm btn-custom-series '+(active?'btn-primary':'btn-secondary')+'" data-series="'+key+'" onclick="meterSelectSeries(\''+slot.type+'\','+series.id+')">'+label+'</button>';
   }).join('');
  });
 }
@@ -24496,6 +24632,10 @@ function meterCloseCustomSeriesEditor(){
  const modal=document.getElementById('meterCustomSeriesModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
+ if(meterCustomSeriesReturnToManager){
+  meterCustomSeriesReturnToManager=false;
+  meterOpenCustomSeriesManager();
+ }
 }
 
 function meterRenderCustomSeriesEditor(){
@@ -24611,22 +24751,9 @@ function meterSaveCustomSeriesEditor(){
 async function meterDeleteCustomSeries(){
  const editor=meterCustomSeriesEditor;
  if(!editor||editor.id==null) return;
- const ok=await meterShowChoiceModal({title:'Delete series?',body:'Delete this custom series and all its patches? This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
- if(!ok) return;
- const state=meterCustomSeriesNormalizeState();
- const seriesKey=((editor.category==='color')?'colors':'greyscale')+'-'+editor.id;
- state.series=state.series.filter(s=>s.id!==editor.id);
- const wasActive=meterActiveSeriesKey===seriesKey;
+ const id=editor.id;
  meterCloseCustomSeriesEditor();
- saveMeterSettings();
- meterRenderCustomSeriesButtons();
- if(wasActive){
-  meterActiveSeriesKey='';
-  meterSeriesSteps=null;
-  meterReadings=[];
-  meterSetSeriesTab(meterSeriesTab);
- }
- toast('Custom series deleted');
+ await meterDeleteCustomSeriesById(id);
 }
 
 function meterCustomSeriesCsv(series,format){
