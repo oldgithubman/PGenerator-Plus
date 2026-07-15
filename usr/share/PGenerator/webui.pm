@@ -4978,7 +4978,7 @@ sub webui_meter_settings_save (@) {
 	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json custom_series_json
+    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json custom_series_json custom_series_dirty
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
@@ -5004,18 +5004,33 @@ sub webui_meter_settings_save (@) {
  # incoming body omits one of these keys but the stored settings carry it,
  # preserve the stored value.
  foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
-  next if($safe=~/"$sticky"\s*:/);
+  my $posted="";
+  $posted=$1 if($safe=~/"$sticky"\s*:\s*("(?:[^"\\]|\\.)*")/);
+  # A stale tab (older JS build) posts the custom-series blob EMPTY without
+  # the dirty marker newer builds send. An empty blob only wins when the
+  # session explicitly touched custom series; otherwise fall through to the
+  # stored-value preservation below so open old tabs can't wipe user data.
+  my $posted_empty_stale=($sticky eq "custom_series_json" && $posted ne "" && $posted=~/\\"series\\":\[\]/ && $body!~/"custom_series_dirty"\s*:\s*true/) ? 1 : 0;
+  next if($posted ne "" && !$posted_empty_stale);
   my $existing="";
   foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
    next unless(-f $path);
-   if(open(my $fh,"<",$path)) { local $/; $existing=<$fh>; close($fh); }
-   last if($existing ne "");
+   my $candidate="";
+   if(open(my $fh,"<",$path)) { local $/; $candidate=<$fh>; close($fh); }
+   next unless($candidate=~/"$sticky"\s*:/);
+   $existing=$candidate;
+   last;
   }
   if($existing=~/"$sticky"\s*:\s*("(?:[^"\\]|\\.)*")/) {
    my $val=$1;
-   $safe=~s/\}\s*$//;
-   $safe.="," if($safe!~/\{\s*$/);
-   $safe.="\"$sticky\":$val}";
+   next if($posted_empty_stale && $val!~/\\"series\\":\[\{/);
+   if($posted ne "") {
+    $safe=~s/"$sticky"\s*:\s*"(?:[^"\\]|\\.)*"/"$sticky":$val/;
+   } else {
+    $safe=~s/\}\s*$//;
+    $safe.="," if($safe!~/\{\s*$/);
+    $safe.="\"$sticky\":$val}";
+   }
   }
  }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
@@ -35476,13 +35491,13 @@ function drawCIEChart3D(readings,opts){
    const p0=cie3dProject(tx,ty,0,layout);
    const pT=cie3dProject(tx,ty,plotTY,layout);
    if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=1;
+    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=Math.max(0.5,1*markerScale);
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
    prims.push({z:pT.z+0.02, draw:()=>{
     const sq=5.5*pT.persp*markerScale;
     ctx.save();
-    ctx.strokeStyle=targetStroke;ctx.lineWidth=selected?2.4:2.0;
+    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(0.6,(selected?2.4:2.0)*markerScale);
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
     ctx.restore();
    }});
@@ -35492,7 +35507,7 @@ function drawCIEChart3D(readings,opts){
    const p0=cie3dProject(mx,my,0,layout);
    const pM=cie3dProject(mx,my,plotMY,layout);
    if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=1;
+    ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=Math.max(0.5,1*markerScale);
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
    }});
    if(tx!=null&&ty!=null&&plotTY!=null){
@@ -35500,7 +35515,7 @@ function drawCIEChart3D(readings,opts){
     // Chromaticity error segment (target → measured at plot heights)
     prims.push({z:(pT.z+pM.z)/2, draw:()=>{
      ctx.save();
-     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
+     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=Math.max(0.6,1.5*markerScale);ctx.setLineDash([4,3]);
      ctx.beginPath();ctx.moveTo(pT.sx,pT.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
      ctx.restore();
     }});
@@ -35544,7 +35559,7 @@ function drawCIEChart3D(readings,opts){
     if(tx!=null&&ty!=null){
      prims.push({z:(pTtrue.z+pMtrue.z)/2+0.01, draw:()=>{
       ctx.save();
-      ctx.strokeStyle=dYcol;ctx.lineWidth=1.0;ctx.setLineDash([3,2]);
+      ctx.strokeStyle=dYcol;ctx.lineWidth=Math.max(0.5,1.0*markerScale);ctx.setLineDash([3,2]);
       ctx.beginPath();ctx.moveTo(pTtrue.sx,pTtrue.sy);ctx.lineTo(pMtrue.sx,pMtrue.sy);ctx.stroke();
       ctx.restore();
      }});
@@ -35561,7 +35576,7 @@ function drawCIEChart3D(readings,opts){
     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
     if(selected){
      ctx.strokeStyle='#ffffff';ctx.lineWidth=1.6;
-     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5,0,Math.PI*2);ctx.stroke();
+     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5*markerScale,0,Math.PI*2);ctx.stroke();
     }
     ctx.restore();
    }});
@@ -37753,6 +37768,7 @@ function saveMeterSettings(){
   ...(meterCustomSeriesDirty||(meterCustomSeriesState&&Array.isArray(meterCustomSeriesState.series)&&meterCustomSeriesState.series.length)
    ? {custom_series_json:JSON.stringify(meterCustomSeriesState)}
    : {}),
+  custom_series_dirty:!!meterCustomSeriesDirty,
   // Color-science selections
   grey_ref_mode:val('meterGreyRefMode'),
   gray_world:val('meterGrayWorld'),
