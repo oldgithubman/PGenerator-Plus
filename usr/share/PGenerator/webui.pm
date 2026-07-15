@@ -4824,7 +4824,7 @@ sub webui_meter_settings_save (@) {
 	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
+    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json custom_series_json
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
@@ -23993,6 +23993,103 @@ function meterSaveGreyProfileEditor(){
  meterRefreshActiveSeriesCharts();
  toast('Custom greyscale values saved');
 }
+// ---- Custom user-defined patch series ----
+// One state blob, persisted as custom_series_json via /api/meter/settings
+// (same mechanism as grey_patch_profiles_json). Series ids start at 1001 so
+// the series key "greyscale-<id>" / "colors-<id>" can never collide with the
+// built-in points values (2,11,21,24,26,30,100,256).
+let meterCustomSeriesState={format:'pgenerator-custom-series-v1',next_id:1001,series:[]};
+
+function meterCustomSeriesModeKey(mode){
+ const m=String(mode!=null?mode:((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')).toLowerCase();
+ if(m==='hdr10'||m==='hlg'||m==='hdr') return 'hdr';
+ if(m==='dv') return 'dv';
+ return 'sdr';
+}
+
+function meterCustomSeriesClampCode(value,max){
+ const numeric=Math.round(Number(value));
+ if(!Number.isFinite(numeric)) return 0;
+ return Math.max(0,Math.min(max,numeric));
+}
+
+function meterCustomSeriesCode8To10(code8){
+ return meterCustomSeriesClampCode(code8,255)*4;
+}
+
+function meterCustomSeriesCode10To8(code10){
+ return Math.min(255,Math.round(meterCustomSeriesClampCode(code10,1023)/4));
+}
+
+function meterCustomSeriesSanitizePatch(raw,index){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ const patch={name:'',r8:0,g8:0,b8:0,r10:0,g10:0,b10:0,target_nits:null};
+ patch.name=String(src.name==null?'':src.name).replace(/[\[\]{}"\\,]/g,'').slice(0,40).trim();
+ if(!patch.name) patch.name='Patch '+(Number(index||0)+1);
+ ['r','g','b'].forEach(ch=>{
+  const c10=Number(src[ch+'10']);
+  const c8=Number(src[ch+'8']);
+  if(src[ch+'10']!=null&&Number.isFinite(c10)){
+   patch[ch+'10']=meterCustomSeriesClampCode(c10,1023);
+   patch[ch+'8']=meterCustomSeriesCode10To8(patch[ch+'10']);
+  } else {
+   patch[ch+'8']=meterCustomSeriesClampCode(c8,255);
+   patch[ch+'10']=meterCustomSeriesCode8To10(patch[ch+'8']);
+  }
+ });
+ const nits=Number(src.target_nits);
+ patch.target_nits=(Number.isFinite(nits)&&nits>0)?Math.min(10000,nits):null;
+ return patch;
+}
+
+function meterCustomSeriesNormalizeState(){
+ if(!meterCustomSeriesState||typeof meterCustomSeriesState!=='object') meterCustomSeriesState={};
+ meterCustomSeriesState.format='pgenerator-custom-series-v1';
+ if(!Array.isArray(meterCustomSeriesState.series)) meterCustomSeriesState.series=[];
+ const seen={};
+ let maxId=1000;
+ meterCustomSeriesState.series=meterCustomSeriesState.series.filter(s=>s&&typeof s==='object').map((s,si)=>{
+  const id=Math.round(Number(s.id));
+  const valid=Number.isFinite(id)&&id>=1001&&!seen[id];
+  if(valid){seen[id]=true;if(id>maxId) maxId=id;}
+  return {
+   id:valid?id:0,
+   name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,48).trim()||('Custom '+(si+1)),
+   category:(s.category==='color')?'color':'greyscale',
+   mode:meterCustomSeriesModeKey(s.mode),
+   patches:(Array.isArray(s.patches)?s.patches:[]).slice(0,200).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi))
+  };
+ });
+ meterCustomSeriesState.series.forEach(s=>{
+  if(!s.id){maxId+=1;s.id=maxId;seen[s.id]=true;}
+  const used={};
+  s.patches.forEach((p,pi)=>{
+   if(used[p.name]) p.name=p.name+' #'+(pi+1);
+   used[p.name]=true;
+  });
+ });
+ const nextId=Math.round(Number(meterCustomSeriesState.next_id));
+ meterCustomSeriesState.next_id=Math.max(maxId+1,Number.isFinite(nextId)?nextId:0,1001);
+ return meterCustomSeriesState;
+}
+
+function meterCustomSeriesById(id){
+ const numeric=Math.round(Number(id));
+ if(!Number.isFinite(numeric)||numeric<1001) return null;
+ const state=meterCustomSeriesNormalizeState();
+ return state.series.find(s=>s.id===numeric)||null;
+}
+
+function meterCustomSeriesForMode(category,mode){
+ const state=meterCustomSeriesNormalizeState();
+ const modeKey=meterCustomSeriesModeKey(mode);
+ const cat=(category==='color')?'color':'greyscale';
+ return state.series.filter(s=>s.mode===modeKey&&s.category===cat);
+}
+
+function meterActiveSeriesIsCustom(){
+ return !!meterCustomSeriesById(meterActiveSeriesPoints);
+}
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
 function meterBuildStepsJS(type,points){
  if(type==='greyscale' && points===256) points=100;
@@ -36207,6 +36304,7 @@ function saveMeterSettings(){
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
+  custom_series_json:JSON.stringify(meterCustomSeriesState),
   // Color-science selections
   grey_ref_mode:val('meterGreyRefMode'),
   gray_world:val('meterGrayWorld'),
@@ -36259,6 +36357,10 @@ async function loadMeterSettings(){
  if(s.grey_patch_profiles_json){
   try{ meterGreyPatchProfiles=JSON.parse(s.grey_patch_profiles_json); }catch(e){}
  }
+ if(s.custom_series_json){
+  try{ meterCustomSeriesState=JSON.parse(s.custom_series_json); }catch(e){}
+ }
+ meterCustomSeriesNormalizeState();
  meterMeasurementPort=meterNormalizePortValue(s.measurement_meter_port);
  // Distinct copy of the server-saved value that survives meterPopulateRoleSelects
  // (which overwrites meterMeasurementPort with whatever the SELECT shows, including
