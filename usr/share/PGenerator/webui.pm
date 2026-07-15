@@ -11174,7 +11174,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
+      <label id="meterCie3dViewLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
        <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Right-drag = rotate · Left-drag = pan · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
       </label>
@@ -11182,16 +11182,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show target boxes on the chart">
         <input type="checkbox" id="meterCieOptTargets" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Targets
        </label>
-       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="3D view: show the vertical lines connecting each point to the chart floor">
+       <label id="meterCieOptDropLinesLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="3D view: show the vertical lines connecting each point to the chart floor">
         <input type="checkbox" id="meterCieOptDropLines" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Drop lines
        </label>
-       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the target colourspace triangle">
+       <label id="meterCieOptGamutLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the target colourspace triangle">
         <input type="checkbox" id="meterCieOptGamut" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Gamut
        </label>
-       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
+       <label id="meterCieOptLocusLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
         <input type="checkbox" id="meterCieOptLocus" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Locus
        </label>
-       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the luminance-error rings and stems (applies when Include luminance error is on)">
+       <label id="meterCieOptLumRingsLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the luminance-error rings and stems (applies when Include luminance error is on)">
         <input type="checkbox" id="meterCieOptLumRings" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> &Delta;Y rings
        </label>
       </span>
@@ -11217,7 +11217,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
      </div>
     </div>
-    <div style="margin-bottom:10px">
+    <div id="meterColorDeltaESection" style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto">
@@ -35387,6 +35387,21 @@ function cubeViewBindHandlers(canvas){
  canvas.addEventListener('dblclick',()=>{ _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterRedrawCubeView(); });
 }
 
+// Lattice (cube) series show ONLY the RGB cube view: the CIE chart, its
+// CIE-specific options and the colour dE chart are hidden, since chromaticity
+// collapses same-ratio cube nodes onto each other.
+function meterUpdateColorChartMode(isLattice){
+ const show=(id,vis)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?'':'none'; };
+ show('colorTopLayout',!isLattice);
+ show('meterColorDeltaESection',!isLattice);
+ show('chartCIELabel',!isLattice);
+ show('meterCie3dViewLabel',!isLattice);
+ show('meterCieOptDropLinesLabel',!isLattice);
+ show('meterCieOptGamutLabel',!isLattice);
+ show('meterCieOptLocusLabel',!isLattice);
+ show('meterCieOptLumRingsLabel',!isLattice);
+}
+
 function meterRedrawCubeView(){
  if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
 }
@@ -35395,6 +35410,7 @@ function meterDrawCubeView(items,isPreset){
  const wrap=document.getElementById('meterCubeViewWrap');
  if(!wrap) return;
  const series=meterActiveLatticeSeries();
+ meterUpdateColorChartMode(!!series);
  if(!series){ wrap.style.display='none'; meterCubeViewLast=null; return; }
  wrap.style.display='';
  meterCubeViewLast={items:items,isPreset:!!isPreset};
@@ -35443,10 +35459,11 @@ function meterDrawCubeViewNow(){
  if(!isPreset&&Array.isArray(items)){
   items.forEach(rd=>{ if(rd&&rd.name) measured.add(rd.name); });
  }
- const nodes=patches.map(p=>{
+ let nodes=patches.map(p=>{
   const pt=cubeViewProject(p.frac_r,p.frac_g,p.frac_b,layout);
   return {pt:pt,p:p,done:measured.has(p.name)};
  });
+ if(!meterCieViewOpts.targets) nodes=nodes.filter(n=>n.done);
  nodes.sort((a,b)=>b.pt.z-a.pt.z);
  nodes.forEach(n=>{
   const sq=Math.max(1,2.6*n.pt.persp*markerScale);
