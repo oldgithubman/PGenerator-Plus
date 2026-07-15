@@ -4992,6 +4992,27 @@ sub webui_meter_settings_save (@) {
   $safe.="," if($safe!~/\{\s*$/);
   $safe.='"delay_explicit":true}';
  }
+ # Sticky JSON-blob keys: a settings POST from a stale client (an older UI
+ # build that predates a key) must not wipe user data a newer build saved.
+ # The rebuild above keeps only keys present in the POST body, so a tab
+ # running old JS silently dropped custom_series_json on every save. If the
+ # incoming body omits one of these keys but the stored settings carry it,
+ # preserve the stored value.
+ foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
+  next if($safe=~/"$sticky"\s*:/);
+  my $existing="";
+  foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
+   next unless(-f $path);
+   if(open(my $fh,"<",$path)) { local $/; $existing=<$fh>; close($fh); }
+   last if($existing ne "");
+  }
+  if($existing=~/"$sticky"\s*:\s*("(?:[^"\\]|\\.)*")/) {
+   my $val=$1;
+   $safe=~s/\}\s*$//;
+   $safe.="," if($safe!~/\{\s*$/);
+   $safe.="\"$sticky\":$val}";
+  }
+ }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
  my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
  return '{"status":"ok"}' if($saved_runtime || $saved_persist);
