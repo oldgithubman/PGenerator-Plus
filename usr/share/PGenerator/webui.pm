@@ -23624,6 +23624,10 @@ function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
 }
 
+function meterCubeSeriesAvailable(){
+ return Array.isArray(meterInventory)&&meterInventory.length>0;
+}
+
 function meterSeriesTabForSeries(type,points){
  const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
  if(series&&series.kind==='lattice') return 'cube';
@@ -23715,6 +23719,10 @@ function meterUpdateSeriesTabUi(){
  let tab=meterNormalizeSeriesTab(meterSeriesTab);
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
+ if(tab==='cube'&&!meterCubeSeriesAvailable()){
+  tab='greyscale';
+  meterSeriesTab=tab;
+ }
  if(tab==='autocal'&&!(autoCalSignalAllowed&&autoCalSeriesAvailable)){
   tab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
   meterSeriesTab=tab;
@@ -23729,7 +23737,9 @@ function meterUpdateSeriesTabUi(){
  const autoCal26Active=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterGreyTvControlsActive();
  document.querySelectorAll('#meterSeriesTabRow button[data-series-tab]').forEach(btn=>{
   const tabKey=btn.dataset.seriesTab||'';
-  const visible=tabKey!=='autocal'||(autoCalSignalAllowed&&autoCalSeriesAvailable);
+  let visible=true;
+  if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
+  else if(tabKey==='cube') visible=meterCubeSeriesAvailable();
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -25507,7 +25517,7 @@ function meterImportCustomSeriesCsv(evt){
 function meterBuildStepsJS(type,points){
  if(type==='greyscale' && points===256) points=100;
 	 const steps=[];
-	 const customSeries=(Number(points)>=1001)?meterCustomSeriesById(points):null;
+	 const customSeries=(Number(points)>=900)?meterCustomSeriesById(points):null;
 	 if(customSeries){
 	  steps.push(...meterBuildCustomSeriesSteps(customSeries));
 	  return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
@@ -35387,19 +35397,24 @@ function meterDrawCubeView(items,isPreset){
  const series=meterActiveLatticeSeries();
  if(!series){ wrap.style.display='none'; meterCubeViewLast=null; return; }
  wrap.style.display='';
- void wrap.offsetWidth;
  meterCubeViewLast={items:items,isPreset:!!isPreset};
- const ctx=getChartCtx('chartCubeView');
- if(!ctx) return;
- if(!(ctx.w>10)){
-  // First show: the canvas was sized while the wrapper was still hidden.
-  // Redraw next frame once layout has settled (single retry, no loop).
-  if(!meterDrawCubeView._retry){
-   meterDrawCubeView._retry=true;
-   requestAnimationFrame(()=>{ meterDrawCubeView._retry=false; meterRedrawCubeView(); });
-  }
-  return;
+ // Paint on the NEXT frame: the surrounding chart pass resizes/clears shared
+ // canvases synchronously after this hook runs, which wiped a same-frame
+ // paint. Deferring also lets the first-show layout settle.
+ if(!meterDrawCubeView._raf){
+  meterDrawCubeView._raf=true;
+  requestAnimationFrame(()=>{ meterDrawCubeView._raf=false; meterDrawCubeViewNow(); });
  }
+}
+
+function meterDrawCubeViewNow(){
+ if(!meterCubeViewLast) return;
+ const items=meterCubeViewLast.items;
+ const isPreset=meterCubeViewLast.isPreset;
+ const series=meterActiveLatticeSeries();
+ if(!series) return;
+ const ctx=getChartCtx('chartCubeView');
+ if(!ctx||!(ctx.w>10)) return;
  cubeViewBindHandlers(document.getElementById('chartCubeView'));
  ctx.setTransform(1,0,0,1,0,0);
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
