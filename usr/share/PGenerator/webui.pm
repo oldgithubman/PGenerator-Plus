@@ -17203,6 +17203,18 @@ function meterTargetXYZForReading(reading){
   tx=wp.x;
   ty=wp.y;
  }
+ // Custom user series: a per-patch user-entered target luminance (cd/m²) is
+ // authoritative — return the target chromaticity at that absolute Y so charts
+ // and dE use exactly what the operator typed, independent of reference-white
+ // drift between step build time and chart time.
+ let customTargetNits=Number(reading.custom_target_nits);
+ if(!(Number.isFinite(customTargetNits)&&customTargetNits>0)&&typeof meterCanonicalSeriesStep==='function'){
+  const customStep=meterCanonicalSeriesStep(reading);
+  if(customStep) customTargetNits=Number(customStep.custom_target_nits);
+ }
+ if(Number.isFinite(customTargetNits)&&customTargetNits>0&&Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0){
+  return {X:customTargetNits*tx/ty,Y:customTargetNits,Z:customTargetNits*(1-tx-ty)/ty};
+ }
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   let refY=meterColorSeriesReferenceNits();
   let _wrgbStimY=null;
@@ -23235,7 +23247,7 @@ function meterUpdateSeriesTabUi(){
  if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
  if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
-	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
+	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active&&!meterActiveSeriesIsCustom())?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
 }
 
@@ -24090,10 +24102,79 @@ function meterCustomSeriesForMode(category,mode){
 function meterActiveSeriesIsCustom(){
  return !!meterCustomSeriesById(meterActiveSeriesPoints);
 }
+
+function meterCustomSeriesStepTargets(step,series,patch){
+ const out={};
+ try{
+  const xy=targetChromaticityXY(step.r,step.g,step.b);
+  if(xy&&Number.isFinite(xy.x)&&Number.isFinite(xy.y)){
+   out.target_x=Math.round(xy.x*10000)/10000;
+   out.target_y=Math.round(xy.y*10000)/10000;
+  }
+ }catch(e){}
+ const refNits=(typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():0;
+ const isHdr=(typeof meterChartIsHdr==='function')&&meterChartIsHdr();
+ const isNeutralGrey=series.category!=='color'&&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b);
+ if(isHdr&&patch&&patch.target_nits!=null&&Number(patch.target_nits)>0){
+  out.custom_target_nits=Number(patch.target_nits);
+  if(refNits>0) out.target_Yn=Math.round((out.custom_target_nits/refNits)*100000)/100000;
+ } else if(!isHdr&&isNeutralGrey&&typeof meterGreyscaleTargetYnForCode==='function'){
+  const targetYn=meterGreyscaleTargetYnForCode(step.g);
+  if(Number.isFinite(targetYn)&&targetYn>=0) out.target_Yn=targetYn;
+ } else {
+  try{
+   const abs=targetColorXYZAbs(step.r,step.g,step.b);
+   if(abs&&Number.isFinite(abs.Y)&&refNits>0) out.target_Yn=Math.round((abs.Y/refNits)*100000)/100000;
+  }catch(e){}
+ }
+ return out;
+}
+
+function meterBuildCustomSeriesSteps(series){
+ if(!series||!Array.isArray(series.patches)) return [];
+ const tenBit=meterPatchBitDepth()===10;
+ const inputMax=tenBit?1023:255;
+ const previewForCode=(code)=>{
+  const numeric=Number(code)||0;
+  return inputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/inputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
+ };
+ const isGrey=series.category!=='color';
+ const fractionPct=(code)=>Math.round(meterGreySignalFractionFromCode(code)*1000)/10;
+ const steps=[];
+ series.patches.forEach((patch,idx)=>{
+  const r=meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
+  const g=meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
+  const b=meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
+  const greyIre=isGrey?fractionPct(g):(idx+1);
+  const step={
+   ire:greyIre,
+   stimulus:greyIre,
+   signal_r_pct:isGrey?fractionPct(r):undefined,
+   signal_g_pct:isGrey?fractionPct(g):undefined,
+   signal_b_pct:isGrey?fractionPct(b):undefined,
+   r:r,g:g,b:b,
+   preview_r:previewForCode(r),
+   preview_g:previewForCode(g),
+   preview_b:previewForCode(b),
+   input_max:inputMax,
+   name:patch.name||('Patch '+(idx+1)),
+   series_type:isGrey?'greyscale':'colors',
+   custom_series_id:series.id
+  };
+  Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
+  steps.push(step);
+ });
+ return steps;
+}
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
 function meterBuildStepsJS(type,points){
  if(type==='greyscale' && points===256) points=100;
 	 const steps=[];
+	 const customSeries=(Number(points)>=1001)?meterCustomSeriesById(points):null;
+	 if(customSeries){
+	  steps.push(...meterBuildCustomSeriesSteps(customSeries));
+	  return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
+	 }
 	 if(type==='greyscale'){
 	  if(points===2){
    const twoPoint=meterSyncTwoPointInputs();
@@ -34801,6 +34882,11 @@ function chartHandleClick(e,canvasId){
 }
 
 function meterSeriesLabelFromKey(key){
+ const customMatch=String(key||'').match(/^(?:greyscale|colors)-(\d+)$/);
+ if(customMatch){
+  const customSeries=meterCustomSeriesById(parseInt(customMatch[1],10));
+  if(customSeries) return customSeries.name;
+ }
  return {
   'greyscale-2':'Greyscale 2pt',
 	  'greyscale-100':'Greyscale 101pt',
