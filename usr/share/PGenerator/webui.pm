@@ -10624,6 +10624,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
      <div class="btn-row" id="meterCustomSeriesExportRow" style="margin:0">
       <button class="btn btn-sm btn-danger" id="meterCustomSeriesDeleteBtn" onclick="meterDeleteCustomSeries()" style="display:none">Delete Series</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('calman')" title="Export the patch list as 8-bit RGB triplets (CalMAN import)">Export CalMAN CSV</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as percent RGB triplets (ColourSpace import)">Export ColourSpace CSV</button>
      </div>
      <div class="btn-row" style="margin:0">
       <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesEditor()">Cancel</button>
@@ -24434,6 +24436,33 @@ async function meterDeleteCustomSeries(){
   meterSetSeriesTab(meterSeriesTab);
  }
  toast('Custom series deleted');
+}
+
+function meterCustomSeriesCsv(series,format){
+ const rows=(series&&Array.isArray(series.patches))?series.patches:[];
+ if(!rows.length) return '';
+ if(format==='colourspace'){
+  return rows.map(p=>[p.r10,p.g10,p.b10].map(c=>{
+   const pct=meterCustomSeriesClampCode(c,1023)/1023*100;
+   return String(Math.round(pct*10000)/10000);
+  }).join(',')).join('\r\n')+'\r\n';
+ }
+ return rows.map(p=>[p.r8,p.g8,p.b8].map(c=>String(meterCustomSeriesClampCode(c,255))).join(',')).join('\r\n')+'\r\n';
+}
+
+function meterExportCustomSeries(format){
+ const editor=meterCustomSeriesEditor;
+ if(!editor){ toast('Open a custom series first',true); return; }
+ const nameInput=document.getElementById('meterCustomSeriesNameInput');
+ const seriesName=String((nameInput&&nameInput.value)||'custom-series');
+ const draft={name:seriesName,patches:editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i))};
+ if(!draft.patches.length){ toast('Add at least one patch before exporting',true); return; }
+ const fmt=(format==='colourspace')?'colourspace':'calman';
+ const base=(seriesName.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'custom-series')+'-'+fmt;
+ const filename=meterPromptExportFilename('custom-series-'+fmt,base,'csv','Enter a file name for the patch list export');
+ if(!filename) return;
+ const blob=new Blob([meterCustomSeriesCsv(draft,fmt)],{type:'text/csv'});
+ meterDownloadBlob(blob,filename);
 }
 
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
