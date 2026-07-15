@@ -9977,6 +9977,8 @@ font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white
 .btn-coffee{background:#ffdd00;color:#111;border:1px solid rgba(0,0,0,.18)}
 .btn-coffee:hover{background:#ffd200;color:#111;transform:translateY(-1px)}
 .btn-custom-series{border:1px dashed var(--accent)}
+.chart-expand-btn{position:absolute;right:6px;bottom:6px;width:24px;height:24px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;background:rgba(20,24,34,.82);border:1px solid var(--border);border-radius:4px;color:var(--text2);cursor:pointer;z-index:4}
+.chart-expand-btn:hover{color:var(--text);border-color:var(--accent)}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;
 padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:translateY(20px);
 transition:all .3s;z-index:999;pointer-events:none}
@@ -11176,7 +11178,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
       <label id="meterCie3dViewLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
-       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Right-drag = rotate · Left-drag = pan · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
+       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Drag = rotate · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
       </label>
       <span id="meterCieViewOptRow" style="display:inline-flex;gap:10px;flex-wrap:wrap;margin-left:6px;padding-left:10px;border-left:1px solid var(--border)">
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show target boxes on the chart">
@@ -11200,10 +11202,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">RGB Cube (signal space)
        <span class="meter-help-tip" title="Lattice nodes at their signal RGB positions. Hollow = not measured yet, filled = measured. Drag = rotate, wheel = zoom." aria-label="RGB cube view help">?</span>
       </div>
-      <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab"></canvas>
+      <div id="chartCubeViewBox" style="position:relative;display:inline-block;max-width:100%">
+       <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
+       <button type="button" id="chartCubeExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cube')">&#8600;</button>
+      </div>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
-      <canvas id="chartCIE" width="640" height="600" style="flex:0 0 600px;width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="chartCIEBox" style="position:relative;flex:0 0 600px;max-width:100%">
+       <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
+       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cie')" style="display:none">&#8600;</button>
+      </div>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
@@ -35242,7 +35250,7 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 
 // ── CIE xyY 3D view ──────────────────────────────────────────────────────────
 // Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
-// Right-drag orbit, left-drag pan, wheel zoom, double-click reset.
+// Drag rotates (orbit), wheel zooms, double-click resets — matches the cube view.
 const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
@@ -35407,6 +35415,38 @@ function meterUpdateColorChartMode(isLattice){
 
 function meterRedrawCubeView(){
  if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
+}
+
+// Expand toggle for the two 3D charts (RGB cube + 3D CIE). Collapsed = fixed
+// 600px; expanded = full card width (side panels wrap below via flex-wrap).
+let meterChartExpanded={cie:false,cube:false};
+function meterToggleChartExpand(which){
+ meterChartExpanded[which]=!meterChartExpanded[which];
+ meterApplyChartExpand(which);
+}
+function meterApplyChartExpand(which){
+ const expanded=!!meterChartExpanded[which];
+ const glyph=expanded?'↖':'↘';
+ if(which==='cube'){
+  const box=document.getElementById('chartCubeViewBox');
+  const canvas=document.getElementById('chartCubeView');
+  const btn=document.getElementById('chartCubeExpandBtn');
+  if(box) box.style.display=expanded?'block':'inline-block';
+  if(canvas) canvas.style.width=expanded?'100%':'600px';
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  meterRedrawCubeView();
+ } else {
+  const box=document.getElementById('chartCIEBox');
+  const btn=document.getElementById('chartCIEExpandBtn');
+  if(box) box.style.flex=expanded?'1 1 100%':'0 0 600px';
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+  if(Array.isArray(meterReadings)&&meterReadings.length){
+   drawAllCharts(isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
+  } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+   drawAllChartsPreset(isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps));
+  }
+ }
 }
 
 function meterDrawCubeView(items,isPreset){
@@ -35793,7 +35833,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';
- ctx.fillText('3D xyY  ·  right-drag orbit · left-drag pan · wheel zoom',ctx.w-12,28);
+ ctx.fillText('3D xyY  ·  drag rotate · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
@@ -35836,9 +35876,8 @@ function cie3dOnPointerDown(e){
  _cie3d.moved=false;
  _cie3d.lastX=e.clientX;
  _cie3d.lastY=e.clientY;
- // Left / middle / Shift = pan; right = orbit (reversed from earlier left=orbit).
- const isOrbit=(e.button===2||(e.buttons&2));
- _cie3d.mode=isOrbit?'orbit':'pan';
+ // Match the RGB cube view: any drag rotates, wheel zooms, no pan.
+ _cie3d.mode='orbit';
  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
  e.preventDefault();
 }
@@ -35969,6 +36008,9 @@ function cie3dUnbindHandlers(canvas){
 
 function drawCIEChart(readings){
  try{ meterApplyCie3dLayout(); }catch(e){}
+ // Expand arrow is a 3D-view affordance only.
+ const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
+ if(cieExpandBtn) cieExpandBtn.style.display=meterCie3dViewEnabled()?'flex':'none';
  if(meterCie3dViewEnabled()){
   drawCIEChart3D(readings);
   return;
