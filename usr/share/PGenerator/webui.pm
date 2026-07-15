@@ -10594,6 +10594,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesManagerBtn" onclick="meterOpenCustomSeriesManager()" style="margin-left:auto" title="Create, edit, delete, import and export custom patch series">Custom Series&hellip;</button>
+     <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
@@ -10790,8 +10791,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
      <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">Generate Lattice&hellip;</button>
-     <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()">Import .cube (preview)</button>
-     <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
     </div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
@@ -10806,6 +10805,19 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </thead>
       <tbody id="meterCustomSeriesManagerBody"></tbody>
      </table>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterLutToolsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(720px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">3D LUT Tools</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseLutTools()">Close</button>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0">
+     <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()" title="Parse and preview a .cube 3D LUT file (not applied to the display)">Import .cube (preview)</button>
+     <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
     </div>
     <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs (3D LUT AutoCal output)</div>
@@ -24601,13 +24613,26 @@ function meterOpenCustomSeriesManager(){
  if(!modal) return;
  meterCustomSeriesReturnToManager=false;
  meterRenderCustomSeriesManager();
- if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
 }
 
 function meterCloseCustomSeriesManager(){
  const modal=document.getElementById('meterCustomSeriesManagerModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+function meterOpenLutTools(){
+ const modal=document.getElementById('meterLutToolsModal');
+ if(!modal) return;
+ if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseLutTools(){
+ const modal=document.getElementById('meterLutToolsModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
 }
@@ -25006,7 +25031,8 @@ function meterBuildCustomSeriesSteps(series){
    series_type:isGrey?'greyscale':'colors',
    custom_series_id:series.id
   };
-  if(!isLattice) Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
+  // Every step gets target_x/y/Yn — the CIE 3D chart derives target boxes from these; without them lattice targets collapse to the floor plane.
+  Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
   steps.push(step);
  });
  return steps;
@@ -32379,8 +32405,15 @@ async function meterPollSeries(){
 		 meterSeriesSpectroSetupApplyFromStatus(r);
 		 meterSetActiveSeriesChartContext(r);
 		 if(Array.isArray(r.steps)&&r.steps.length>0){
+		  const _activeLattice=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+		  if(_activeLattice&&_activeLattice.kind==='lattice'&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===r.steps.length){
+		   // Lattice steps are expanded identically client/server (locked by the
+		   // parity regressions); keep the client copy — it carries the chart
+		   // target_x/y/Yn fields the server expansion does not compute.
+		  } else {
 	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
 	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
+		  }
 	 }
  if(r.white_reading&&r.white_reading.luminance!=null){
   meterWhiteReading=r.white_reading;
