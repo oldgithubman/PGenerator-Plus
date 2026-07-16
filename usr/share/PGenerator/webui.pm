@@ -9739,8 +9739,11 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout{
  width:100%;align-items:stretch;flex-wrap:nowrap!important
 }
+#colorTopLayout.cie-3d-layout #chartCIEBox{
+ flex:1 1 0%!important;min-width:0;max-width:none
+}
 #colorTopLayout.cie-3d-layout #chartCIE{
- flex:1 1 0%!important;width:auto!important;min-width:0;height:480px!important;max-width:none
+ width:100%!important;height:480px!important;max-width:none
 }
 #colorTopLayout.cie-3d-layout #meterRGBColorWrap,
 #colorTopLayout.cie-3d-layout #meterXYYColorWrap{
@@ -9748,6 +9751,11 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 }
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
+}
+#colorTopLayout.cie-3d-layout.cie-expanded #meterRGBColorWrap,
+#colorTopLayout.cie-3d-layout.cie-expanded #meterXYYColorWrap,
+#colorTopLayout.cie-3d-layout.cie-expanded #colorReadingDetail{
+ display:none!important
 }
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
@@ -35278,7 +35286,15 @@ function meterApplyCie3dLayout(){
  const layout=document.getElementById('colorTopLayout');
  const canvas=document.getElementById('chartCIE');
  if(!layout||!canvas) return;
- layout.classList.toggle('cie-3d-layout',meterCie3dViewEnabled());
+ const is3d=meterCie3dViewEnabled();
+ layout.classList.toggle('cie-3d-layout',is3d);
+ // The expand arrow is a 3D-only affordance; leaving 3D also collapses it.
+ if(!is3d){ layout.classList.remove('cie-expanded'); meterChartExpanded.cie=false; }
+ const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
+ if(cieExpandBtn){
+  cieExpandBtn.style.display=is3d?'flex':'none';
+  cieExpandBtn.innerHTML=meterChartExpanded.cie?'↖':'↘';
+ }
  void canvas.offsetWidth; // reflow before getChartCtx measures the box
 }
 function meterOnCie3dViewChange(){
@@ -35436,9 +35452,12 @@ function meterApplyChartExpand(which){
   if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
   meterRedrawCubeView();
  } else {
-  const box=document.getElementById('chartCIEBox');
+  // In 3D the layout is class-driven with !important, so toggle a class rather
+  // than fight it with inline flex; expanded hides the side panels so the CIE
+  // box fills the row.
+  const layout=document.getElementById('colorTopLayout');
   const btn=document.getElementById('chartCIEExpandBtn');
-  if(box) box.style.flex=expanded?'1 1 100%':'0 0 600px';
+  if(layout) layout.classList.toggle('cie-expanded',expanded);
   if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
   const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
   if(Array.isArray(meterReadings)&&meterReadings.length){
@@ -36008,9 +36027,6 @@ function cie3dUnbindHandlers(canvas){
 
 function drawCIEChart(readings){
  try{ meterApplyCie3dLayout(); }catch(e){}
- // Expand arrow is a 3D-view affordance only.
- const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
- if(cieExpandBtn) cieExpandBtn.style.display=meterCie3dViewEnabled()?'flex':'none';
  if(meterCie3dViewEnabled()){
   drawCIEChart3D(readings);
   return;
