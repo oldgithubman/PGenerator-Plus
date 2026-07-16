@@ -90,10 +90,45 @@ PY
  return 0
 }
 
+# webui.pm seeds the initial state file with the series identity ("type" +
+# "points"). Custom/lattice colour series (points>=900) ride on type "colors"
+# and are told apart from the stock ColorChecker ONLY by that id. The worker's
+# own state writes below omit type/points, so without carrying them forward
+# every poll/recovery of a running cube read loses the lattice id and the WebUI
+# routes the reads onto the ColorChecker CIE chart. Cache the identity once from
+# the seed (before our first overwrite) and re-splice it into every state write.
+SERIES_META_JSON=""
+SERIES_META_LOADED=""
+load_series_identity_meta() {
+ [[ -n "$SERIES_META_LOADED" ]] && return
+ SERIES_META_LOADED=1
+ [[ -f "$STATE_FILE" ]] || return
+ SERIES_META_JSON=$(python - "$STATE_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(state, dict) or "points" not in state:
+    raise SystemExit(0)
+try:
+    points = int(state.get("points"))
+except Exception:
+    raise SystemExit(0)
+stype = str(state.get("type", "") or "")
+sys.stdout.write('"type":%s,"points":%d' % (json.dumps(stype), points))
+PY
+)
+}
+
 write_state_json() {
  local payload
  payload=$(cat) || return 1
  series_state_claim_lost && return 1
+ load_series_identity_meta
+ if [[ -n "$SERIES_META_JSON" && "$payload" != *'"points"'* && "$payload" == *"}" ]]; then
+  payload="${payload%\}},$SERIES_META_JSON}"
+ fi
  local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
  printf '%s\n' "$payload" > "$tmp" || return 1
  chmod 666 "$tmp" 2>/dev/null || true
