@@ -32072,7 +32072,7 @@ function meterLg3dPostCheckStep(rd){
 
 function meterLg3dApplyPostCheckStatus(status){
  const readings=meterLg3dPostCheckReadings(status);
- if(!readings.length) return;
+ if(!readings.length) return false;
 	 meterActiveSeriesType='colors';
 	 meterActiveSeriesPoints=readings.length;
 	 meterActiveSeriesKey='lg-3d-post-check';
@@ -32094,11 +32094,89 @@ function meterLg3dApplyPostCheckStatus(status){
  meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(readings[readings.length-1]));
  drawAllCharts(readings);
  meterUpdateDeltaEFormControl();
+ return true;
+}
+
+// Matrix 3D LUT profiling reads a 5-point W/R/G/B/K matrix series (against a
+// reset/unity 3D LUT) BEFORE the cube is solved and the post-check begins.
+// Those live reads land in status.readings tagged phase!='post_check'. Without
+// plotting them the chart just leaves the previous colour/ColorChecker run on
+// screen during the whole profile phase; plot the matrix series being read
+// (measured native primaries vs the target-gamut primary targets) instead.
+function meterLg3dMatrixProfileReadings(status){
+ const list=(status&&Array.isArray(status.readings))?status.readings:[];
+ return list.filter(rd=>rd&&String(rd.phase||'')!=='post_check'&&meterReadingHasLuminance(rd));
+}
+
+// Target-gamut primary target (chromaticity + relative luminance) for one
+// matrix profile patch, keyed off its kind (white/red/green/blue/black). Reuses
+// the same primary/white-point machinery the ColorChecker series uses so the
+// targets track the active signal mode's gamut (BT.709 SDR / BT.2020 HDR10).
+function meterLg3dMatrixProfileTarget(rd){
+ const kind=String(rd&&rd.kind||'').toLowerCase();
+ const level=Number((rd&&rd.level!=null)?rd.level:((rd&&rd.ire!=null)?rd.ire:0))||0;
+ if(kind==='white'||kind==='black'){
+  const wp=meterTargetWhitePoint();
+  return {target_x:wp.x,target_y:wp.y,target_Yn:(kind==='black')?0:1};
+ }
+ const colorName=(kind==='red')?'Red':(kind==='green')?'Green':(kind==='blue')?'Blue':null;
+ if(colorName){
+  const target=meterBuildSaturationTargetStepMeta(colorName,level||100);
+  return Object.assign({series_color:colorName,sat_pct:level||100},target);
+ }
+ return {};
+}
+
+function meterLg3dMatrixProfileStep(rd){
+ const kind=String(rd&&rd.kind||'').toLowerCase();
+ const level=Number((rd&&rd.level!=null)?rd.level:((rd&&rd.ire!=null)?rd.ire:0))||0;
+ const step={
+  name:rd.name||('Matrix '+(kind||'patch')),
+  ire:(rd.ire!=null)?rd.ire:level,
+  r:(rd.r_code!=null)?rd.r_code:rd.r,
+  g:(rd.g_code!=null)?rd.g_code:rd.g,
+  b:(rd.b_code!=null)?rd.b_code:rd.b
+ };
+ return Object.assign(step,meterLg3dMatrixProfileTarget(rd));
+}
+
+function meterLg3dApplyProfileStatus(status){
+ // Only the matrix method profiles a small W/R/G/B/K series; the ramp method
+ // reads dozens of intermediate primaries that are not a 5-point matrix.
+ if(String((status&&status.method)||'').toLowerCase()!=='matrix') return false;
+ const raw=meterLg3dMatrixProfileReadings(status);
+ if(!raw.length) return false;
+ // Enrich each reading with its target so the colour ΔE / CIE charts resolve
+ // reading.target_x/y/Yn directly (matches the post-check reading shape).
+ const readings=raw.map(rd=>Object.assign({},rd,meterLg3dMatrixProfileTarget(rd)));
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints=readings.length;
+ meterActiveSeriesKey='lg-3d-matrix-profile';
+ meterSetActiveSeriesChartContext(status);
+ meterShow3dLutAutoCalContext();
+ meterResetSeriesButtons();
+ meterSeriesSteps=readings.map(meterLg3dMatrixProfileStep);
+ meterReadings=readings;
+ const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
+ if(whiteRd) meterWhiteReading=whiteRd;
+ document.getElementById('chartsGreyscaleWrap').style.display='none';
+ document.getElementById('chartsColorWrap').style.display='';
+ document.getElementById('meterCharts').style.display='';
+ document.getElementById('meterExportRow').style.display='';
+ meterSetThumbsVisible(true);
+ const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
+ meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(readings[readings.length-1]));
+ drawAllCharts(readings);
+ meterUpdateDeltaEFormControl();
+ return true;
 }
 
 function meterLg3dApplyStatus(status){
  if(!status) return;
- meterLg3dApplyPostCheckStatus(status);
+ // Post-check readings take over once they exist; before that, plot the live
+ // 5-point matrix profile (W/R/G/B/K) series being read instead of leaving the
+ // previous colour/ColorChecker run on the chart.
+ if(!meterLg3dApplyPostCheckStatus(status)) meterLg3dApplyProfileStatus(status);
  const summary=meterLg3dAutoCalSummary(status);
  const labelText=(status.current_name||status.message||'LG 3D LUT AutoCal')+(summary?' | '+summary:'');
  if(status.status==='running') meterSetWorkflowProgress(status,{workflow:meterFullAutoCalRunning?'full':'3d-lut',label:labelText});
