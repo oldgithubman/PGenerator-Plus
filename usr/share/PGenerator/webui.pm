@@ -35436,6 +35436,26 @@ function meterRedrawCubeView(){
  if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
 }
 
+// Map a MEASURED reading back into the cube's signal RGB space so error shows
+// as spatial deviation from the target lattice node. Measured XYZ is
+// normalised by the white luminance, converted to linear RGB in the analysis
+// gamut, then run through the inverse EOTF (meterTargetLinearToSignal) — a
+// perfect display reproduces the sent signal so the marker sits on the node;
+// error pulls it off. W = measured-white luminance (falls back to the color
+// reference nits). Returns clamped 0..1 fractions, or null if unmappable.
+function meterCubeMeasuredFrac(rd,W){
+ try{
+  const xyz=meterReadingXYZ(rd);
+  if(!xyz) return null;
+  const wl=(W>0)?W:((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100);
+  if(!(wl>0)) return null;
+  const g=meterAnalysisGamut();
+  const lin=xyzToLinRgb(xyz.X/wl,xyz.Y/wl,xyz.Z/wl,g.xyzToRgb);
+  const toSig=(v)=>meterTargetLinearToSignal(Math.max(0,Math.min(1,v)));
+  return {r:toSig(lin[0]),g:toSig(lin[1]),b:toSig(lin[2])};
+ }catch(e){ return null; }
+}
+
 // Expand toggle for the two 3D charts (RGB cube + 3D CIE). Collapsed = fixed
 // 600px; expanded = full card width (side panels wrap below via flex-wrap).
 let meterChartExpanded={cie:false,cube:false};
@@ -35520,31 +35540,61 @@ function meterDrawCubeViewNow(){
  let patches=meterCustomSeriesPatches(series).filter(p=>Number.isFinite(p.frac_r)&&Number.isFinite(p.frac_g)&&Number.isFinite(p.frac_b));
  const total=patches.length;
  if(patches.length>4096&&typeof meterSampleSteps==='function') patches=meterSampleSteps(patches,4096);
- const measured=new Set();
+ const measuredMap=new Map();
  if(!isPreset&&Array.isArray(items)){
-  items.forEach(rd=>{ if(rd&&rd.name) measured.add(rd.name); });
+  items.forEach(rd=>{ if(rd&&rd.name) measuredMap.set(rd.name,rd); });
  }
+ // White luminance for measured→signal normalisation: prefer the measured
+ // white node so a perfectly-tracked neutral lands on the diagonal.
+ let whiteLum=0;
+ const wr=measuredMap.get('100/100/100')||measuredMap.get('G 100%');
+ if(wr){ const wy=meterReadingLuminanceNits(wr); if(wy>0) whiteLum=wy; }
+ const showTargets=meterCieViewOpts.targets;
  let nodes=patches.map(p=>{
   const pt=cubeViewProject(p.frac_r,p.frac_g,p.frac_b,layout);
-  return {pt:pt,p:p,done:measured.has(p.name)};
+  const rd=measuredMap.get(p.name)||null;
+  let mpt=null;
+  if(rd){
+   const mf=meterCubeMeasuredFrac(rd,whiteLum);
+   if(mf) mpt=cubeViewProject(mf.r,mf.g,mf.b,layout);
+  }
+  return {pt:pt,p:p,done:!!rd,mpt:mpt};
  });
- if(!meterCieViewOpts.targets) nodes=nodes.filter(n=>n.done);
+ // With targets off, show only the measured markers (hide the lattice grid).
+ if(!showTargets) nodes=nodes.filter(n=>n.done);
  nodes.sort((a,b)=>b.pt.z-a.pt.z);
  nodes.forEach(n=>{
   const sq=Math.max(1,2.6*n.pt.persp*markerScale);
   const col='rgb('+n.p.r8+','+n.p.g8+','+n.p.b8+')';
-  if(n.done){
-   ctx.fillStyle=col;
-   ctx.fillRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
-   ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=0.6;
-   ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
-  } else {
+  if(!n.done){
+   // Unmeasured: hollow target box at the lattice node.
    ctx.strokeStyle=col;ctx.lineWidth=Math.max(0.6,1*markerScale);
    ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+   return;
+  }
+  if(n.mpt){
+   // Measured: filled marker at the MEASURED position; when targets are on,
+   // draw the faint target box + a connector so the deviation is visible.
+   if(showTargets){
+    ctx.strokeStyle='rgba(200,208,225,0.4)';ctx.lineWidth=Math.max(0.5,0.8*markerScale);
+    ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+    ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=Math.max(0.5,0.8*markerScale);
+    ctx.beginPath();ctx.moveTo(n.pt.sx,n.pt.sy);ctx.lineTo(n.mpt.sx,n.mpt.sy);ctx.stroke();
+   }
+   const mr=Math.max(1.2,2.8*n.mpt.persp*markerScale);
+   ctx.fillStyle=col;
+   ctx.beginPath();ctx.arc(n.mpt.sx,n.mpt.sy,mr,0,Math.PI*2);ctx.fill();
+   ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=0.7;
+   ctx.beginPath();ctx.arc(n.mpt.sx,n.mpt.sy,mr,0,Math.PI*2);ctx.stroke();
+  } else {
+   // Measured but unmappable (e.g. bad read): filled dot at the lattice node.
+   const mr=Math.max(1.2,2.8*n.pt.persp*markerScale);
+   ctx.fillStyle=col;
+   ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.fill();
   }
  });
  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
- const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measured.size+' measured');
+ const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measuredMap.size+' measured · filled = measured position');
  ctx.fillText(label,8,ctx.h-8);
 }
 
