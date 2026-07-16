@@ -17121,12 +17121,25 @@ function meterLatticeCornerRefs(){
  const out={white:0,ceil:{}};
  const series=(typeof meterActiveLatticeSeries==='function')?meterActiveLatticeSeries():null;
  if(!series) return out;
- let wire=null;
- try{ wire=meterLatticeWireRange(); }catch(e){}
- if(!wire||!(wire.max>wire.min)) return out;
- const tol=Math.max(2,(wire.max-wire.min)*0.002);
- const lo=v=>Math.abs(Number(v)-wire.min)<=tol;
- const hi=v=>Math.abs(Number(v)-wire.max)<=tol;
+ // Derive the wire range from the READINGS themselves: a lattice run always
+ // spans its wire min..max, and the recorded codes are authoritative for THAT
+ // run. Deriving from the current UI range settings broke corner detection
+ // whenever the operator's range/bit-depth selection no longer matched the
+ // run being charted (recorded full-range 0..1023 vs UI limited 64..940).
+ let wireMin=Infinity,wireMax=-Infinity;
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd) return;
+  [ (rd.r_code!=null)?rd.r_code:rd.r, (rd.g_code!=null)?rd.g_code:rd.g, (rd.b_code!=null)?rd.b_code:rd.b ].forEach(v=>{
+   const n=Number(v);
+   if(!Number.isFinite(n)) return;
+   if(n<wireMin) wireMin=n;
+   if(n>wireMax) wireMax=n;
+  });
+ });
+ if(!(wireMax>wireMin)) return out;
+ const tol=Math.max(2,(wireMax-wireMin)*0.002);
+ const lo=v=>Math.abs(Number(v)-wireMin)<=tol;
+ const hi=v=>Math.abs(Number(v)-wireMax)<=tol;
  const gamut=meterAnalysisGamut();
  const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
  (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
