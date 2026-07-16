@@ -9757,6 +9757,9 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout.cie-expanded #colorReadingDetail{
  display:none!important
 }
+#colorTopLayout.cie-3d-layout.cie-expanded #chartCIE{
+ height:min(78vh,760px)!important
+}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
 align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
@@ -35448,7 +35451,7 @@ function meterApplyChartExpand(which){
   const canvas=document.getElementById('chartCubeView');
   const btn=document.getElementById('chartCubeExpandBtn');
   if(box) box.style.display=expanded?'block':'inline-block';
-  if(canvas) canvas.style.width=expanded?'100%':'600px';
+  if(canvas){ canvas.style.width=expanded?'100%':'600px'; canvas.style.height=expanded?'min(78vh,760px)':'450px'; }
   if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
   meterRedrawCubeView();
  } else {
