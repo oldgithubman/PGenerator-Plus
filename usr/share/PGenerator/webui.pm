@@ -10742,6 +10742,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="3dlut" onclick="meterSetSeriesTab('3dlut')">3D LUT</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
      <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
     </div>
@@ -10753,18 +10754,24 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom greyscale series">Custom&hellip;</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom greyscale series">Custom Series</button>
+      <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
+      <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
+     </div>
+     <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap">
       <!-- 3D LUT profiling lattices: measured like any colour series (CIE
            charts only — no target grading; profiling data feeds the LUT
-           solve). The LUT cube visual lives in LUT Tools, not here. -->
+           solve). The LUT cube visual lives in LUT Tools. -->
       <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="3D LUT profiling lattice: 5x5x5 RGB cube (125 patches)">Cube 5&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour and lattice series">Custom&hellip;</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
+      <span id="meterCustomSeriesLoaded3dLut" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -15355,6 +15362,11 @@ function meterRestoreLatestPersistedSeries(){
  if(!meterSeriesCacheBootId || meterActiveSeriesKey) return false;
  meterLoadSeriesCache();
  const lastKey=(function(){ try{return localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';}catch(e){return '';} })();
+ // USER custom series (id >= 1001) are never auto-loaded at boot — they load
+ // only through the Custom Series manager's Load button.
+ const parsed=meterParseSeriesKey(lastKey)||{};
+ const userCustom=Number(parsed.points)>=1001&&(typeof meterCustomSeriesById==='function')&&!!meterCustomSeriesById(parsed.points);
+ if(userCustom) return false;
  if(lastKey && meterSeriesSnapshotCanRestore(meterSeriesCache[lastKey])) return meterRestoreSeriesFromCache(lastKey);
  return false;
 }
@@ -23937,14 +23949,18 @@ function meterSeriesTabForType(type){
 }
 
 function meterSeriesTabForSeries(type,points){
- // Lattice (3D LUT profiling) series live under the Color tab like any other
- // colour series; the LUT cube visual lives in LUT Tools.
+ // Lattice (3D LUT profiling) series live under the 3D LUT tab; manual custom
+ // colour series stay under Color, custom greyscale under Greyscale.
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+ if(series&&series.kind==='lattice') return '3dlut';
  return meterSeriesTabForType(type);
 }
 
 function meterNormalizeSeriesTab(tab){
  // 'cube' is a legacy stored value from the retired 3D Cube tab.
- return tab==='autocal'?'autocal':((tab==='color'||tab==='cube')?'color':'greyscale');
+ if(tab==='autocal') return 'autocal';
+ if(tab==='3dlut'||tab==='cube') return '3dlut';
+ return (tab==='color')?'color':'greyscale';
 }
 
 function meterTwoPointValues(){
@@ -24034,6 +24050,7 @@ function meterUpdateSeriesTabUi(){
  }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
+ const lutGroup=document.getElementById('meterSeriesGroup3dLut');
  const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
@@ -24054,6 +24071,7 @@ function meterUpdateSeriesTabUi(){
  meterRenderCustomSeriesButtons();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
+ if(lutGroup) lutGroup.style.display=tab==='3dlut'?'flex':'none';
  if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
  if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
@@ -24091,7 +24109,7 @@ function meterShow3dLutAutoCalContext(){
 }
 
 function meterDefaultSeriesButtonForTab(tab){
- const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':'meterSeriesGroupGreyscale');
+ const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':(tab==='3dlut'?'meterSeriesGroup3dLut':'meterSeriesGroupGreyscale'));
  if(!group) return null;
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
@@ -25103,12 +25121,17 @@ function meterRenderCustomSeriesManager(){
  const body=document.getElementById('meterCustomSeriesManagerBody');
  if(!body) return;
  const state=meterCustomSeriesNormalizeState();
- if(!state.series.length){
-  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series yet. Use New Greyscale, New Color or Generate Lattice to create one.</td></tr>';
+ // Only the CURRENT display mode's series are listed (HDR series in HDR
+ // mode, SDR series in SDR mode) — loading a cross-mode series would chart
+ // against the wrong law and send wrong-range codes.
+ const modeKey=meterCustomSeriesModeKey();
+ const listed=state.series.filter(series=>series.mode===modeKey);
+ if(!listed.length){
+  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series for the current display mode ('+modeKey.toUpperCase()+') yet. Use New Greyscale, New Color or Generate Lattice to create one.</td></tr>';
   return;
  }
  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
- body.innerHTML=state.series.map(series=>{
+ body.innerHTML=listed.map(series=>{
   const isLattice=series.kind==='lattice';
   const patchInfo=isLattice
    ?('Lattice '+series.params.size+'³ ('+meterLatticeCountForParams(series.params)+' patches)')
@@ -25838,18 +25861,27 @@ function meterBuildCustomSeriesSteps(series){
 let meterCustomSeriesEditor=null;
 
 function meterRenderCustomSeriesButtons(){
- // Custom series are LOADED from the Custom Series manager (per-row Load
- // buttons) instead of spawning a series button each — the per-group
- // Custom… buttons only reflect the ACTIVE custom series (highlight + name).
+ // Custom series LOAD from the Custom Series manager. The per-group
+ // "Custom Series" buttons keep a STATIC label; the loaded custom series is
+ // named in the tag beside the button of its category. Nothing is loaded by
+ // default — the tag only appears after the operator loads a series.
  const active=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
- const activeCat=active?((active.kind==='lattice'||active.category==='color')?'color':'greyscale'):null;
- [['meterCustomSeriesBtnGrey','greyscale'],['meterCustomSeriesBtnColor','color']].forEach(pair=>{
-  const btn=document.getElementById(pair[0]);
-  if(!btn) return;
-  const on=!!(active&&activeCat===pair[1]);
-  btn.classList.toggle('btn-primary',on);
-  btn.classList.toggle('btn-secondary',!on);
-  btn.textContent=on?('Custom: '+String(active.name||('Series '+active.id))):'Custom\u2026';
+ const activeCat=active?(active.kind==='lattice'?'3dlut':(active.category==='color'?'color':'greyscale')):null;
+ [['meterCustomSeriesBtnGrey','meterCustomSeriesLoadedGrey','greyscale'],
+  ['meterCustomSeriesBtnColor','meterCustomSeriesLoadedColor','color'],
+  ['meterCustomSeriesBtn3dLut','meterCustomSeriesLoaded3dLut','3dlut']].forEach(row=>{
+  const btn=document.getElementById(row[0]);
+  const tag=document.getElementById(row[1]);
+  const on=!!(active&&activeCat===row[2]);
+  if(btn){
+   btn.classList.toggle('btn-primary',on);
+   btn.classList.toggle('btn-secondary',!on);
+  }
+  if(tag){
+   tag.textContent=on?String(active.name||('Series '+active.id)):'';
+   tag.style.display=on?'inline-block':'none';
+   tag.title=on?String(active.name||''):'';
+  }
  });
 }
 
