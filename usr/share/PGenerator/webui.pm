@@ -10988,6 +10988,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Show the hollow input-node target boxes and their displacement connectors. Off = only the LUT's output positions.">
        <input type="checkbox" id="lutCubeShowTargets" checked onchange="meterLutCubeDraw()" style="vertical-align:middle"> Targets
       </label>
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Render every node of the LUT instead of the 9-per-axis subset. Large LUTs (33³/65³) draw tens of thousands of markers — rotation may be slow.">
+       <input type="checkbox" id="lutCubeFullLattice" onchange="meterLutCubeDraw()" style="vertical-align:middle"> Full lattice
+      </label>
      </div>
      <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
     </div>
@@ -25688,8 +25691,11 @@ function meterLutCubeDraw(){
  ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
  ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
  // Sample the lattice down to <=9 indices per axis for legibility (33/65-cube
- // LUTs draw as a 9x9x9 subset that always includes both ends of each axis).
- const per=Math.min(9,N);
+ // LUTs draw as a 9x9x9 subset that always includes both ends of each axis)
+ // unless the operator asks for the full lattice.
+ const fullEl=document.getElementById('lutCubeFullLattice');
+ const showAll=!!(fullEl&&fullEl.checked);
+ const per=showAll?N:Math.min(9,N);
  const axis=[];
  for(let k=0;k<per;k++){ const idx=Math.round(k*(N-1)/(per-1)); if(axis.indexOf(idx)<0) axis.push(idx); }
  const clamp01=v=>Math.max(0,Math.min(1,Number(v)||0));
@@ -25701,6 +25707,11 @@ function meterLutCubeDraw(){
   nodes.push({fr:fr,fg:fg,fb:fb,or:clamp01(out[0]),og:clamp01(out[1]),ob:clamp01(out[2])});
  }
  const scale=Math.max(0.35,Math.min(3,_lutCube3d.scale));
+ // Full-lattice rendering packs up to N³ markers into the same canvas — use
+ // markedly smaller markers (and skip the white outline) so structure stays
+ // readable instead of smearing into a solid blob.
+ const dense=axis.length>9;
+ const msz=dense?0.4:1;
  // Targets checkbox: off = only the LUT's output dots (no input boxes, no
  // displacement connectors). Missing element (tests/headless) = on.
  const targetsEl=document.getElementById('lutCubeShowTargets');
@@ -25711,19 +25722,21 @@ function meterLutCubeDraw(){
   const col='rgb('+Math.round(d.n.fr*255)+','+Math.round(d.n.fg*255)+','+Math.round(d.n.fb*255)+')';
   const moved=Math.abs(d.n.or-d.n.fr)+Math.abs(d.n.og-d.n.fg)+Math.abs(d.n.ob-d.n.fb)>0.004;
   if(showTargets){
-   const sq=Math.max(1,2.4*d.pin.persp*scale);
-   ctx.strokeStyle=col;ctx.lineWidth=Math.max(0.5,0.9*scale);
+   const sq=Math.max(dense?0.4:1,2.4*d.pin.persp*scale*msz);
+   ctx.strokeStyle=col;ctx.lineWidth=Math.max(dense?0.3:0.5,0.9*scale*msz);
    ctx.strokeRect(d.pin.sx-sq,d.pin.sy-sq,sq*2,sq*2);
    if(moved){
-    ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=Math.max(0.4,0.7*scale);
+    ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=Math.max(dense?0.25:0.4,0.7*scale*msz);
     ctx.beginPath();ctx.moveTo(d.pin.sx,d.pin.sy);ctx.lineTo(d.pout.sx,d.pout.sy);ctx.stroke();
    }
   }
-  const mr=Math.max(1.1,2.5*d.pout.persp*scale);
+  const mr=Math.max(dense?0.5:1.1,2.5*d.pout.persp*scale*msz);
   ctx.fillStyle=col;
   ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=0.6;
-  ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.stroke();
+  if(!dense){
+   ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=0.6;
+   ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.stroke();
+  }
  });
  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
  const shown=axis.length;
