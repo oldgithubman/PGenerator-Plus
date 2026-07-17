@@ -28386,19 +28386,23 @@ function meterAutoCalCompleteModalActive(){
 // the per-kind branches in meterAutoCalRenderResults but returns a string so
 // the modal is self-contained (it does not rely on the wizard overlay's
 // results box, which is never opened during a standalone 3D LUT run).
+// NOTE: standalone autocals never run an automatic post-check (the start
+// payload sends post_check:false), so this summary must NOT reference
+// post_check_summary / post-check delta E -- those only exist after the
+// operator runs a manual post-check series later. The greyscale delta E here
+// is the in-calibration measurement (each point read as it is adjusted), not
+// a post-check.
 function meterAutoCalCompleteSummaryText(status){
  const s=status||{};
  const durMs=meterAutoCalDurationMs(s);
  const dur=(durMs!=null)?(' Duration: '+meterAutoCalFormatDuration(durMs)+'.'):'';
  if(s.autocal3d){
-  const post=s.post_check_summary||{};
   const method=String(s.method||'ramp').toUpperCase();
-  let uploadText='';
-  if(s.upload_verified) uploadText=' 3D LUT uploaded and verified.';
-  else if(s.upload_supported===false) uploadText=' 3D LUT export kept; TV upload unavailable.';
-  let deText='';
-  if(post.mean_delta_e_2000!=null&&post.max_delta_e_2000!=null) deText=' Post-check mean \u0394E2000 '+Number(post.mean_delta_e_2000).toFixed(2)+', max '+Number(post.max_delta_e_2000).toFixed(2)+'.';
-  return method+' 3D LUT AutoCal complete.'+uploadText+deText+dur;
+  let detail='';
+  if(s.upload_verified) detail=' 3D LUT uploaded and verified.';
+  else if(s.upload_supported===false) detail=' 3D LUT export kept; TV upload unavailable.';
+  else if(s.export&&s.export.cube_path) detail=' 3D LUT export ready.';
+  return method+' 3D LUT AutoCal complete.'+detail+dur;
  }
  const rows=meterAutoCalSummaryRows(s);
  if(!rows.length) return 'Greyscale AutoCal complete.'+dur;
