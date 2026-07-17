@@ -1117,6 +1117,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/3d-lut/import" && $method eq "POST") {
+    my $result=&webui_3d_lut_import($request_query,$body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/3d-lut/solve" && $method eq "POST") {
     my $result=&webui_3d_lut_solve($body);
     my $len=length($result);
@@ -5135,6 +5140,38 @@ sub webui_3d_lut_solve_status (@) {
   return $json if(defined($json) && $json=~/^\s*\{/);
  }
  return '{"status":"idle"}';
+}
+
+# Save an operator-imported .cube on the Pi for the upload-only 3D LUT
+# AutoCal path (worker method=imported). The raw .cube text travels as the
+# POST body — no JSON escaping, these files run to megabytes — and the
+# filename rides the query string under the same strict whitelist as the
+# download route. Validation here is light (LUT_3D_SIZE + node count); the
+# worker re-parses strictly before building the LG payload.
+sub webui_3d_lut_import (@) {
+ my ($query,$body,$dir)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ return '{"status":"error","message":".cube body required"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":".cube missing LUT_3D_SIZE"}' if($body!~/^\s*LUT_3D_SIZE\s+(\d+)\s*$/m);
+ my $size=$1+0;
+ return '{"status":"error","message":"Unsupported LUT_3D_SIZE"}' if($size < 2 || $size > 129);
+ my $rows=0;
+ $rows++ while($body=~/^\s*[-0-9.eE]+\s+[-0-9.eE]+\s+[-0-9.eE]+\s*$/mg);
+ my $want=$size*$size*$size;
+ return "{\"status\":\"error\",\"message\":\".cube node count $rows does not match LUT_3D_SIZE $size ($want)\"}" if($rows != $want);
+ my $name="";
+ $name=$1 if(defined($query) && $query=~/(?:^|&)name=([^&]{1,120})(?:&|$)/);
+ $name=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+ $name=~s/\.cube\s*$//i;
+ $name=~s/[^A-Za-z0-9._-]+/_/g;
+ $name=~s/^[._]+//;
+ $name="lut" if($name eq "");
+ system("mkdir -p $dir 2>/dev/null");
+ my $file="imported_".$name."_".time().".cube";
+ my $path="$dir/$file";
+ if(open(my $fh,'>',$path)) { print $fh $body; close($fh); chmod(0666,$path); }
+ else { return '{"status":"error","message":"Unable to save imported .cube"}'; }
+ return "{\"status\":\"ok\",\"file\":\"".&_webui_json_escape($file)."\",\"path\":\"".&_webui_json_escape($path)."\",\"size\":$size,\"nodes\":$rows}";
 }
 
 sub webui_lg_lut_list (@) {
@@ -10847,9 +10884,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <select id="meterLg3dProfileSource" onchange="meterLg3dProfileSourceChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
        <option value="matrix" selected>Matrix (5-point)</option>
        <option value="lattice">Lattice series</option>
+       <option value="imported">Imported .cube (upload only)</option>
       </select>
      </label>
      <select id="meterLg3dLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px" title="Lattice series to measure for profiling"></select>
+     <select id="meterLg3dImportedLut" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;max-width:260px" title="The .cube to resample to the LG 33-point payload and upload — no measurement, no solve"></select>
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
     <button class="btn btn-sm btn-primary" id="meterToneMapMeasureUploadBtn" onclick="meterStartToneMapMeasureUpload()" style="display:none" title="Measure 100% white peak and upload the HDR tone map">&#9654; Measure &amp; Upload</button>
@@ -25605,7 +25644,9 @@ function meterImportCubeFile(evt){
  const reader=new FileReader();
  reader.onload=()=>{
   const parsed=meterCubeLutParse(String(reader.result||''));
-  meterLastCubePreview={parsed:parsed,filename:file.name};
+  // Raw text is retained so the upload-only AutoCal path can save the file
+  // on the generator verbatim (no client-side re-serialisation).
+  meterLastCubePreview={parsed:parsed,filename:file.name,text:String(reader.result||'')};
   meterRenderCubePreview(parsed,file.name);
   if(parsed.ok) toast('.cube parsed: '+parsed.size+'³, '+(parsed.monotonic?'neutral OK':'neutral NOT monotonic'),!parsed.monotonic);
   else toast('.cube file is invalid — see preview panel',true);
@@ -32973,7 +33014,7 @@ let meterLg3dActiveLatticeSeriesId=0;
 function meterLg3dProfileSourceValue(){
  const el=document.getElementById('meterLg3dProfileSource');
  const v=el?String(el.value||'matrix').toLowerCase():'matrix';
- return (v==='lattice')?'lattice':'matrix';
+ return (v==='lattice'||v==='imported')?v:'matrix';
 }
 
 function meterLg3dLatticeSeriesChoices(){
@@ -32995,12 +33036,39 @@ function meterLg3dPopulateLatticeSeries(){
 }
 
 function meterLg3dProfileSourceChanged(){
+ const src=meterLg3dProfileSourceValue();
  const latSel=document.getElementById('meterLg3dLatticeSeries');
- const lattice=meterLg3dProfileSourceValue()==='lattice';
  if(latSel){
-  latSel.style.display=lattice?'':'none';
-  if(lattice) meterLg3dPopulateLatticeSeries();
+  latSel.style.display=(src==='lattice')?'':'none';
+  if(src==='lattice') meterLg3dPopulateLatticeSeries();
  }
+ const impSel=document.getElementById('meterLg3dImportedLut');
+ if(impSel){
+  impSel.style.display=(src==='imported')?'':'none';
+  if(src==='imported') meterLg3dPopulateImportedLuts();
+ }
+}
+
+// Upload-only picker: the current LUT Tools import preview (saved to the
+// generator at start time) plus every .cube already on the generator
+// (previous solves and imports).
+async function meterLg3dPopulateImportedLuts(){
+ const sel=document.getElementById('meterLg3dImportedLut');
+ if(!sel) return;
+ const prev=String(sel.value||'');
+ const opts=[];
+ const pv=meterLastCubePreview;
+ if(pv&&pv.parsed&&pv.parsed.ok&&pv.text){
+  opts.push({value:'__preview__',label:'Imported preview: '+String(pv.filename||'.cube')+' ('+pv.parsed.size+'³)'});
+ }
+ try{
+  const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  ((r&&r.luts)||[]).forEach(l=>{ if(l&&l.name) opts.push({value:l.name,label:l.name}); });
+ }catch(e){}
+ sel.innerHTML=opts.length
+  ? opts.map(o=>'<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>').join('')
+  : '<option value="">No .cube available — import one in LUT Tools</option>';
+ if(prev&&opts.some(o=>o.value===prev)) sel.value=prev;
 }
 
 function meterLg3dSelectedLatticeSeries(){
@@ -33277,14 +33345,16 @@ async function meterStartLg3dAutoCal(options){
   return false;
  };
  if(meterActionPending||meterLg3dAutoCalRunning||(!fullWorkflow&&(meterAutoCalRunning||meterFullAutoCalRunning))) return fail('Meter operation already in progress');
- if(!(await meterEnsureDetected())) return fail('No meter detected');
+ // Profiling method: the wizard passes options.method explicitly; the
+ // standalone button reads the Profiling source select (matrix | lattice |
+ // imported). Resolved before the meter check — the imported path uploads a
+ // .cube as-is and needs no meter at all.
+ const requestedMethod=String((options&&options.method)||meterLg3dProfileSourceValue()||'matrix').toLowerCase();
+ let method=(requestedMethod==='ramp'||requestedMethod==='lattice'||requestedMethod==='imported')?requestedMethod:'matrix';
+ if(method!=='imported'&&!(await meterEnsureDetected())) return fail('No meter detected');
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
- // Profiling method: the wizard passes options.method explicitly; the
- // standalone button reads the Profiling source select (matrix | lattice).
- const requestedMethod=String((options&&options.method)||meterLg3dProfileSourceValue()||'matrix').toLowerCase();
- let method=(requestedMethod==='ramp'||requestedMethod==='lattice')?requestedMethod:'matrix';
  if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
  if(signalMode==='hdr10'&&method==='ramp') return fail('HDR10 3D LUT AutoCal is matrix- or lattice-profiled in this version');
  // Lattice profiling: expand the chosen series to percent triplets now so a
@@ -33298,12 +33368,45 @@ async function meterStartLg3dAutoCal(options){
   if(!latticePatches.length) return fail('Selected lattice series has no cube patches');
   meterLg3dActiveLatticeSeriesId=latticeSeries.id;
  }
+ // Imported upload: validate the choice before confirming; the file is only
+ // saved to the generator after the operator accepts.
+ let importedChoice='';
+ if(method==='imported'){
+  const impSel=document.getElementById('meterLg3dImportedLut');
+  importedChoice=impSel?String(impSel.value||''):'';
+  if(importedChoice==='__preview__'){
+   const pv=meterLastCubePreview;
+   if(!pv||!pv.parsed||!pv.parsed.ok||!pv.text) return fail('Import a valid .cube in LUT Tools first');
+  } else if(!/^[A-Za-z0-9._-]+\.cube$/.test(importedChoice)){
+   return fail('Choose a .cube to upload (import one in LUT Tools first)');
+  }
+ }
  if(!(options&&options.skipConfirm)){
-  const profileLabel=method==='lattice'
-   ? 'profiles '+latticePatches.length+' lattice patches ('+esc(latticeSeries.name)+') and'
-   : '';
-  const accepted=window.confirm((signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '+(profileLabel?profileLabel+' ':'')+'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
+  const message=method==='imported'
+   ? 'Upload the selected .cube to the TV as-is? It is resampled to the LG 33-point payload — no measurement, no solve. This replaces the current 3D LUT for the active picture mode.'
+   : (signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '
+     +(method==='lattice'?'profiles '+latticePatches.length+' lattice patches ('+esc(latticeSeries.name)+') and ':'')
+     +'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?';
+  const accepted=window.confirm(message);
   if(!accepted) return false;
+ }
+ // Save the preview .cube on the generator now (post-confirm) and resolve
+ // the worker-side path.
+ let importedCubePath='';
+ if(method==='imported'){
+  if(importedChoice==='__preview__'){
+   const pv=meterLastCubePreview;
+   let saved=null;
+   try{
+    saved=await fetchJSON('/api/3d-lut/import?name='+encodeURIComponent(pv.filename||'lut'),{
+     method:'POST',headers:{'Content-Type':'text/plain'},body:pv.text,_timeoutMs:30000
+    });
+   }catch(e){}
+   if(!saved||saved.status!=='ok'||!saved.path) return fail((saved&&saved.message)||'Could not save the imported .cube on the generator');
+   importedCubePath=saved.path;
+  } else {
+   importedCubePath='/var/lib/PGenerator/lg/luts/'+importedChoice;
+  }
  }
  const upload=(options&&Object.prototype.hasOwnProperty.call(options,'upload'))?!!options.upload:true;
  const dtype=getEffectiveDisplayType();
@@ -33361,6 +33464,9 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // Lattice profiling: percent triplets only — the worker computes wire
   // codes from the run's live range/bit-depth (build_lattice_steps).
   lattice_patches:method==='lattice'?latticePatches:undefined,
+  // Imported upload: the .cube saved on the generator; the worker resamples
+  // it to the 33-point payload and skips profiling entirely.
+  imported_cube_path:method==='imported'?importedCubePath:undefined,
   upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
@@ -33400,13 +33506,13 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // worker moves past the preflight. Mirrors the meterRunSeries fix
   // (commit fac59852) and the autocal-wizard fix at
   // meterAutoCalConfirmAndStart.
- if(meterSelectedMeasurementRequiresReady()){
+ if(method!=='imported'&&meterSelectedMeasurementRequiresReady()){
   meterLg3dAutoCalSpectroSetupActive=true;
   meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
  }
  meterActionPending=true;
  meterLg3dAutoCalRunning=true;
- meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(method==='lattice'?latticePatches.length:5)),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(method==='lattice'?latticePatches.length:(method==='imported'?1:5))),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
  meterUpdateReadButtons();
  try{
   await meterStopContinuous();

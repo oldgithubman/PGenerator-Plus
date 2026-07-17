@@ -1537,6 +1537,89 @@ sub run_solve_only {
  return 1;
 }
 
+# ---- Imported-.cube upload path (method=imported) ----
+# No profiling, no solve: parse an operator-supplied .cube (saved on the Pi
+# by /api/3d-lut/import), trilinearly resample it to the LG 33-point payload
+# and a 17-point export cube, then run the standard probe/upload flow.
+
+sub parse_cube_file {
+ my ($path)=@_;
+ open(my $fh,'<',$path) or die "Unable to read imported .cube: $!\n";
+ my $size=0; my @vals;
+ while(my $line=<$fh>) {
+  next if($line=~/^\s*(?:#|TITLE|DOMAIN_MIN|DOMAIN_MAX|LUT_1D)/);
+  if($line=~/^\s*LUT_3D_SIZE\s+(\d+)/) { $size=$1+0; next; }
+  push @vals,[$1+0,$2+0,$3+0] if($line=~/^\s*([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s*$/);
+ }
+ close($fh);
+ die "Imported .cube missing LUT_3D_SIZE\n" if($size < 2 || $size > 129);
+ die "Imported .cube has ".scalar(@vals)." nodes, expected ".($size**3)."\n" if(scalar(@vals) != $size**3);
+ # Standard .cube node order: R fastest, B slowest.
+ return { size=>$size, values=>\@vals };
+}
+
+sub imported_cube_sample {
+ my ($cube,$fr,$fg,$fb)=@_;
+ my $n=$cube->{"size"};
+ my $vals=$cube->{"values"};
+ my $axis=sub {
+  my ($f)=@_;
+  my $x=clamp($f,0,1)*($n-1);
+  my $i0=int($x);
+  $i0=$n-2 if($i0 >= $n-1);
+  return ($i0,$x-$i0);
+ };
+ my ($r0,$tr)=$axis->($fr);
+ my ($g0,$tg)=$axis->($fg);
+ my ($b0,$tb)=$axis->($fb);
+ my @out=(0,0,0);
+ foreach my $db (0,1) { foreach my $dg (0,1) { foreach my $dr (0,1) {
+  my $w=($dr ? $tr : 1-$tr)*($dg ? $tg : 1-$tg)*($db ? $tb : 1-$tb);
+  next if($w <= 0);
+  my $v=$vals->[($r0+$dr)+($g0+$dg)*$n+($b0+$db)*$n*$n];
+  for my $c (0..2) { $out[$c]+=$w*$v->[$c]; }
+ }}}
+ return \@out;
+}
+
+sub build_imported_lut {
+ my ($config,$state)=@_;
+ my $path=$config->{"imported_cube_path"}||"";
+ die "Imported .cube path missing\n" if($path eq "");
+ die "Imported .cube not found: $path\n" if(!-f $path);
+ $state->{"current_name"}="Loading imported 3D LUT";
+ $state->{"message"}="Parsing ".$path;
+ write_state($state);
+ my $cube=parse_cube_file($path);
+ my $model={
+  method => "imported",
+  signal_mode => $config->{"signal_mode"}||"sdr",
+  target_gamut => $config->{"target_gamut"}||"bt709",
+  target_gamma => $config->{"target_gamma"}||"",
+  signal_gamma => $config->{"target_gamma"}||"",
+  neutral_axis_source => "imported",
+  imported_cube_path => $path,
+  imported_cube_size => $cube->{"size"},
+ };
+ # Export cube (17^3): R-SLOWEST fill to match generate_lut_cube — cube_text
+ # emits through a transposed walk and assumes that memory order.
+ my @cube_u16;
+ my $csize=17;
+ for(my $r=0;$r<$csize;$r++) { for(my $g=0;$g<$csize;$g++) { for(my $b=0;$b<$csize;$b++) {
+  my $v=imported_cube_sample($cube,$r/($csize-1),$g/($csize-1),$b/($csize-1));
+  push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
+ }}}
+ # LG payload (33^3): R-FASTEST fill to match generate_lut_lg_payload.
+ my @payload_u16;
+ my $psize=33;
+ for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
+  my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
+  push @payload_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
+ }}}
+ log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize payload=$psize");
+ return ($model,\@cube_u16,\@payload_u16);
+}
+
 sub cube_text {
  my ($u16,$size,$title)=@_;
  my $text="TITLE \"".$title."\"\n";
@@ -3244,7 +3327,7 @@ if(ref($config) eq "HASH") {
 }
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
-$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice");
+$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice" || $method eq "imported");
 # Lattice profiling needs the client-expanded node list; without it fall back
 # to the classic 5-point matrix rather than dying mid-wizard.
 $method="matrix" if($method eq "lattice" && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}}));
@@ -3291,6 +3374,7 @@ if($config->{"solve_only"}) {
 
 my @steps=($method eq "matrix") ? build_matrix_steps($config)
  : ($method eq "lattice") ? build_lattice_steps($config)
+ : ($method eq "imported") ? ()
  : build_ramp_steps($config);
 my $started_at=int(time()*1000);
 
@@ -3301,7 +3385,7 @@ my $state={
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
- profile_patch_count => ($method eq "ramp" ? 65 : ($method eq "lattice" ? scalar(@steps) : 5)),
+ profile_patch_count => ($method eq "ramp" ? 65 : ($method eq "lattice" ? scalar(@steps) : ($method eq "imported" ? 0 : 5))),
  current_name => "Preparing LG 3D LUT Auto Cal...",
  message => "Starting",
  readings => [],
@@ -3322,7 +3406,7 @@ my $upload_requested=upload_requested($config);
 
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
- die "LG 3D LUT Auto Cal HDR10 runs are matrix- or lattice-profiled in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "lattice");
+ die "LG 3D LUT Auto Cal HDR10 runs are matrix- or lattice-profiled in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "lattice" && $method ne "imported");
  # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
  # tone-map commit (operator-approved reorder, 2026-07-03). Running it
  # here (before profiling) made the trim converge against a mid-workflow
@@ -3331,7 +3415,9 @@ eval {
  # The order test (base DPG -> 3D cal -> shadow after -> re-commit)
  # verified within +-2% luminance and dxy <= 0.0016 at 15-35% on the C1.
  # Profiling now always sees the greyscale stage's converged base DPG.
- my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
+ # Imported upload skips the pre-profile unity reset: there is no profiling
+ # to protect and the upload itself replaces whatever cube is loaded.
+ my $unity_reset=($method eq "imported") ? undef : reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
@@ -3358,15 +3444,21 @@ eval {
   ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
   : ($method eq "lattice")
    ? "Solving lattice matrix + per-node residuals, 17-point cube plus 33-point LG payload"
-   : "Solving matrix 17-point cube plus 33-point LG payload";
+   : ($method eq "imported")
+    ? "Resampling imported .cube to 17-point cube plus 33-point LG payload"
+    : "Solving matrix 17-point cube plus 33-point LG payload";
  write_state($state);
 
+ my ($model,$cube_u16,$payload_u16,$preview_nodes);
+ if($method eq "imported") {
+  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state);
+ } else {
  # Lattice profiling solves the SAME model as the offline lattice solve
  # (run_solve_only): white-preserving matrix baseline from the corner reads,
  # then bounded per-node residual corrections from the interior nodes. The
  # matrix baseline reads only the white/red/green/blue/black corner kinds,
  # so passing "matrix" here is exact — interior "node" entries are inert.
- my $model=model_from_readings(($method eq "lattice") ? "matrix" : $method,\@profile_readings,$config);
+ $model=model_from_readings(($method eq "lattice") ? "matrix" : $method,\@profile_readings,$config);
  if($method eq "lattice") {
   my @nodes;
   foreach my $entry (@profile_readings) {
@@ -3392,8 +3484,9 @@ eval {
   $model->{"method"}="lattice";
   log_line("lattice profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
  }
- my ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
- my $payload_u16=generate_lut_lg_payload($model,33);
+ ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
+ $payload_u16=generate_lut_lg_payload($model,33);
+ }
  my $export=export_lut($cube_u16,$payload_u16,$model,$config);
  $state->{"export"}=$export;
  $state->{"signal_mode"}=$model->{"signal_mode"};
