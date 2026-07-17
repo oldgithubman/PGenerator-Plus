@@ -2385,6 +2385,32 @@ sub webui_lattice_series_steps_from_body (@) {
  my $threshold=defined($p{"threshold_pct"})?$p{"threshold_pct"}+0:0;
  $threshold=0 if($threshold<0);
  $threshold=50 if($threshold>50);
+ # Node spacing (MUST mirror meterLatticeAxisFracs): 'light' spaces node
+ # values uniformly in decoded light up to peak_nits (PQ encode for HDR
+ # lattices, 2.4 power law for SDR), normalized so corners hit 100% signal.
+ my $spacing=($obj=~/"spacing"\s*:\s*"light"/)?"light":"signal";
+ my $lat_pq=($obj=~/"pq"\s*:\s*true/i)?1:0;
+ my $peak_nits=1000;
+ $peak_nits=$1+0 if($obj=~/"peak_nits"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ $peak_nits=100 if($peak_nits<100);
+ $peak_nits=10000 if($peak_nits>10000);
+ my $pq_encode=sub {
+  my ($L)=@_;
+  my $m1=2610/16384; my $m2=2523/32; my $c1=3424/4096; my $c2=2413/128; my $c3=2392/128;
+  my $y=($L<0?0:$L)/10000;
+  my $pp=$y**$m1;
+  return (($c1+$c2*$pp)/(1+$c3*$pp))**$m2;
+ };
+ my $axis_frac=sub {
+  my ($i,$div)=@_;
+  my $t=$i/$div;
+  return $t if($spacing ne "light");
+  if($lat_pq) {
+   my $top=$pq_encode->($peak_nits);
+   return $top>0 ? $pq_encode->($t*$peak_nits)/$top : $t;
+  }
+  return $t**(1/2.4);
+ };
  my @steps;
  my $ire=1;
  my $pctf=sub {
@@ -2410,10 +2436,11 @@ sub webui_lattice_series_steps_from_body (@) {
  }
  my @nodes;
  my $div=$size-1;
+ my @axis_fracs=map { $axis_frac->($_,$div) } (0..$size-1);
  for(my $ri=0;$ri<$size;$ri++) {
   for(my $gi=0;$gi<$size;$gi++) {
    for(my $bi=0;$bi<$size;$bi++) {
-    my ($fr,$fg,$fb)=($ri/$div,$gi/$div,$bi/$div);
+    my ($fr,$fg,$fb)=($axis_fracs[$ri],$axis_fracs[$gi],$axis_fracs[$bi]);
     next if($threshold>0 && (0.2126*$fr+0.7152*$fg+0.0722*$fb)*100 < $threshold);
     push @nodes,[$fr,$fg,$fb];
    }
@@ -11042,6 +11069,13 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <select id="meterLatticeOrder" onchange="meterLatticeGenSyncReadout()" style="width:150px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
        <option value="spread" selected>Spread (thermal-safe)</option>
        <option value="grid">Grid order</option>
+      </select>
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Node spacing <span class="meter-help-tip" title="Signal-uniform: classic equal code steps. Light-uniform: node values spaced evenly in decoded LIGHT up to the mastering peak (corners still hit 100% signal). In HDR/PQ, signal-uniform mixes decode to near-primary light ratios and crowd the gamut edge — light-uniform fills the chroma interior with the same patch count." aria-label="Node spacing help">?</span></span>
+      <select id="meterLatticeSpacing" onchange="meterLatticeGenSyncReadout()" style="width:190px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="signal" selected>Signal-uniform</option>
+       <option value="light">Light-uniform</option>
       </select>
      </label>
      <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px;align-self:flex-end;padding-bottom:6px">
@@ -25034,8 +25068,37 @@ function meterLatticeSanitizeParams(raw){
   grey_points:grey,
   threshold_pct:threshold,
   order:(src.order==='grid')?'grid':'spread',
-  reverse:!!src.reverse
+  reverse:!!src.reverse,
+  // Node spacing: 'signal' = uniform code steps (classic). 'light' = uniform
+  // DECODED-light steps up to peak_nits, normalized so the corners still hit
+  // 100% signal. In PQ, signal-uniform mixes decode to near-primary light
+  // ratios (75/50/25 ≈ 380:35:1) and crowd the gamut edge — light-uniform
+  // spacing fills the chroma interior with the same patch count.
+  spacing:(src.spacing==='light')?'light':'signal',
+  peak_nits:num(src.peak_nits,1000,100,10000),
+  // Baked at generation time from the series' signal mode: light spacing uses
+  // the PQ encode for HDR lattices, a 2.4 power law for SDR ones.
+  pq:!!src.pq
  };
+}
+
+// Per-axis node fractions for a lattice. Self-contained math (no chart-state
+// dependencies) — MUST stay algorithm-identical to the server expansion in
+// webui_lattice_series_steps_from_body (parity-locked).
+function meterLatticeAxisFracs(N,params){
+ const div=N-1;
+ const out=[];
+ const light=!!(params&&params.spacing==='light');
+ const pqe=(L)=>{ const m1=2610/16384,m2=2523/32,c1=3424/4096,c2=2413/128,c3=2392/128; const y=Math.max(0,L)/10000; const p=Math.pow(y,m1); return Math.pow((c1+c2*p)/(1+c3*p),m2); };
+ const peak=(params&&params.peak_nits)||1000;
+ const top=pqe(peak);
+ for(let i=0;i<N;i++){
+  const t=i/div;
+  if(!light){ out.push(t); continue; }
+  if(params.pq){ out.push(top>0?(pqe(t*peak)/top):t); }
+  else { out.push(Math.pow(t,1/2.4)); }
+ }
+ return out;
 }
 
 function meterLatticePct(f){
@@ -25069,8 +25132,9 @@ function meterLatticeExpandPatches(rawParams){
   }
  }
  const nodes=[];
+ const axisFracs=meterLatticeAxisFracs(N,params);
  for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
-  const fr=ri/div,fg=gi/div,fb=bi/div;
+  const fr=axisFracs[ri],fg=axisFracs[gi],fb=axisFracs[bi];
   if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
   nodes.push(makePatch(meterLatticePct(fr)+'/'+meterLatticePct(fg)+'/'+meterLatticePct(fb),fr,fg,fb));
  }
@@ -25101,10 +25165,10 @@ function meterLatticeExpandPatches(rawParams){
 function meterLatticeCountForParams(rawParams){
  const params=meterLatticeSanitizeParams(rawParams);
  const N=params.size;
- const div=N-1;
  let count=(params.grey_points>=2)?params.grey_points:0;
+ const axisFracs=meterLatticeAxisFracs(N,params);
  for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
-  if(meterLatticeKeepNode(ri/div,gi/div,bi/div,params.threshold_pct)) count++;
+  if(meterLatticeKeepNode(axisFracs[ri],axisFracs[gi],axisFracs[bi],params.threshold_pct)) count++;
  }
  return count;
 }
@@ -25285,12 +25349,19 @@ let meterLatticeGenEditingId=null;
 function meterLatticeGenParamsFromForm(){
  const val=(id)=>{ const el=document.getElementById(id); return el?el.value:''; };
  const chk=(id)=>{ const el=document.getElementById(id); return !!(el&&el.checked); };
+ const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+ const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
  return meterLatticeSanitizeParams({
   size:val('meterLatticeSize'),
   grey_points:val('meterLatticeGrey'),
   threshold_pct:val('meterLatticeThreshold'),
   order:val('meterLatticeOrder'),
-  reverse:chk('meterLatticeReverse')
+  reverse:chk('meterLatticeReverse'),
+  spacing:val('meterLatticeSpacing'),
+  // Baked at generation time: HDR lattices space light via the PQ encode up
+  // to the current mastering peak; SDR uses a 2.4 power law.
+  pq:modeKey==='hdr',
+  peak_nits:peak
  });
 }
 
@@ -25326,6 +25397,7 @@ function meterOpenLatticeGenerator(id){
  set('meterLatticeGrey',params.grey_points);
  set('meterLatticeThreshold',params.threshold_pct);
  set('meterLatticeOrder',params.order);
+ set('meterLatticeSpacing',params.spacing||'signal');
  const rev=document.getElementById('meterLatticeReverse');
  if(rev) rev.checked=!!params.reverse;
  const title=document.getElementById('meterLatticeGenTitle');
