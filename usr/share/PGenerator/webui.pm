@@ -10743,8 +10743,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
-     <button class="btn btn-sm btn-secondary" id="meterCustomSeriesManagerBtn" onclick="meterOpenCustomSeriesManager()" style="margin-left:auto" title="Create, edit, delete, import and export custom patch series">Custom Series&hellip;</button>
-     <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
+     <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
@@ -10754,19 +10753,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
-      <span id="meterCustomSeriesGreySlot" style="display:contents"></span>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom greyscale series">Custom&hellip;</button>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
-     <span id="meterCustomSeriesColorSlot" style="display:contents"></span>
       <!-- 3D LUT profiling lattices: measured like any colour series (CIE
            charts only — no target grading; profiling data feeds the LUT
            solve). The LUT cube visual lives in LUT Tools, not here. -->
       <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="3D LUT profiling lattice: 5x5x5 RGB cube (125 patches)">Cube 5&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
-      <span id="meterCustomSeriesCubeSlot" style="display:contents"></span>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour and lattice series">Custom&hellip;</button>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -11351,7 +11349,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        </select>
       </label>
      </div>
-     <canvas id="chartColorDE" width="800" height="180" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     <div id="meterColorDeltaEScroller" class="meter-scroll-sync" style="overflow-x:hidden;border-radius:6px">
+      <canvas id="chartColorDE" width="800" height="180" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     </div>
     </div>
     <div id="colorSeriesAveragesWrap" style="margin-bottom:10px;display:none">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Series Averages</div>
@@ -20158,12 +20158,16 @@ function bt2390Tonemap(Lsrc, Lmax, Ldisp){
  return Math.min(meterChartPqDecodeNormalized(Eout), Ldisp);
 }
 
-// Show the HDR roll-off control only when the chart path can actually use it
-// (PQ-based HDR/DV targets). Called from the HDR-aware redraw path.
+// Show the HDR roll-off control whenever the chart path can use it: a
+// PQ-classified chart (HDR10/DV series) OR an st2084 Target Gamma selection —
+// an operator who targets PQ must always be able to reach the BT.2390 toggle,
+// even before the series context is classified. Refreshed on every chart
+// context change and draw (including empty preset draws).
 function meterUpdateHdrConfigVisibility(){
  const el=document.getElementById('meterHdrConfig');
  if(!el) return;
- el.style.display = meterChartIsPq() ? '' : 'none';
+ const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'').toLowerCase();
+ el.style.display = (meterChartIsPq()||sel==='st2084') ? '' : 'none';
 }
 
 function meterChartPqEncodeNormalized(nits){
@@ -21496,6 +21500,7 @@ function meterRecoverSeries(s){
  meterResetSeriesButtons();
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ meterRenderCustomSeriesButtons();
  // Build thumbs and charts
  const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:meterGreyscaleSeriesSteps(steps);
  const completedIres=new Set();
@@ -25114,6 +25119,7 @@ function meterRenderCustomSeriesManager(){
    +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
    +'<td style="padding:6px">'+patchInfo+'</td>'
    +'<td style="padding:6px"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">'
+    +'<button class="btn btn-sm btn-primary" onclick="meterCustomSeriesLoad('+series.id+')" title="Close this window and load the series into the charts">Load</button>'
     +'<button class="btn btn-sm btn-secondary" onclick="meterManagerEditSeries('+series.id+')">Edit</button>'
     +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'calman\')" title="Export as CalMAN 8-bit CSV">CalMAN</button>'
     +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'colourspace\')" title="Export as ColourSpace CSV">CSpace</button>'
@@ -25121,6 +25127,14 @@ function meterRenderCustomSeriesManager(){
    +'</div></td>'
   +'</tr>';
  }).join('');
+}
+
+function meterCustomSeriesLoad(id){
+ const series=meterCustomSeriesById(id);
+ if(!series){ toast('Series not found',true); return; }
+ meterCloseCustomSeriesManager();
+ const type=(series.kind==='lattice'||series.category==='color')?'colors':'greyscale';
+ meterSelectSeries(type,series.id);
 }
 
 function meterManagerNewSeries(category){
@@ -25824,21 +25838,18 @@ function meterBuildCustomSeriesSteps(series){
 let meterCustomSeriesEditor=null;
 
 function meterRenderCustomSeriesButtons(){
- const modeKey=meterCustomSeriesModeKey();
- const state=meterCustomSeriesNormalizeState();
- [
-  {el:document.getElementById('meterCustomSeriesGreySlot'),type:'greyscale',filter:s=>s.kind!=='lattice'&&s.category!=='color'},
-  {el:document.getElementById('meterCustomSeriesColorSlot'),type:'colors',filter:s=>s.kind!=='lattice'&&s.category==='color'},
-  {el:document.getElementById('meterCustomSeriesCubeSlot'),type:'colors',filter:s=>s.kind==='lattice'}
- ].forEach(slot=>{
-  if(!slot.el) return;
-  const list=state.series.filter(s=>s.mode===modeKey&&slot.filter(s));
-  slot.el.innerHTML=list.map(series=>{
-   const key=slot.type+'-'+series.id;
-   const active=meterActiveSeriesKey===key;
-   const label=String(series.name||('Custom '+series.id)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-   return '<button class="btn btn-sm btn-custom-series '+(active?'btn-primary':'btn-secondary')+'" data-series="'+key+'" onclick="meterSelectSeries(\''+slot.type+'\','+series.id+')">'+label+'</button>';
-  }).join('');
+ // Custom series are LOADED from the Custom Series manager (per-row Load
+ // buttons) instead of spawning a series button each — the per-group
+ // Custom… buttons only reflect the ACTIVE custom series (highlight + name).
+ const active=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ const activeCat=active?((active.kind==='lattice'||active.category==='color')?'color':'greyscale'):null;
+ [['meterCustomSeriesBtnGrey','greyscale'],['meterCustomSeriesBtnColor','color']].forEach(pair=>{
+  const btn=document.getElementById(pair[0]);
+  if(!btn) return;
+  const on=!!(active&&activeCat===pair[1]);
+  btn.classList.toggle('btn-primary',on);
+  btn.classList.toggle('btn-secondary',!on);
+  btn.textContent=on?('Custom: '+String(active.name||('Series '+active.id))):'Custom\u2026';
  });
 }
 
@@ -26519,6 +26530,7 @@ async function meterSelectSeries(type,points,opts){
  meterActiveSeriesKey=key;
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+key+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ meterRenderCustomSeriesButtons();
  if(opts.preserveTab&&meterSeriesTab==='autocal'){
   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
  }
@@ -33624,7 +33636,7 @@ function meterSeriesThumbContentWidth(sortedSteps,row){
 }
 
 function meterGreyscaleScrollTargets(){
- const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller'];
+ const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller','meterColorDeltaEScroller'];
  return ids.map(id=>document.getElementById(id)).filter(Boolean);
 }
 
@@ -33877,6 +33889,40 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
  meterUpdateThumbScrollButtons();
 }
 
+// Colour-series ΔE chart scroll layout: when a colour series has more patches
+// than fit, the thumbnails scroll — the ΔE bar chart must widen to the SAME
+// content width and follow the thumb scroll ratio, exactly like the greyscale
+// >64-step chart suite. The scroller is a member of the shared scroll-sync
+// group; scrolling the thumbs drives it (and vice versa via the shared ratio).
+function meterUpdateColorDeltaEScrollLayout(sortedSteps){
+ const scroller=document.getElementById('meterColorDeltaEScroller');
+ const canvas=document.getElementById('chartColorDE');
+ if(!scroller||!canvas) return;
+ const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ const steps=Array.isArray(sortedSteps)?sortedSteps:[];
+ const row=meterGreyscaleScrollSource();
+ const viewport=Math.max(320,Math.round(scroller.clientWidth||((row&&row.clientWidth)||0)||800));
+ const content=isColor?meterSeriesThumbContentWidth(steps,scroller):0;
+ const prev=canvas.style.width;
+ if(isColor&&content>viewport+4){
+  canvas.style.width=content+'px';
+  canvas.style.minWidth=content+'px';
+ } else {
+  canvas.style.width='100%';
+  canvas.style.minWidth='100%';
+  scroller.scrollLeft=0;
+ }
+ scroller.style.overflowX='hidden';
+ if(canvas.style.width!==prev){
+  // Repaint at the new width so the bars/labels spread out like the thumbs.
+  try{ if(Array.isArray(meterReadings)&&meterReadings.length) drawColorDeltaE2000Chart([...meterReadings]); }catch(e){}
+ }
+ meterBindGreyscaleScrollSync();
+ meterGreyscaleScrollSyncing=true;
+ meterSetGreyscaleScrollRatio(scroller,meterGreyscaleScrollRatio);
+ meterGreyscaleScrollSyncing=false;
+}
+
 function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
@@ -33934,6 +33980,10 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  }
  meterUpdateThumbStyles(container,completedIres,currentIre);
  meterUpdateThumbScrollButtons();
+ // Keep the colour ΔE chart width + scroll in step with the thumb strip.
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  try{ meterUpdateColorDeltaEScrollLayout(visibleSteps); }catch(e){}
+ }
  if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
 }
 function meterUpdateThumbStyles(container,completedIres,currentIre){
@@ -34390,6 +34440,7 @@ function drawTwoPointCharts(gs,allSteps){
 
 function drawAllChartsPreset(sortedSteps){
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
+ try{ meterUpdateHdrConfigVisibility(); }catch(e){}
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(sortedSteps));
   if(gsSteps.length===0) return;
@@ -34705,8 +34756,8 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
- if(!readings||readings.length===0) return;
  meterUpdateHdrConfigVisibility();
+ if(!readings||readings.length===0) return;
  meterEnsureDeltaECache(readings);
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
