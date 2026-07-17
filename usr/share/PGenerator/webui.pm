@@ -10835,6 +10835,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <!-- 3D LUT profiling lattices: measured like any colour series (CIE
            charts only — no target grading; profiling data feeds the LUT
            solve). The LUT cube visual lives in LUT Tools. -->
+      <button class="btn btn-sm btn-secondary" data-series="colors-903" onclick="meterSelectSeries('colors',903)" title="3D LUT profiling lattice: 3x3x3 RGB cube (27 patches - corners plus one interior step; the quickest lattice profile)">Cube 3&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="3D LUT profiling lattice: 5x5x5 RGB cube (125 patches)">Cube 5&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
@@ -25077,6 +25078,7 @@ function meterCustomSeriesNormalizeState(){
 // like user lattice series (params-only, range-aware measurement) but are not
 // persisted, listed in the manager, or deletable.
 const METER_BUILTIN_CUBE_SERIES=[
+ {id:903,name:'Cube 3³',category:'color',mode:'any',kind:'lattice',params:{size:3,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
  {id:905,name:'Cube 5³',category:'color',mode:'any',kind:'lattice',params:{size:5,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
  {id:909,name:'Cube 9³',category:'color',mode:'any',kind:'lattice',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
  {id:917,name:'Cube 17³',category:'color',mode:'any',kind:'lattice',params:{size:17,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]}
