@@ -25088,13 +25088,34 @@ let meterCustomSeriesReturnToManager=false;
 // the last series still persists.
 let meterCustomSeriesDirty=false;
 
-function meterOpenCustomSeriesManager(){
+// Refresh the custom-series blob from the Pi so series created in ANOTHER
+// browser/computer appear without a reload. Local unsaved edits win (dirty
+// state skips the refresh; it posts on the next save instead).
+async function meterRefreshCustomSeriesFromServer(){
+ if(meterCustomSeriesDirty) return false;
+ let s=null;
+ try{ s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000}); }catch(e){ return false; }
+ if(!s||!s.custom_series_json) return false;
+ try{
+  const next=JSON.parse(s.custom_series_json);
+  if(JSON.stringify(next)===JSON.stringify(meterCustomSeriesState)) return false;
+  meterCustomSeriesState=next;
+  meterCustomSeriesNormalizeState();
+  meterRenderCustomSeriesButtons();
+  return true;
+ }catch(e){}
+ return false;
+}
+
+async function meterOpenCustomSeriesManager(){
  const modal=document.getElementById('meterCustomSeriesManagerModal');
  if(!modal) return;
  meterCustomSeriesReturnToManager=false;
  meterRenderCustomSeriesManager();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
+ // Refresh from the Pi in the background and re-render if anything changed.
+ try{ if(await meterRefreshCustomSeriesFromServer()) meterRenderCustomSeriesManager(); }catch(e){}
 }
 
 function meterCloseCustomSeriesManager(){
@@ -33936,6 +33957,10 @@ function meterUpdateColorDeltaEScrollLayout(sortedSteps){
  const viewport=Math.max(320,Math.round(scroller.clientWidth||((row&&row.clientWidth)||0)||800));
  const content=isColor?meterSeriesThumbContentWidth(steps,scroller):0;
  const prev=canvas.style.width;
+ // Pin the CSS height: the canvas carries width/height ATTRIBUTES (800x180),
+ // so setting only a (huge) CSS width lets the browser scale the height
+ // proportionally — a 10000px-wide series drew a ~2400px-tall dE chart.
+ canvas.style.height='180px';
  if(isColor&&content>viewport+4){
   canvas.style.width=content+'px';
   canvas.style.minWidth=content+'px';
@@ -38875,7 +38900,10 @@ function saveMeterSettings(){
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
-  ...(meterCustomSeriesDirty||(meterCustomSeriesState&&Array.isArray(meterCustomSeriesState.series)&&meterCustomSeriesState.series.length)
+  // Custom series post ONLY when THIS browser mutated them. Posting a stale
+  // (but non-empty) list from another tab/browser silently clobbered series
+  // created elsewhere; omitting the key preserves the server's stored blob.
+  ...(meterCustomSeriesDirty
    ? {custom_series_json:JSON.stringify(meterCustomSeriesState)}
    : {}),
   custom_series_dirty:!!meterCustomSeriesDirty,
@@ -38905,8 +38933,10 @@ function saveMeterSettings(){
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
  };
+ const carriedCustomSeries=!!meterCustomSeriesDirty;
  const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
+ request.then(r=>{ if(r&&carriedCustomSeries) meterCustomSeriesDirty=false; }).catch(()=>{});
  meterSettingsSavePromise=request.catch(()=>null);
  try{ meterSaveColorPrefs(); }catch(e){}
  return meterSettingsSavePromise;
