@@ -26462,6 +26462,15 @@ async function meterSelectSeries(type,points,opts){
  else meterStopContinuous();
  meterLatticeDefault3dView(points);
  if(meterActiveSeriesKey===key){
+  // Same-key early return ONLY when the active context matches the LIVE
+  // signal mode. A stale restore (e.g. the boot restore racing the config
+  // load) can leave an SDR-cached series active while the generator is in
+  // HDR10 — the whole PQ chart pipeline (BT.2390 control, st2084 target
+  // decode) silently collapses. A manual re-select must rebuild with the
+  // live mode instead of keeping the stale context.
+  const _liveMode=String(meterChartSignalMode()||'sdr').toLowerCase();
+  const _activeMode=String(meterActiveSeriesSignalMode||_liveMode).toLowerCase();
+  if(_activeMode===_liveMode){
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
@@ -26479,6 +26488,7 @@ async function meterSelectSeries(type,points,opts){
   meterUpdateReadButtons();
   meterUpdateDeltaEFormControl();
   return;
+  }
  }
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
   meterCacheSeriesState(meterSeriesRunning?'running':'complete');
