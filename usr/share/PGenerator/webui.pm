@@ -28475,99 +28475,6 @@ async function meterAutoCalCloseCompleteAction(){
  meterAutoCalCloseComplete();
 }
 
-let meterAutoCalCompleteModalEl=null;
-function meterAutoCalCompleteModalActive(){
- return !!(meterAutoCalCompleteModalEl&&document.body.contains(meterAutoCalCompleteModalEl));
-}
-// Builds a concise text summary for the standalone completion modal. Mirrors
-// the per-kind branches in meterAutoCalRenderResults but returns a string so
-// the modal is self-contained (it does not rely on the wizard overlay's
-// results box, which is never opened during a standalone 3D LUT run).
-// NOTE: standalone autocals never run an automatic post-check (the start
-// payload sends post_check:false), so this summary must NOT reference
-// post_check_summary / post-check delta E -- those only exist after the
-// operator runs a manual post-check series later. The greyscale delta E here
-// is the in-calibration measurement (each point read as it is adjusted), not
-// a post-check.
-function meterAutoCalCompleteSummaryText(status){
- const s=status||{};
- const durMs=meterAutoCalDurationMs(s);
- const dur=(durMs!=null)?(' Duration: '+meterAutoCalFormatDuration(durMs)+'.'):'';
- if(s.autocal3d){
-  const method=String(s.method||'ramp').toUpperCase();
-  let detail='';
-  if(s.upload_verified) detail=' 3D LUT uploaded and verified.';
-  else if(s.upload_supported===false) detail=' 3D LUT export kept; TV upload unavailable.';
-  else if(s.export&&s.export.cube_path) detail=' 3D LUT export ready.';
-  return method+' 3D LUT AutoCal complete.'+detail+dur;
- }
- const rows=meterAutoCalSummaryRows(s);
- if(!rows.length) return 'Greyscale AutoCal complete.'+dur;
- const avg=rows.reduce((sum,row)=>sum+row.de,0)/rows.length;
- const sorted=[...rows].sort((a,b)=>b.de-a.de);
- const max=sorted[0];
- const target=Number(s.target_delta_e!=null?s.target_delta_e:meterAutoCalTargetDeltaValue());
- const targetText=Number.isFinite(target)?(' Target \u0394E '+target.toFixed(2)+'.'):'';
- return rows.length+' greyscale readings. Avg \u0394E '+avg.toFixed(2)+'. Max \u0394E '+max.de.toFixed(2)+' at '+max.label+'.'+targetText+dur;
-}
-// Standalone greyscale and standalone 3D LUT autocal completion popup. A
-// standalone 3D LUT run is driven by the workflow progress bar and never
-// opens the wizard overlay, so its completion left the operator with no
-// on-screen indication the run had finished (the progress bar just
-// vanished). This modal guarantees a clear "complete" popup with an OK
-// button for both standalone paths. OK runs the same teardown as the
-// wizard overlay's Close button (meterAutoCalCloseCompleteAction).
-function meterShowAutoCalCompleteModal(status){
- if(meterAutoCalCompleteModalActive()){
-  try{ meterAutoCalCompleteModalEl.remove(); }catch(e){}
-  meterAutoCalCompleteModalEl=null;
- }
- // This modal is the sole completion popup. The standalone completion
- // paths also call meterAutoCalSetOverlay(true,...) (the wizard results
- // box + Close), which would stack a second popup under this one. Hide
- // the wizard overlay first -- meterAutoCalSetOverlay(false,...) still
- // runs the showComplete state work (measurement-port restore, results
- // render) but leaves the mask hidden, so only this modal is visible.
- try{ meterAutoCalSetOverlay(false,status||null); }catch(e){}
- const s=status||{};
- const is3d=!!s.autocal3d;
- const root=document.createElement('div');
- root.id='meterAutoCalCompleteModal';
- root.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100020;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
- const card=document.createElement('div');
- card.style.cssText='background:var(--panel,#0f1320);border:1px solid var(--border,#1d2230);border-radius:10px;max-width:480px;width:100%;padding:22px 20px;color:var(--text,#e3e6ef);box-shadow:0 18px 60px rgba(0,0,0,0.6);font-family:inherit';
- const title=document.createElement('div');
- title.style.cssText='font-size:1.02rem;font-weight:700;margin-bottom:12px;color:var(--text,#e3e6ef)';
- title.textContent=is3d?'LG 3D LUT AutoCal Complete':'LG Greyscale AutoCal Complete';
- const body=document.createElement('div');
- body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.55;margin-bottom:18px;white-space:pre-line';
- body.textContent=meterAutoCalCompleteSummaryText(s);
- const row=document.createElement('div');
- row.style.cssText='display:flex;gap:10px;justify-content:flex-end';
- const okBtn=document.createElement('button');
- okBtn.className='btn btn-sm btn-primary';
- okBtn.textContent='OK';
- row.appendChild(okBtn);
- card.appendChild(title);
- card.appendChild(body);
- card.appendChild(row);
- root.appendChild(card);
- document.body.appendChild(root);
- meterAutoCalCompleteModalEl=root;
- let closed=false;
- const close=()=>{
-  if(closed) return;
-  closed=true;
-  try{ document.removeEventListener('keydown',onKey,true); }catch(e){}
-  try{ root.remove(); }catch(e){}
-  if(meterAutoCalCompleteModalEl===root) meterAutoCalCompleteModalEl=null;
-  try{ meterAutoCalCloseCompleteAction(); }catch(e){}
- };
- okBtn.onclick=()=>{ close(); };
- function onKey(ev){ if(ev.key==='Enter'||ev.key==='Escape'){ ev.preventDefault(); close(); } }
- document.addEventListener('keydown',onKey,true);
- try{ okBtn.focus(); }catch(e){}
-}
 
 function meterAutoCalScheduleCompleteAutoClose(postReportAvailable){
  meterAutoCalClearCompleteAutoClose();
@@ -32003,7 +31910,6 @@ let completeStatus=r;
 				   meterAutoCalRunning=true;
 				   meterAutoCalPendingConfig=null;
 				   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
-				   meterShowAutoCalCompleteModal({...completeStatus,phase:'complete'});
 	   }else if(r.status==='error'){
 	    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
 	    meterAutoCalPhase='error';
@@ -33104,7 +33010,6 @@ async function meterPollLg3dAutoCal(options){
 	    }
 	    meterAutoCalPhase='complete';
 	    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'complete'});
-    meterShowAutoCalCompleteModal({...r,autocal3d:true,phase:'complete'});
     toast('LG 3D LUT AutoCal complete');
    }else if(r.status==='error'){
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
