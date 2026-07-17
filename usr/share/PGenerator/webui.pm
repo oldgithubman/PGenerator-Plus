@@ -10991,6 +10991,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
+  <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10002;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(520px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT solved</div>
+    <div id="lutSolveDoneSummary" style="font-size:.8rem;color:var(--text2);margin-bottom:12px;line-height:1.5"></div>
+    <div class="btn-row" style="margin:0;flex-wrap:wrap;gap:6px">
+     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('cube')" title="Standard .cube (Resolve, madVR, LUT boxes)">Download .cube</button>
+     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('3dl')" title="Autodesk/Kodak .3dl (Lustre, Flame)">Download .3dl</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterLutSolveView3d()" title="Inspect the solved LUT as a 3D cube in LUT Tools">View in 3D</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterLutSolveDoneClose()">Close</button>
+    </div>
+   </div>
+  </div>
   <div id="meterLatticeGenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(560px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div id="meterLatticeGenTitle" style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:10px">Generate Lattice Series</div>
@@ -23436,7 +23448,7 @@ async function meterStop(){
   meterStopModalShow(hadSeriesStop?'series':(hadContinuousStop?'continuous':'meter'));
  }
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
- document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+ document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
  // Clear the "currently reading" pulse animation on whichever thumb was last
@@ -23713,6 +23725,7 @@ function meterUpdateReadButtons(){
   clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal;
  }
  if(readSeriesBtn){
+  if(!meterSeriesRunning&&!meterActionPending) readSeriesBtn.innerHTML=meterReadSeriesButtonLabel();
   readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty||busy;
   readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
@@ -25621,7 +25634,7 @@ function meterLutCubeDraw(){
 // the solved-LUT dir. Works for ANY display — nothing is uploaded to a TV.
 let meterLutSolvePolling=null;
 
-function meterGenerateLutFromLattice(){
+function meterGenerateLutFromLattice(opts){
  const series=meterActiveLatticeSeries();
  if(!series){ toast('Select a lattice series first',true); return; }
  const readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
@@ -25629,10 +25642,10 @@ function meterGenerateLutFromLattice(){
  const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
  const missing=corners.filter(n=>!readings.some(rd=>rd.name===n));
  if(missing.length){ toast('Lattice read is missing corner patches: '+missing.join(', '),true); return; }
- meterLutSolveStart(series,readings);
+ meterLutSolveStart(series,readings,opts);
 }
 
-async function meterLutSolveStart(series,readings){
+async function meterLutSolveStart(series,readings,opts){
  const payload=readings.map(rd=>{ const xyz=meterReadingXYZ(rd)||{X:0,Y:0,Z:0}; return {name:rd.name,X:xyz.X,Y:xyz.Y,Z:xyz.Z}; });
  const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toLowerCase();
  const gamut=String(((document.getElementById('meterTargetGamut')||{}).value)||'auto');
@@ -25644,11 +25657,13 @@ async function meterLutSolveStart(series,readings){
   solve_cube_size:33,
   lattice_readings:payload
  };
- const ok=await meterShowChoiceModal({
-  title:'Generate 3D LUT?',
-  body:'Solve a corrective 3D LUT from '+payload.length+' measured lattice patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nBaseline: white-preserving matrix from the lattice corners. Interior nodes add bounded residual corrections. The result lands in LUT Tools for 3D viewing and .cube/.3dl export — nothing is uploaded to the display.',
-  acceptLabel:'Generate',cancelLabel:'Cancel'});
- if(!ok) return;
+ if(!(opts&&opts.auto)){
+  const ok=await meterShowChoiceModal({
+   title:'Generate 3D LUT?',
+   body:'Solve a corrective 3D LUT from '+payload.length+' measured lattice patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nBaseline: white-preserving matrix from the lattice corners. Interior nodes add bounded residual corrections. The result lands in LUT Tools for 3D viewing and .cube/.3dl export — nothing is uploaded to the display.',
+   acceptLabel:'Generate',cancelLabel:'Cancel'});
+  if(!ok) return;
+ }
  let r=null;
  try{ r=await fetchJSON('/api/3d-lut/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:15000}); }catch(e){}
  if(!r||r.status!=='started'){ toast((r&&r.message)||'LUT solve failed to start',true); return; }
@@ -25670,10 +25685,8 @@ async function meterLutSolvePoll(){
    :'matrix only'+(rep.residual_skip_reason?(' ('+rep.residual_skip_reason+')'):'');
   toast('3D LUT solved: '+how);
   try{
-   meterOpenLutTools();
-   await meterLoadSolvedLutList();
    const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
-   if(nm) meterViewSolvedLutIn3d(nm);
+   if(nm) meterLutSolveDonePrompt(nm,how,s);
   }catch(e){}
   return;
  }
@@ -25681,6 +25694,43 @@ async function meterLutSolvePoll(){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   toast(s.message||'LUT solve failed',true);
  }
+}
+
+// Solve-complete prompt: the point of a lattice read is the LUT, so completion
+// pops the download/format chooser (both formats stay available; View in 3D
+// opens LUT Tools' cube viewer on the fresh solve).
+let meterLutSolveDoneName=null;
+function meterLutSolveDonePrompt(name,how,state){
+ meterLutSolveDoneName=String(name||'');
+ const summary=document.getElementById('lutSolveDoneSummary');
+ if(summary){
+  const esc=(t)=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const sz=(state&&state.cube_lut_size)||33;
+  summary.innerHTML='<div style="font-weight:600;color:var(--text)">'+esc(meterLutSolveDoneName)+'</div>'
+   +'<div>'+esc(sz)+'&sup3; &middot; '+esc(how||'')+'</div>'
+   +'<div style="margin-top:4px">Choose a download format — the LUT also stays in LUT Tools.</div>';
+ }
+ const modal=document.getElementById('lutSolveDoneModal');
+ if(modal){ modal.style.display='flex'; try{ uiSyncBodyScrollLock(); }catch(e){} }
+}
+
+function meterLutSolveDownload(fmt){
+ if(!meterLutSolveDoneName){ toast('No solved LUT',true); return; }
+ if(fmt==='3dl') meterDownloadSolvedLutAs3dl(meterLutSolveDoneName);
+ else meterDownloadSolvedLut(meterLutSolveDoneName);
+}
+
+function meterLutSolveView3d(){
+ const name=meterLutSolveDoneName;
+ meterLutSolveDoneClose();
+ if(!name) return;
+ try{ meterOpenLutTools(); meterLoadSolvedLutList(); meterViewSolvedLutIn3d(name); }catch(e){}
+}
+
+function meterLutSolveDoneClose(){
+ const modal=document.getElementById('lutSolveDoneModal');
+ if(modal) modal.style.display='none';
+ try{ uiSyncBodyScrollLock(); }catch(e){}
 }
 
 function meterCustomSeriesStepTargets(step,series,patch){
@@ -33109,11 +33159,16 @@ function meterClearSeriesRunUiState(){
  meterSharedSeriesId=null;
  const btn=document.getElementById('meterReadSeriesBtn');
  if(btn){
-  btn.innerHTML='&#9654; Read Series';
+  btn.innerHTML=meterReadSeriesButtonLabel();
   btn.classList.add('btn-secondary');
   btn.classList.remove('btn-success');
  }
  meterUpdateReadButtons();
+}
+
+// Lattice profiling reads exist to produce a LUT — the series button says so.
+function meterReadSeriesButtonLabel(){
+ return (typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())?'&#9654; Solve 3D LUT':'&#9654; Read Series';
 }
 
 // Run full automated series (Read Series button)
@@ -33176,7 +33231,7 @@ async function meterRunSeries(){
   const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+meterSeriesSteps.length+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
   if(!proceed){
    meterSeriesRunning=false;
-   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+   document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
    return false;
@@ -33232,7 +33287,7 @@ async function meterRunSeries(){
 	   meterSeriesRunning=false;
 	   meterSeriesAwaitingReady=false;
 	   meterReadySignalPending=false;
-   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+   document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
    return false;
@@ -33252,7 +33307,7 @@ async function meterRunSeries(){
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
   meterSpectroSetupApply(null);
-  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
   return false;
@@ -33365,7 +33420,9 @@ async function meterPollSeries(){
  }
 
  if(r.total_steps>0){
-  const label=r.current_name||('Step '+r.current_step+'/'+r.total_steps);
+  // Always show the patch counter next to the name (e.g. "75/0/50 (12/125)").
+  const stepCounter=(r.current_step!=null&&r.total_steps)?(' ('+r.current_step+'/'+r.total_steps+')'):'';
+  const label=r.current_name?(r.current_name+stepCounter):('Step '+r.current_step+'/'+r.total_steps);
   if(meterInternalSeriesWorkflow&&meterInternalSeriesWorkflow.workflow){
    meterSetWorkflowProgress(r,{workflow:meterInternalSeriesWorkflow.workflow,label:meterInternalSeriesWorkflow.label||label});
   }else{
@@ -33408,7 +33465,7 @@ async function meterPollSeries(){
     meterGreyscaleLowEndPinned=false;
     meterGreyscaleLastCurrentKey=null;
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
-  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
   // On completion the series worker blanks the panel to black (a "stop"
@@ -33421,6 +33478,13 @@ async function meterPollSeries(){
    meterCurrentPatchStep=null;
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
+   // A lattice profiling read exists to produce a LUT: solve automatically on
+   // completion and pop the download/format prompt (Solve 3D LUT button flow).
+   try{
+    if(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries()){
+     setTimeout(function(){ try{ meterGenerateLutFromLattice({auto:true}); }catch(e){} },400);
+    }
+   }catch(e){}
   }
   // Clear the "currently reading" pulse (selection was cleared above on complete).
   if(meterSeriesSteps){
