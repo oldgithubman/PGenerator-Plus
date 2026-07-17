@@ -23974,9 +23974,18 @@ function meterUpdateCardMode(){
  }
 }
 function meterResetSeriesButtons(){
- document.querySelectorAll('#meterSeriesBtnRow button').forEach(b=>{
-  b.classList.remove('btn-primary');b.classList.add('btn-secondary');
+ // Only clear data-series measurement buttons (Greyscale 21pt, ColorChecker,
+ // Cube 5³, …). AutoCal sub-choice buttons use data-autocal-series; wiping
+ // them every poll made Greyscale / 3D LUT / Tone Map look unselected during
+ // 3D LUT AutoCal reads (and after prepareChartContext).
+ document.querySelectorAll('#meterSeriesBtnRow button[data-series]').forEach(b=>{
+  b.classList.remove('btn-primary');
+  b.classList.add('btn-secondary');
  });
+ // Re-assert the AutoCal sub-choice highlight when that group is active.
+ if(meterSeriesTab==='autocal'){
+  try{ meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice); }catch(e){}
+ }
 }
 
 let meterAutoCalSeriesChoice='greyscale';
@@ -24292,6 +24301,9 @@ function meterLg3dPrepareChartContext(opts){
  meterSeriesSteps=steps;
  try{ meterSetActiveSeriesChartContext(); }catch(e){}
  try{ meterResetSeriesButtons(); }catch(e){}
+ // resetSeriesButtons re-applies choice on autocal tab; force 3D LUT so a
+ // previous greyscale AutoCal choice cannot stick after prepare.
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
  try{
   document.getElementById('chartsGreyscaleWrap').style.display='none';
@@ -24327,9 +24339,13 @@ function meterShow3dLutAutoCalContext(){
  meterSeriesTab='autocal';
  try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  try{ meterUpdateSeriesTabUi(); }catch(e){}
+ // Always re-assert 3D LUT after tab UI refresh (series button resets above
+ // must not leave Greyscale/3D LUT/Tone Map all secondary).
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  if(String(meterActiveSeriesKey||'').indexOf('lg-3d-')===0) return;
  // First entry with no profile context yet: install a clean volume shell.
  try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
 }
 
 function meterDefaultSeriesButtonForTab(tab){
@@ -33029,6 +33045,7 @@ function meterLg3dApplyLatticeProfileStatus(status){
  meterSetActiveSeriesChartContext(status);
  meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  meterSeriesSteps=steps;
  // Drop prior ColorChecker / sat-sweep selection so detail + Delta-E cannot
  // keep grading the previous series against hybrid thumbs.
