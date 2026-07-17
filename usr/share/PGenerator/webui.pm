@@ -34489,15 +34489,20 @@ function meterUpdateColorDeltaEScrollLayout(sortedSteps){
  if(!scroller||!canvas) return;
  const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  const steps=Array.isArray(sortedSteps)?sortedSteps:[];
+ // Only LONG series scroll-sync with the thumbnails. Short series
+ // (ColorChecker, Sat Sweep — and therefore every post-cal report set)
+ // always fit-to-width so every bar is visible: engaging the wide canvas for
+ // them clipped the report ΔE charts to the visible scroll window.
+ const needsScroll=steps.length>26;
  const row=meterGreyscaleScrollSource();
  const viewport=Math.max(320,Math.round(scroller.clientWidth||((row&&row.clientWidth)||0)||800));
- const content=isColor?meterSeriesThumbContentWidth(steps,scroller):0;
+ const content=(isColor&&needsScroll)?meterSeriesThumbContentWidth(steps,scroller):0;
  const prev=canvas.style.width;
  // Pin the CSS height: the canvas carries width/height ATTRIBUTES (800x180),
  // so setting only a (huge) CSS width lets the browser scale the height
  // proportionally — a 10000px-wide series drew a ~2400px-tall dE chart.
  canvas.style.height='180px';
- if(isColor&&content>viewport+4){
+ if(isColor&&needsScroll&&content>viewport+4){
   canvas.style.width=content+'px';
   canvas.style.minWidth=content+'px';
  } else {
@@ -37032,8 +37037,19 @@ function drawCIEChart3D(readings,opts){
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  const isPreset=!!(opts&&opts.preset);
- const items=readings||[];
- const yMax=cie3dComputeYMax(items,isPreset);
+ let items=readings||[];
+ // Live mode: unread series targets stay visible as preset-style hollow
+ // boxes for the whole read — only the measured markers arrive per node.
+ let injected=[];
+ if(!isPreset&&meterCieViewOpts.targets&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+    &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
+  const readNames=new Set(items.map(r=>(r&&r.name!=null)?String(r.name):''));
+  injected=meterSeriesSteps
+   .filter(s=>s&&s.name!=null&&!readNames.has(String(s.name)))
+   .map(s=>Object.assign({},s,{_presetStep:true}));
+  if(injected.length) items=items.concat(injected);
+ }
+ const yMax=Math.max(cie3dComputeYMax(readings||[],isPreset), injected.length?cie3dComputeYMax(injected,true):1);
  _cie3d.yMax=yMax;
  const layout=cie3dMakeLayout(ctx,yMax);
  // Markers keep a constant WORLD size: scale their pixel size with the wheel
@@ -37128,7 +37144,7 @@ function drawCIEChart3D(readings,opts){
  items.forEach(rd=>{
   if(!rd||meterIsWhiteReferenceReading(rd)) return;
   let tx=null,ty=null,tY=null,mx=null,my=null,mY=null,deltaPct=null;
-  if(isPreset){
+  if(isPreset||rd._presetStep){
    const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
     : targetChromaticityXY(rd.r,rd.g,rd.b));
@@ -37152,10 +37168,11 @@ function drawCIEChart3D(readings,opts){
   // Chroma-only: cancel Y error by plotting target at measured luminance.
   let plotTY=tY, plotMY=mY;
   if(!colorInclLum&&plotTY!=null&&plotMY!=null) plotTY=plotMY;
-  const targetColor=meterBoostPlotColor(isPreset
+  const itemPreset=isPreset||!!rd._presetStep;
+  const targetColor=meterBoostPlotColor(itemPreset
    ? meterPreviewColorForStep(rd)
    : meterPreviewColorForReading(rd,'target'));
-  const measuredColor=isPreset?null:meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const measuredColor=itemPreset?null:meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const selected=meterIsSelectedColorReading(rd);
   const targetStroke=meterSelectedCIETargetColor(rd,targetColor);
 
@@ -37519,6 +37536,28 @@ function drawCIEChart(readings){
   ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';ctx.textAlign='right';
   ctx.fillText('Chroma only',pad.l+w-2,pad.t+22);
  }
+ // Unread series targets stay on the chart for the whole read — only the
+ // measured dots arrive incrementally. (They used to vanish when the first
+ // reading replaced the preset chart, reappearing one-by-one as nodes read.)
+ if(meterCieViewOpts.targets&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+    &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
+  const readNames=new Set(readings.map(r=>(r&&r.name!=null)?String(r.name):''));
+  meterSeriesSteps.forEach(s=>{
+   if(!s||s.name==null||readNames.has(String(s.name))) return;
+   let tgt=null;
+   try{
+    tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
+     ? meterTargetChromaticityForReading(s)
+     : targetChromaticityXY(s.r,s.g,s.b);
+   }catch(e){ tgt=null; }
+   if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
+   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
+   const sq=3.5;
+   ctx.save();
+   ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
+   ctx.restore();
+  });
+ }
  // Plot target and measured points
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
@@ -37749,15 +37788,17 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  // Target placeholders (hollow squares) — hidden when Targets is unchecked,
  // matching the 3D preset path.
+ // Same square size as the live chart (3.5) — the preset used to draw
+ // oversized boxes that visibly shrank once the read started.
  if(meterCieViewOpts.targets) steps.forEach(s=>{
   const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
    ? meterTargetChromaticityForReading(s)
    : targetChromaticityXY(s.r,s.g,s.b);
   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
-  const sq=6;
+  const sq=3.5;
   const tx=toX(tgt.x), ty=toY(tgt.y);
   ctx.save();
-  ctx.strokeStyle=pc;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
   ctx.restore();
  });
 }
@@ -37784,13 +37825,29 @@ function drawColorDeltaE2000Chart(readings){
  let yMaxDE;
  if(deValues.length>0){const mx=Math.max(...deValues);yMaxDE=Math.max(2,Math.ceil(mx*1.2*2)/2);}else{yMaxDE=5;}
  yMaxDE=meterApplyTopYZoom('chartColorDE',yMaxDE,0).max;
- const n=deData.length;
+ // Mid-read the axis spans the FULL series, with each bar at its own series
+ // slot, so bars land under their thumbnails from the first reading. Spreading
+ // only the read patches across the whole (scroll-synced, series-wide) canvas
+ // put the newest bar far right of the thumb scroll window — it looked cut
+ // off until enough bars compressed the spread back into alignment.
+ let axisNames=null, axisIndex=null;
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
+    &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  const steps=meterSeriesSteps.filter(s=>s&&s.name!=null);
+  const idx=new Map();
+  steps.forEach((s,i)=>{ if(!idx.has(String(s.name))) idx.set(String(s.name),i); });
+  if(steps.length>=deData.length&&deData.every(d=>idx.has(String(d.name)))){
+   axisNames=steps.map(s=>String(s.name));
+   axisIndex=idx;
+  }
+ }
+ const n=axisNames?axisNames.length:deData.length;
  const rawW=ctx.w-55-15;
  const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:60,l:55},xInset:estBarW/2+4,
   xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMaxDE)),
-  xLabel:(i)=>i<n?deData[i].name:'',
+  xLabel:(i)=>i<n?(axisNames?axisNames[i]:deData[i].name):'',
   yLabel:(i,nn)=>(yMaxDE*i/nn).toFixed(yMaxDE>5?0:1),
   rotateX:true
  });
@@ -37798,7 +37855,8 @@ function drawColorDeltaE2000Chart(readings){
  if(3/yMaxDE<=1) drawDashedLine(ctx,chart,[[0,3/yMaxDE],[1,3/yMaxDE]],'#ff980080');
  const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
  deData.forEach((d,i)=>{
-  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const pos=axisIndex?axisIndex.get(String(d.name)):i;
+  const cx=chart.toX(n>1?pos/(n-1):0.5);
   const barH=Math.max(0.005,Math.min(d.de/yMaxDE,1));
   const y=chart.pad.t+chart.h-barH*chart.h;
   ctx.fillStyle=d.de<1?'#4caf50':d.de<3?'#ff9800':'#f44';
