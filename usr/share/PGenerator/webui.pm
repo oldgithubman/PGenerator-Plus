@@ -26269,13 +26269,21 @@ function meterCustomSeriesStepTargets(step,series,patch){
  }
  const refNits=(typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():0;
  const isHdr=(typeof meterChartIsHdr==='function')&&meterChartIsHdr();
- const isNeutralGrey=series.category!=='color'&&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b);
+ const kind=String((series&&series.kind)||'');
+ const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
+ // Volume R=G=B nodes are neutral greys even though the series category is color.
+ const isNeutralGrey=Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b)
+  &&(series.category!=='color'||isVolume);
  if(isHdr&&patch&&patch.target_nits!=null&&Number(patch.target_nits)>0){
   out.custom_target_nits=Number(patch.target_nits);
   if(refNits>0) out.target_Yn=Math.round((out.custom_target_nits/refNits)*100000)/100000;
  } else if(!isHdr&&isNeutralGrey&&typeof meterGreyscaleTargetYnForCode==='function'){
   const targetYn=meterGreyscaleTargetYnForCode(step.g);
   if(Number.isFinite(targetYn)&&targetYn>=0) out.target_Yn=targetYn;
+ } else if(isVolume&&isNeutralGrey&&step.signal_g_pct!=null&&typeof meterGreyscaleTargetYnForCode!=='function'){
+  // Fallback: encode stimulus fraction through a 2.2 power for target_Yn.
+  const frac=Math.max(0,Math.min(1,(Number(step.signal_g_pct)||0)/100));
+  out.target_Yn=Math.round(Math.pow(frac,2.2)*100000)/100000;
  } else {
   try{
    const abs=targetColorXYZAbs(step.r,step.g,step.b);
@@ -26291,26 +26299,34 @@ function meterBuildCustomSeriesSteps(series){
  if(!Array.isArray(sourcePatches)||!sourcePatches.length) return [];
  const tenBit=meterPatchBitDepth()===10;
  const inputMax=tenBit?1023:255;
- const isLattice=series.kind==='lattice';
- const wire=isLattice?meterLatticeWireRange():null;
+ // Hybrid/skeleton share lattice wire-code mapping (worker patch_code_for_percent).
+ // Treating only kind==='lattice' as wire-mapped made hybrid thumbs/targets use
+ // raw 0-255 fractions while the panel got limited/full legal codes — mismatch.
+ const kind=String(series.kind||'');
+ const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
+ const wire=isVolume?meterLatticeWireRange():null;
  const previewForCode=(code)=>{
   const numeric=Number(code)||0;
   return inputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/inputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
  };
- const isGrey=!isLattice&&series.category!=='color';
+ const isGrey=!isVolume&&series.category!=='color';
  const fractionPct=(code)=>Math.round(meterGreySignalFractionFromCode(code)*1000)/10;
+ const fracToPct=(f)=>Math.round((Number(f)||0)*1000)/10;
  const steps=[];
  sourcePatches.forEach((patch,idx)=>{
-  const r=isLattice?Math.round(wire.min+patch.frac_r*wire.span):meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
-  const g=isLattice?Math.round(wire.min+patch.frac_g*wire.span):meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
-  const b=isLattice?Math.round(wire.min+patch.frac_b*wire.span):meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
-  const greyIre=isGrey?fractionPct(g):(idx+1);
+  const fr=(patch&&patch.frac_r!=null)?Number(patch.frac_r):null;
+  const fg=(patch&&patch.frac_g!=null)?Number(patch.frac_g):null;
+  const fb=(patch&&patch.frac_b!=null)?Number(patch.frac_b):null;
+  const r=isVolume?Math.round(wire.min+(Number.isFinite(fr)?fr:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
+  const g=isVolume?Math.round(wire.min+(Number.isFinite(fg)?fg:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
+  const b=isVolume?Math.round(wire.min+(Number.isFinite(fb)?fb:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
+  const greyIre=isGrey?fractionPct(g):(isVolume&&Number.isFinite(fg)?fracToPct(fg):(idx+1));
   const step={
    ire:greyIre,
    stimulus:greyIre,
-   signal_r_pct:isGrey?fractionPct(r):undefined,
-   signal_g_pct:isGrey?fractionPct(g):undefined,
-   signal_b_pct:isGrey?fractionPct(b):undefined,
+   signal_r_pct:isGrey?fractionPct(r):(isVolume&&Number.isFinite(fr)?fracToPct(fr):undefined),
+   signal_g_pct:isGrey?fractionPct(g):(isVolume&&Number.isFinite(fg)?fracToPct(fg):undefined),
+   signal_b_pct:isGrey?fractionPct(b):(isVolume&&Number.isFinite(fb)?fracToPct(fb):undefined),
    r:r,g:g,b:b,
    preview_r:previewForCode(r),
    preview_g:previewForCode(g),
@@ -35314,6 +35330,11 @@ function drawAllCharts(readings){
   // 3D LUT volume/matrix profile: CIE cloud only (no Delta-E / no ColorChecker table).
   const cr=readings.filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r));
   const is3dProfile=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext());
+  // Prefer live current step name so CIE inset / detail do not stick on the
+  // last completed reading while the worker is already on the next patch.
+  if(meterCurrentPatchStep&&meterCurrentPatchStep.name&&!_colorDetailPinned){
+   _selectedColorReadingName=String(meterCurrentPatchStep.name);
+  }
   if(cr.length>0){
    drawCIEChart(cr);
    if(!is3dProfile){
@@ -35328,13 +35349,36 @@ function drawAllCharts(readings){
     if(avgWrap) avgWrap.style.display='none';
    }
    colorChartRegisterInteraction(cr);
-   if(_colorDetailPinned&&_selectedColorReadingName){
+   if(is3dProfile&&meterCurrentPatchStep){
+    const curRd=typeof meterFindReadingForStep==='function'?meterFindReadingForStep(meterCurrentPatchStep):null;
+    if(curRd) showColorReadingDetail(curRd,{pin:false});
+    else {
+     const st=meterCurrentPatchStep;
+     showColorReadingDetail({
+      name:st.name,ire:st.ire,
+      r:st.r,g:st.g,b:st.b,
+      r_code:st.r,g_code:st.g,b_code:st.b,
+      target_x:st.target_x,target_y:st.target_y,target_Yn:st.target_Yn,
+      signal_r_pct:st.signal_r_pct,signal_g_pct:st.signal_g_pct,signal_b_pct:st.signal_b_pct
+     },{pin:false});
+    }
+   } else if(_colorDetailPinned&&_selectedColorReadingName){
     const sel=cr.find(r=>r.name===_selectedColorReadingName);
     if(sel) showColorReadingDetail(sel,{pin:true});
     else showColorReadingDetail(cr[cr.length-1],{pin:false});
    } else {
     showColorReadingDetail(cr[cr.length-1],{pin:false});
    }
+  } else if(is3dProfile&&meterCurrentPatchStep){
+   // Profile running but first reading not in yet — still draw empty CIE with inset target.
+   try{ drawCIEChart([]); }catch(e){}
+   const st=meterCurrentPatchStep;
+   showColorReadingDetail({
+    name:st.name,ire:st.ire,
+    r:st.r,g:st.g,b:st.b,
+    r_code:st.r,g_code:st.g,b_code:st.b,
+    target_x:st.target_x,target_y:st.target_y,target_Yn:st.target_Yn
+   },{pin:false});
   }
   return;
  }
@@ -37573,24 +37617,64 @@ function drawCIEChart(readings){
  drawCIETargetInset(ctx,readings,g);
 }
 
+// Resolve which color patch the CIE zoom inset should follow. Prefer the live
+// series/3D-LUT current step (meterCurrentPatchStep) so mid-read never freezes
+// on the last completed node (e.g. zoom "0/0/5" while status says "10/10/10").
+function meterCieInsetFocus(readings){
+ const list=Array.isArray(readings)?readings:[];
+ const cur=meterCurrentPatchStep||null;
+ if(cur&&cur.name){
+  const named=list.find(r=>r&&String(r.name||'')===String(cur.name||''));
+  if(named&&named.x>0&&named.y>0) return {focus:named,targetOnly:false};
+  // Mid-read: patch is on the panel but no XYZ yet — focus the step's target.
+  return {
+   focus:{
+    name:cur.name,
+    target_x:cur.target_x,target_y:cur.target_y,target_Yn:cur.target_Yn,
+    r:cur.r,g:cur.g,b:cur.b,
+    r_code:cur.r_code!=null?cur.r_code:cur.r,
+    g_code:cur.g_code!=null?cur.g_code:cur.g,
+    b_code:cur.b_code!=null?cur.b_code:cur.b,
+    signal_r_pct:cur.signal_r_pct,signal_g_pct:cur.signal_g_pct,signal_b_pct:cur.signal_b_pct,
+    series_color:cur.series_color,sat_pct:cur.sat_pct,
+    x:0,y:0,luminance:null
+   },
+   targetOnly:true
+  };
+ }
+ let focus=null;
+ if(_selectedColorReadingName){
+  focus=list.find(r=>r&&r.name===_selectedColorReadingName)||null;
+ }
+ if(focus&&focus.x>0&&focus.y>0) return {focus:focus,targetOnly:false};
+ if(focus){
+  // Selected but unread (or target-only synthetic).
+  return {focus:focus,targetOnly:!(focus.x>0&&focus.y>0)};
+ }
+ for(let i=list.length-1;i>=0;i--){
+  const r=list[i];
+  if(r&&r.x>0&&r.y>0) return {focus:r,targetOnly:false};
+ }
+ return {focus:null,targetOnly:false};
+}
+
 // Zoomed inset for the focused color patch — overlaid top-right on the CIE plot
 // (same placement as original), with a caption box sized to the text width.
 function drawCIETargetInset(ctx,readings,geom){
- if(!readings||!readings.length) return;
+ // Allow target-only inset during mid-read even when readings is empty of the current node.
  const colorInclLum=!!meterColorIncludeLum();
- let focus=null;
- if(_selectedColorReadingName){
-  focus=readings.find(r=>r&&r.name===_selectedColorReadingName)||null;
+ const resolved=meterCieInsetFocus(readings);
+ let focus=resolved.focus;
+ const targetOnly=!!resolved.targetOnly;
+ if(!focus) return;
+ let tgt=null;
+ try{ tgt=meterTargetChromaticityForReading(focus); }catch(e){ tgt=null; }
+ if(!tgt&&focus.target_x!=null&&focus.target_y!=null&&Number(focus.target_y)>0){
+  tgt={x:Number(focus.target_x),y:Number(focus.target_y)};
  }
- if(!focus){
-  for(let i=readings.length-1;i>=0;i--){
-   const r=readings[i];
-   if(r&&r.x>0&&r.y>0){focus=r;break;}
-  }
- }
- if(!focus||!(focus.x>0)||!(focus.y>0)) return;
- const tgt=meterTargetChromaticityForReading(focus);
- if(!tgt) return;
+ if(!tgt||!(tgt.x>0)||!(tgt.y>0)) return;
+ // Target-only mid-read: no measured xy yet — still show the correct patch name.
+ const hasMeasured=!targetOnly&&focus.x>0&&focus.y>0;
  const g=geom||meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad;
  const insetSize=130, margin=8;
@@ -37602,11 +37686,11 @@ function drawCIETargetInset(ctx,readings,geom){
  // AND a maximum so the inset is always a real zoom over the main chart —
  // a large miss used to zoom the inset out to ±0.19 (barely 2x). Beyond the
  // cap the measured dot pins to the inset edge, connector showing direction.
- const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
- const halfRange=Math.max(0.004,Math.min(0.05,span*1.6));
+ const span=hasMeasured?Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y)):0;
+ const halfRange=Math.max(0.004,Math.min(0.05,hasMeasured?(span*1.6):0.05));
  const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
  // Caption: measure text first so the box hugs the words (width + height).
- const focusLumInfo=meterColorLuminanceInfo(focus);
+ const focusLumInfo=hasMeasured?meterColorLuminanceInfo(focus):{deltaPct:null};
  const labelText='Target: '+(focus.name||'patch')+'  \u00B1'+halfRange.toFixed(3)
   +(colorInclLum&&focusLumInfo.deltaPct!=null?'  \u0394Y '+(focusLumInfo.deltaPct>=0?'+':'')+focusLumInfo.deltaPct.toFixed(1)+'%':'');
  ctx.save();
@@ -37657,10 +37741,19 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.restore();
   }
  }catch(e){}
+ // Mid-read (target only): draw the live patch's target square at the inset centre.
+ if(!hasMeasured){
+  const tColor=meterBoostPlotColor(meterPreviewColorForReading(focus,'target'));
+  const sq=5;
+  ctx.save();
+  ctx.strokeStyle=tColor;ctx.lineWidth=1.8;
+  ctx.strokeRect(ZtoX(tgt.x)-sq,ZtoY(tgt.y)-sq,sq*2,sq*2);
+  ctx.restore();
+ }
  // Plot neighbors; hollow target square only for the focused reading.
- readings.forEach(rd=>{
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
   if(!rd||!(rd.x>0)||!(rd.y>0)) return;
-  const isFocus=(rd===focus);
+  const isFocus=!targetOnly&&((rd===focus)||(focus&&rd.name&&focus.name&&String(rd.name)===String(focus.name)));
   const rt=meterTargetChromaticityForReading(rd);
   const lumInfo=meterColorLuminanceInfo(rd);
   if(!rt) return;
