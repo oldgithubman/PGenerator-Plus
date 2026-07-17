@@ -28601,6 +28601,13 @@ function meterAutoCalCloseComplete(){
 	 }
 	}
 
+// Clear whatever patch is on the display (fire-and-forget). The last profiling
+// patch used to linger on the TV until the operator closed the complete modal
+// (which calls this via meterAutoCalCloseCompleteAction). Call it the moment a
+// run reaches a terminal state so the panel returns to idle immediately.
+function meterClearDisplayPattern(){
+ try{ fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(function(){}); }catch(e){}
+}
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
  // Tell the backend the run is over so it clears the full-workflow +
@@ -33370,6 +33377,9 @@ async function meterPollLg3dAutoCal(options){
 	     await meterFullAutoCalStartTouchup(r);
 	     return;
 	    }
+	    // Standalone run truly finished: clear the last profiling patch off
+	    // the display now (it used to linger until the complete modal closed).
+	    meterClearDisplayPattern();
 	    // Same cancel/refresh guard as greyscale: do not open the
 	    // success popup unless this browser was tracking the run.
 	    if(!localActive||meterAutoCalStopRequested){
@@ -33382,11 +33392,13 @@ async function meterPollLg3dAutoCal(options){
 	    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'complete'});
     toast('LG 3D LUT AutoCal complete');
    }else if(r.status==='error'){
+    meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalPhase='error';
     meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'running',current_name:r.current_name||'LG 3D LUT AutoCal error',message:r.message||'3D LUT AutoCal failed'});
     toast(r.message||'LG 3D LUT AutoCal failed',true);
    }else if(r.status==='cancelled'){
+    meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalSetOverlay(false,null);
     toast('LG 3D LUT AutoCal stopped');
