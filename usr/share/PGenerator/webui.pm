@@ -4144,7 +4144,7 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
 # the workflow (or standalone greyscale run) is genuinely finished:
 #
 #  * full_workflow / full_autocal_phase / full_autocal_run_id /
-#    full_autocal_post_* / full_autocal_magic_wand /
+#    full_autocal_post_* /
 #    full_autocal_touchup: the greyscale worker stamps these at run
 #    start and never clears them. A fresh browser (no localStorage
 #    completion-token) reads them on its first status poll and the JS's
@@ -4174,9 +4174,8 @@ sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
   "full_autocal_phase",
   "full_autocal_run_id",
   "full_autocal_touchup",
-  "full_autocal_post_commit_polish",
-  "full_autocal_magic_wand",
-  "full_autocal_post_3d_polish",
+   "full_autocal_post_commit_polish",
+   "full_autocal_post_3d_polish",
   "full_autocal_post_series_adjust",
   "full_autocal_post_series_revert",
   "hdr20_1d_tonemap_pending",
@@ -4496,7 +4495,7 @@ sub webui_meter_lg_autocal_status (@) {
 		    }
 		    # NOTE: the full-workflow metadata (full_workflow /
 		    # full_autocal_phase / full_autocal_run_id / full_autocal_post_*
-		    # / full_autocal_magic_wand / full_autocal_touchup) and the
+		    # / full_autocal_touchup) and the
 		    # hdr20_1d_tonemap_* group MUST NOT be stripped here. This
 		    # status endpoint is read by BOTH (a) the active full-workflow
 		    # session -- which uses full_workflow / full_autocal_phase /
@@ -14879,10 +14878,6 @@ let meterAutoCalCapturedMeasurementLabel='';
 let meterAutoCalCapturedTargetY=0;
 let meterAutoCalLuminanceScaleMax=0;
 let meterAutoCalLevelPreflight=null;
-let meterAutoCalMagicWandActive=false;
-let meterAutoCalMagicWandBaseStatus=null;
-let meterAutoCalMagicWandFullWorkflow=false;
-let meterAutoCalStandaloneMagicWandEnabled=false;
 let meterHdrAutoCalChartContextHeld=false;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
@@ -17048,31 +17043,26 @@ function meterGreyscaleReferenceReadings(readings){
 
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
- const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
- const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
- const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
- // SDR26 peak (Limited 109 / Full 100): always prefer the LIVE measured peak
- // reading so EOTF/gamma/luma target curves re-scale as peak Y updates each
- // reduce-to-lowest iter (e.g. Full 100: 198 → 183 nits). Stale first-read
- // stamps must not freeze the curve.
- if(lgAutoCalChartRef){
-  const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
-  if(peakRd&&!peakRd.synthetic_target){
-   const peakY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(peakRd):0;
-   if(peakY>0) return peakRd;
+  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+   const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+  // SDR26 peak (Limited 109 / Full 100): always prefer the LIVE measured peak
+  // reading so EOTF/gamma/luma target curves re-scale as peak Y updates each
+  // reduce-to-lowest iter (e.g. Full 100: 198 → 183 nits). Stale first-read
+  // stamps must not freeze the curve.
+  if(lgAutoCalChartRef){
+   const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
+   if(peakRd&&!peakRd.synthetic_target){
+    const peakY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(peakRd):0;
+    if(peakY>0) return peakRd;
+   }
   }
- }
- // SDR26 1D-DPG Limited: headroom-derived peak from 109 when no live peak row.
- const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
- if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
-  const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
-  if(synthetic) return synthetic;
- }
- const referenceList=(lgAutoCalChartRef&&activeAutoCalReference&&!magicWandPhase)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
- if(lgAutoCalChartRef&&magicWandPhase){
-  const magicWandWhite=meterFindSeriesWhiteReading(list);
-  if(magicWandWhite) return magicWandWhite;
- }
+  // SDR26 1D-DPG Limited: headroom-derived peak from 109 when no live peak row.
+  const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
+  if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
+   const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
+   if(synthetic) return synthetic;
+  }
+  const referenceList=(lgAutoCalChartRef&&activeAutoCalReference)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  const activeAutoCalTargetY=activeAutoCalReference?meterAutoCalGreyscaleTargetWhiteReferenceNits(list):null;
  if(activeAutoCalTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
@@ -17127,7 +17117,7 @@ function meterEffectiveGreyscaleWhiteReference(readings){
 function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
  if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  const phase=String(meterFullAutoCalPhase||'');
- const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish'||phase==='magic-wand';
+ const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish';
  const directAutoCal=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)||(typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling));
  const fullGreyscaleAutoCal=!!((typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)&&fullGreyscalePhase);
  const autoCalPhase=String((typeof meterAutoCalPhase!=='undefined'?meterAutoCalPhase:'')||'');
@@ -22869,11 +22859,10 @@ function meterFullAutoCalStageOrder(){
  const stages=[];
  if(!skipPre) stages.push('precal-report');
  stages.push('first-greyscale','3d-lut');
- if(meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
- if(meterFullAutoCalMagicWandEnabled()) stages.push('magic-wand');
- stages.push('postcal-report','complete');
- return stages;
-}
+  if(meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
+  stages.push('postcal-report','complete');
+  return stages;
+ }
 
 function meterFullAutoCalStageLabel(){
  switch(String(meterFullAutoCalPhase||'')){
@@ -22882,7 +22871,6 @@ function meterFullAutoCalStageLabel(){
 		  case '3d-lut': return '3D LUT';
 		  case 'touchup-greyscale': return 'Greyscale touch-up';
 		  case 'post-3d-polish': return 'Committed polish';
-		  case 'magic-wand': return 'Magic Wand';
 	  case 'postcal-report': return 'Post-Cal measurements';
   case 'complete': return 'Complete';
   default: return 'Greyscale';
@@ -22942,7 +22930,6 @@ function meterFullAutoCalStageWeights(){
   'touchup-greyscale':20,
   '3d-lut':15+latticeReads+shadowReads,
   'post-3d-polish':20,
-  'magic-wand':15,
   'postcal-report':reportReads,
   'complete':0
  };
@@ -28205,7 +28192,7 @@ async function meterAutoCalAdjustBrightness(delta){
 }
 
 function meterAutoCalResultRows(status){
- const source=(status&&status.magic_wand&&status.post_series_after&&Array.isArray(status.post_series_after.readings))?status.post_series_after:status;
+ const source=status;
  const readings=(source&&Array.isArray(source.readings)?source.readings:(Array.isArray(meterReadings)?meterReadings:[]))
  .filter(rd=>rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd));
  const greyMode=meterGreyRefMode();
@@ -28350,10 +28337,6 @@ function meterAutoCalCloseComplete(){
  meterFullAutoCalStartedAt=null;
 	 meterFullAutoCalConfig=null;
 	 meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
 	 meterFullAutoCalClearReportData();
 	 meterAutoCalSetOverlay(false,null);
 	 // Calibration pinned Target Gamma to 2.2; restore the HDR10 default
@@ -28741,10 +28724,8 @@ async function meterAutoCalBackToLuminance(){
 
 function meterAutoCalSetGreyscaleOptionControls(){
 	 const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
-	 const magicChoice=document.getElementById('meterAutoCalMagicWandEnabled');
 	 const choicesCaptured=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 	 if(optionsBox) optionsBox.style.display=(meterAutoCalPendingConfig&&(meterAutoCalPendingConfig.fullWorkflow||(choicesCaptured&&meterAutoCalPhase!=='options')))?'none':'';
-	 if(magicChoice) magicChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'magicWandEnabled')?meterAutoCalPendingConfig.magicWandEnabled!==false:false;
 }
 
 function meterAutoCalShowPreflightOptions(){
@@ -28767,10 +28748,6 @@ function meterAutoCalShowPreflightOptions(){
 function meterAutoCalAcceptPreflightOptions(){
 	 if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
 	 meterAutoCalPendingConfig.postCommitPolishEnabled=false;
-	 // Gated off 2026-06-29: the Magic Wand checkbox was removed from
-	 // the preflight options dialog; force magicWandEnabled to false
-	 // so a stale config or a recomputed choice value cannot enable it.
-	 meterAutoCalPendingConfig.magicWandEnabled=false;
 	 meterAutoCalPendingConfig.greyscaleOptionsCaptured=true;
  meterAutoCalPhase='disclaimer';
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
@@ -30109,9 +30086,8 @@ function meterFullAutoCalDefaultConfig(){
   wp:null,
 	  preCalSkipped:false,
 	  postCommitPolishEnabled:false,
-	  magicWandEnabled:false,
 	  shadowFixEnabled:true
-	 };
+ };
 	}
 
 function meterConfigFlag(config,key,fallback){
@@ -30132,30 +30108,16 @@ function meterFullAutoCalPostCommitPolishEnabled(){
 	 return false;
 	}
 
-	function meterFullAutoCalMagicWandEnabled(){
-	 // Gated off 2026-06-29: the Magic Wand experimental feature is no
-	 // longer used. The UI checkboxes were removed from both the SDR/HDR
-	 // greyscale autocal wizard and the full autocal wizard, and the
-	 // feature is forced off here so a stale config or a serialized
-	 // meterFullAutoCalConfig.magicWandEnabled=true does not run the
-	 // post-series-adjust / meterAutoCalStartMagicWand path.
-	 return false;
-	}
-
-	function meterFullAutoCalPostSeriesAdjustEnabled(){
-	 return meterFullAutoCalMagicWandEnabled();
-	}
-
 function meterFullAutoCalPostTouchupEnabled(){
  return false;
 }
 
 	function meterFullAutoCalPost3dCleanupEnabled(){
-	 return !meterFullAutoCalPostTouchupEnabled()&&(meterFullAutoCalMagicWandEnabled()||meterFullAutoCalPostCommitPolishEnabled());
+	 return !meterFullAutoCalPostTouchupEnabled()&&meterFullAutoCalPostCommitPolishEnabled();
 	}
 
 	function meterFullAutoCalMeticulousEnabled(){
-	 return meterFullAutoCalPostCommitPolishEnabled()&&meterFullAutoCalMagicWandEnabled();
+	 return false;
 	}
 
 function meterAutoCalPostCommitPolishChoiceValue(){
@@ -30167,7 +30129,7 @@ function meterAutoCalPostCommitPolishChoiceValue(){
 	}
 
 	function meterFullAutoCalMeticulousChoiceValue(){
-	 return meterFullAutoCalPostCommitPolishChoiceValue()&&meterFullAutoCalMagicWandChoiceValue();
+	 return false;
 	}
 
 function meterFullAutoCalPostCommitPolishChoiceValue(){
@@ -30175,22 +30137,6 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 }
 
 	function meterFullAutoCalPostCommitVerifyChoiceValue(){
-	 return false;
-	}
-
-	function meterAutoCalMagicWandChoiceValue(){
-	 // Gated off 2026-06-29: the standalone-greyscale Magic Wand checkbox
-	 // was removed from the preflight options dialog; force the choice
-	 // to false here so the dialog's captured config still produces a
-	 // non-magic-wand payload even if some code path queries the value.
-	 return false;
-	}
-
-	function meterFullAutoCalMagicWandChoiceValue(){
-	 // Gated off 2026-06-29: the full-autocal Magic Wand checkbox was
-	 // removed from the confirm dialog; force the choice to false here
-	 // so the captured config still produces a non-magic-wand payload
-	 // even if some code path queries the value.
 	 return false;
 	}
 
@@ -30205,7 +30151,7 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	}
 
 		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
-		 return meterFullAutoCalMagicWandChoiceValue();
+		 return false;
 		}
 
 function meterFullAutoCalHdrWorkflowActive(){
@@ -30681,13 +30627,11 @@ function meterFullAutoCalStatusMatchesRun(status){
 
 function meterFullAutoCalMergeCleanupConfigFromStatus(status){
  if(!(status&&status.full_workflow)) return;
- const hasPolish=Object.prototype.hasOwnProperty.call(status,'full_autocal_post_commit_polish');
- const hasMagicWand=Object.prototype.hasOwnProperty.call(status,'full_autocal_magic_wand');
- if(!hasPolish&&!hasMagicWand) return;
- const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
- if(hasPolish) next.postCommitPolishEnabled=status.full_autocal_post_commit_polish!==false;
- if(hasMagicWand) next.magicWandEnabled=status.full_autocal_magic_wand===true;
- meterFullAutoCalConfig=next;
+  const hasPolish=Object.prototype.hasOwnProperty.call(status,'full_autocal_post_commit_polish');
+  if(!hasPolish) return;
+  const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
+  if(hasPolish) next.postCommitPolishEnabled=status.full_autocal_post_commit_polish!==false;
+  meterFullAutoCalConfig=next;
 }
 
 function meterFullAutoCalEnsureStatusPhase(status,phase){
@@ -30786,9 +30730,6 @@ function meterFullAutoCalAbort(message,isError){
  meterAutoCalRunning=false;
  meterLg3dAutoCalRunning=false;
  meterAutoCalPhase=isError?'error':'';
- meterAutoCalMagicWandActive=false;
- meterAutoCalMagicWandBaseStatus=null;
- meterAutoCalMagicWandFullWorkflow=false;
  // Drop the captured measurement port -- abort path, the user wants their
  // pre-run SELECT state back, not a mid-run snapshot.
  meterAutoCalCapturedMeasurementPort='';
@@ -30849,8 +30790,7 @@ function meterFullAutoCalResolveConfirm(accepted){
 	 if(accepted&&opts.showPostCalTouchupChoice){
 	  result={
 	   accepted:true,
-	   postCommitPolishEnabled:meterFullAutoCalPostCommitPolishChoiceValue(),
-	   magicWandEnabled:meterFullAutoCalMagicWandChoiceValue()
+	   postCommitPolishEnabled:meterFullAutoCalPostCommitPolishChoiceValue()
 	  };
 	  if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
 	  if(opts.showProfilingChoice){
@@ -30885,7 +30825,6 @@ function meterFullAutoCalConfirmDialog(options){
 	 const title=document.getElementById('meterFullAutoCalConfirmTitle');
 	 const message=document.getElementById('meterFullAutoCalConfirmMessage');
 	 const touchupChoiceRow=document.getElementById('meterFullAutoCalTouchupChoiceRow');
-	 const magicChoice=document.getElementById('meterFullAutoCalMagicWandEnabled');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
@@ -30900,7 +30839,6 @@ function meterFullAutoCalConfirmDialog(options){
  if(message) message.textContent=opts.message;
 	 if(touchupChoiceRow){
 	  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
-	  if(magicChoice) magicChoice.checked=meterFullAutoCalMagicWandEnabled();
 	 }
 	 const profilingRow=document.getElementById('meterFullAutoCalProfilingRow');
 	 if(profilingRow){
@@ -30988,118 +30926,6 @@ function meterFullAutoCalSleep(ms){
 	 snap.status='complete';
 	 snap.report_key=key;
 	 return snap.readings.length?snap:null;
-	}
-
-	function meterAutoCalMagicWandLg26Validation(snap){
-	 if(!snap||!Array.isArray(snap.readings)) return {ok:false,message:'no readings'};
-	 let steps=Array.isArray(snap.steps)&&snap.steps.length?snap.steps:meterBuildStepsJS('greyscale',26);
-	 steps=meterGreyscaleSeriesSteps(steps);
-	 if(steps.length<26) return {ok:false,message:'expected 26 LG greyscale patches, found '+steps.length};
-	 const readings=snap.readings.filter(rd=>meterReadingHasLuminance(rd));
-	 const missing=[];
-	 steps.forEach(step=>{
-	  const found=readings.find(rd=>meterGreyscaleReadingMatchesStep(rd,step));
-	  if(!found){
-	   const label=String(step.name||'').trim()||(((step.stimulus!=null)?step.stimulus:step.ire)+'%');
-	   missing.push(label);
-	  }
-	 });
-	 if(missing.length) return {ok:false,message:'missing '+missing.slice(0,4).join(', ')+(missing.length>4?' and '+(missing.length-4)+' more':'')};
-	 return {ok:true,message:''};
-	}
-
-	function meterAutoCalMagicWandReadingLooks100(reading){
-	 if(!reading) return false;
-	 const name=String(reading.name||reading.patch_name||'').toLowerCase();
-	 if(name==='white'||name==='100%'||/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) return true;
-	 const values=[reading.stimulus,reading.level,reading.ire,reading.signal_r_pct,reading.patch_stimulus,reading.ddc_target_ire,reading.autocal_order_ire];
-	 return values.some(value=>{
-	  const n=Number(value);
-	  return Number.isFinite(n)&&Math.abs(n-100)<0.001;
-	 });
-	}
-
-	function meterAutoCalMagicWandTargetLuminanceFromSnapshot(snap){
-	 const readings=Array.isArray(snap&&snap.readings)?snap.readings:[];
-	 let best=null;
-	 let bestScore=-1;
-	 readings.forEach(rd=>{
-	  const y=meterReadingLuminanceNits(rd);
-	  if(!(Number.isFinite(Number(y))&&Number(y)>0)) return;
-	  if(!meterAutoCalMagicWandReadingLooks100(rd)) return;
-	  const name=String(rd.name||rd.patch_name||'').toLowerCase();
-	  let score=10;
-	  if(name==='white'||name==='100%') score+=30;
-	  if(/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) score+=25;
-	  if(rd.autocal_white_reference||rd.autocal_legal_white_anchor) score+=20;
-	  if(name.indexOf('109')>=0) score-=100;
-	  if(score>bestScore){
-	   bestScore=score;
-	   best=Number(y);
-	  }
-	 });
-	 if(best>0) return best;
-	 const white=snap&&snap.white_reading;
-	 const whiteY=white&&meterAutoCalMagicWandReadingLooks100(white)?Number(meterReadingLuminanceNits(white)):NaN;
-	 return (Number.isFinite(whiteY)&&whiteY>0)?whiteY:null;
-	}
-
-	async function meterAutoCalCaptureMagicWandLg26Series(stageKey,label,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const stage='magic_wand';
-	 if(fullWorkflow){
-	  meterFullAutoCalPhase='magic-wand';
-	  meterFullAutoCalSaveState();
-	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
-	  if(!meterFullAutoCalReportData.stages[stage]) meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
-	  meterFullAutoCalReportData.stages[stage][stageKey]={status:'running',started_at:Date.now(),label:label};
-	  meterFullAutoCalSaveReportData();
-	  meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-started');
-	 }
-	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:label},{workflow:fullWorkflow?'full':'greyscale',label:label});
-	 const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff(label);
-	 if(!calibrationOff) throw new Error('LG calibration mode must be off before '+label);
-	 const magicPoints=26;
-	 let snap=null;
-	 let lastValidation=null;
-	 for(let attempt=0;attempt<2;attempt++){
-	  let status=null;
-	  const attemptLabel=attempt>0?(label+' retry'):label;
-	  if(attempt>0){
-	   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:attemptLabel},{workflow:fullWorkflow?'full':'greyscale',label:attemptLabel});
-	   if(fullWorkflow) meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-retry',{reason:lastValidation&&lastValidation.message});
-	  }
-	  meterInternalSeriesWorkflow={workflow:fullWorkflow?'full':'greyscale',label:attemptLabel};
-	  try{
-	   meterSelectSeries('greyscale',magicPoints);
-	   await meterFullAutoCalSleep(100);
-	   const started=await meterRunSeries();
-	   if(!started) throw new Error('Unable to start '+label);
-	   status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
-	  }finally{
-	   meterInternalSeriesWorkflow=null;
-	  }
-	  if(!status||status.status!=='complete'){
-	   throw new Error((status&&status.current_name)||label+' did not complete');
-	  }
-	  const candidate=meterAutoCalCapturedSeriesSnapshotForKey('greyscale-'+magicPoints)||meterFullAutoCalSnapshotForKey('greyscale-'+magicPoints);
-	  lastValidation=meterAutoCalMagicWandLg26Validation(candidate);
-	  if(lastValidation.ok){
-	   snap=candidate;
-	   break;
-	  }
-	 }
-	 if(!snap) throw new Error('Magic Wand '+label+' did not capture a complete LG 26pt series: '+((lastValidation&&lastValidation.message)||'missing readings'));
-	 if(fullWorkflow){
-	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
-	  if(!meterFullAutoCalReportData.stages[stage]) meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
-	  meterFullAutoCalReportData.stages[stage][stageKey]={status:'complete',completed_at:Date.now(),label:label,readings:snap.readings.length,snapshot:snap};
-	  meterFullAutoCalSaveReportData();
-	  meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-complete',{readings:snap.readings.length});
-	 }
-	 return snap;
 	}
 
 async function meterFullAutoCalCaptureReportSet(stage){
@@ -31368,9 +31194,6 @@ async function meterFullAutoCalGeneratePostReport(){
   meterAutoCalRunning=false;
   meterAutoCalPhase='';
   meterActionPending=false;
-  meterAutoCalMagicWandActive=false;
-  meterAutoCalMagicWandBaseStatus=null;
-  meterAutoCalMagicWandFullWorkflow=false;
   meterAutoCalSetOverlay(false,null);
   meterClearSeriesRunUiState();
   meterHideWorkflowProgress();
@@ -31417,9 +31240,6 @@ async function meterStartFullAutoCal(){
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
 		  : false;
-		 const magicWandEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'magicWandEnabled'))
-		  ? accepted.magicWandEnabled!==false
-		  : meterFullAutoCalMagicWandChoiceValue();
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
 		  ? accepted.shadowFixEnabled!==false
 		  : true;
@@ -31446,7 +31266,6 @@ async function meterStartFullAutoCal(){
 		  signalMode:signalMode,
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
-		  magicWandEnabled:magicWandEnabled,
 		  shadowFixEnabled:shadowFixEnabled,
 		  method:profilingMethod,
 		  latticeSeriesId:profilingLatticeSeriesId
@@ -31482,9 +31301,8 @@ async function meterFullAutoCalStart3d(firstStatus){
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(firstStatus);
  meterFullAutoCalMergeConfigFromGreyscaleStatus(firstStatus);
- const postCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
- const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
- meterFullAutoCalPhase='3d-lut';
+  const postCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+  meterFullAutoCalPhase='3d-lut';
  meterFullAutoCalSaveState();
  meterAutoCalRunning=false;
  meterAutoCalPhase='';
@@ -31498,9 +31316,8 @@ async function meterFullAutoCalStart3d(firstStatus){
   method:(meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||meterFullAutoCalMethodValue(),
   latticeSeriesId:(meterFullAutoCalConfig&&meterFullAutoCalConfig.latticeSeriesId)||undefined,
   upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue(),
-  postCommitPolishEnabled:postCommitPolishEnabled,
-  magicWandEnabled:magicWandEnabled
- };
+   postCommitPolishEnabled:postCommitPolishEnabled
+  };
  // Snapshot the wizard state: a failed start attempt calls fail() ->
  // meterFullAutoCalResetState, which clears it before we can retry.
  const start3dConfigSnapshot=meterFullAutoCalConfig?{...meterFullAutoCalConfig}:null;
@@ -31541,344 +31358,12 @@ function meterFullAutoCalTouchupTargetY(){
  return meterAutoCalTargetYValue();
 }
 
-	function meterAutoCalMagicWandAdjustmentReference(status,fullWorkflow){
-	 const first=fullWorkflow?((meterFullAutoCalResults&&meterFullAutoCalResults.first)||status||meterAutoCalMagicWandBaseStatus):(status||meterAutoCalMagicWandBaseStatus||(meterFullAutoCalResults&&meterFullAutoCalResults.first));
-	 const reference={};
- if(first&&first.lg_autocal_26_response_model&&typeof first.lg_autocal_26_response_model==='object'){
-  reference.lg_autocal_26_response_model=meterFullAutoCalCloneValue(first.lg_autocal_26_response_model);
- }
- if(first&&first.lg_autocal_26_best_known&&typeof first.lg_autocal_26_best_known==='object'){
-  reference.lg_autocal_26_best_known=meterFullAutoCalCloneValue(first.lg_autocal_26_best_known);
-	 }
-	 return Object.keys(reference).length?reference:undefined;
-	}
-
-	function meterFullAutoCalPostSeriesAdjustmentReference(){
-	 return meterAutoCalMagicWandAdjustmentReference();
-	}
-
-	function meterAutoCalMagicWandContext(status,fullWorkflow){
-	 const cfg=fullWorkflow?meterFullAutoCalConfig:null;
-	 const configuredTarget=Number(cfg&&cfg.targetDelta);
-	 const statusTarget=Number(status&&status.target_delta_e);
-	 const target=(Number.isFinite(configuredTarget)&&configuredTarget>0)?configuredTarget:((Number.isFinite(statusTarget)&&statusTarget>0)?statusTarget:meterAutoCalTargetDeltaValue());
-	 const configuredY=Number(cfg&&cfg.targetY);
-	 const statusY=Number(status&&(status.target_luminance||status.calibrated_white_luminance));
-	 const targetY=(Number.isFinite(configuredY)&&configuredY>0)?configuredY:((Number.isFinite(statusY)&&statusY>0)?statusY:meterAutoCalTargetYValue());
-	 const configuredSetupY=Number(cfg&&cfg.setupY);
-	 const statusSetupY=Number(status&&status.setup_luminance_reference);
-	 const setupY=(Number.isFinite(configuredSetupY)&&configuredSetupY>0)?configuredSetupY:((Number.isFinite(statusSetupY)&&statusSetupY>0)?statusSetupY:NaN);
-	 const configuredHeadroomY=Number(cfg&&cfg.headroomY);
-	 const statusHeadroomY=Number(status&&status.headroom_target_luminance);
-	 const headroomY=(Number.isFinite(configuredHeadroomY)&&configuredHeadroomY>0)?configuredHeadroomY:((Number.isFinite(statusHeadroomY)&&statusHeadroomY>0)?statusHeadroomY:NaN);
-	 const dtype=(cfg&&cfg.dtype)||(status&&status.display_type)||getEffectiveDisplayType();
-	 const patternSignalRange=(cfg&&cfg.patternSignalRange)||(status&&status.pattern_signal_range)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
-	 const wp=(cfg&&cfg.wp)||(status&&status.target_white)||meterTargetWhitePoint();
-	 return {target,targetY,setupY,headroomY,dtype,patternSignalRange,wp};
-	}
-
-	async function meterAutoCalStartMagicWand(status,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const afterPolish=!!(options&&options.afterPolish);
-	 if(fullWorkflow&&!meterFullAutoCalRunning) return false;
-	 if(fullWorkflow){
-	  if(!afterPolish) meterFullAutoCalResults.lut3d=status||null;
-	  const runId=status&&(status.full_autocal_run_id||status.run_id);
-	  if(runId) meterFullAutoCalRunId=runId;
-	  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
-	  meterFullAutoCalMarkCompletionHandled(status);
-	  meterFullAutoCalPhase='magic-wand';
-	  meterFullAutoCalSaveState();
-	  meterLg3dAutoCalRunning=false;
-	 }
-	 meterAutoCalMagicWandActive=true;
-	 meterAutoCalMagicWandBaseStatus=status||null;
-	 meterAutoCalMagicWandFullWorkflow=fullWorkflow;
-	 meterAutoCalRunning=false;
-	 meterAutoCalPhase='';
-	 meterActionPending=false;
-	 meterUpdateReadButtons();
-	 try{
-	  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
-	  if(!(await meterEnsureLgAutoCalTransport((fullWorkflow?'Full Auto Cal':'Greyscale Auto Cal')+' Magic Wand'))) throw new Error('LG Auto Cal transport is not ready');
-	  if(!meterEnsureLgAutoCalExtendedVideoTransport()) throw new Error('LG Auto Cal transport is not ready');
-	  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
-	  const beforeSnap=await meterAutoCalCaptureMagicWandLg26Series('before','Magic Wand LG 26pt read',{fullWorkflow});
-	  const beforeTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(beforeSnap);
-	  if(!(Number.isFinite(beforeTargetY)&&beforeTargetY>0)) throw new Error('Magic Wand LG 26pt read did not include a usable 100% white luminance');
-	  meterActiveSeriesType='greyscale';
-	  meterActiveSeriesPoints=26;
-	  meterActiveSeriesKey='greyscale-26';
-	  meterShowGreyscaleAutoCalContext();
-	  meterResetSeriesButtons();
-	  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
-	  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-	  meterSetActiveSeriesChartContext();
-	  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
-	  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
-	  const whiteStep=meterAutoCalWhiteStep();
-	  if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
-	  const ctx=meterAutoCalMagicWandContext(status,fullWorkflow);
-	  const deltaEFormula='deitp';
-	  const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-	  meterAutoCalPendingConfig={dtype:ctx.dtype,patternSignalRange:ctx.patternSignalRange,wp:ctx.wp,adjustable,whiteStep,magicWand:true,fullWorkflowMagicWand:fullWorkflow};
-	  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting Magic Wand'},{workflow:fullWorkflow?'full':'greyscale',label:'Starting Magic Wand'});
-	  await meterStopContinuous();
-	  const adjustBody=JSON.stringify(meterMeasurementSignalContext({
-	    type:'greyscale',
-	    points:26,
-	    display_type:ctx.dtype,
-	    delay_ms:meterDelayMs(),
-	    patch_size:getMeterPatchSize(),
-	    signal_range:getVal('rgb_quant_range'),
-	    pattern_signal_range:ctx.patternSignalRange||undefined,
-	    lg_greyscale_21:false,
-	    lg_autocal_26:true,
-	    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
-	    lg_autocal_26_anchor_predrive:false,
-	    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-	    ...meterPatternInsertionPayload(),
-	    target_delta_e:ctx.target,
-	    delta_e_formula:deltaEFormula,
-	    target_luminance:beforeTargetY,
-	    setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
-	    target_white:{x:ctx.wp.x,y:ctx.wp.y},
-	    picture_mode:meterLgPictureModeValue(),
-	    ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
-	    force_ddc_white_balance:true,
-	    lg_autocal_sdr_1d_dpg_upload_enabled:true,
-	    restore_factory_levels:false,
-	    reset_ddc_baseline:false,
-	    refresh_rate:getMeterRefreshRate()||undefined,
-	    require_device_ready:false,
-	    full_autocal_post_series_adjust:true,
-	    full_workflow:fullWorkflow?true:undefined,
-	    full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	    full_autocal_phase:fullWorkflow?'magic-wand':undefined,
-	    full_autocal_post_commit_polish:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():undefined,
-	    full_autocal_magic_wand:fullWorkflow?meterFullAutoCalMagicWandEnabled():undefined,
-	    post_cal_series_readings:beforeSnap.readings,
-	    post_cal_adjustment_reference:meterAutoCalMagicWandAdjustmentReference(status,fullWorkflow),
-	    post_cal_series_adjust_settle_ms:6000,
-	    post_commit_polish:false,
-	    post_commit_verify:false,
-	    post_commit_body_polish:false,
-	    post_commit_body_verify:false,
-	    post_commit_final_all_level_verify:false,
-	    post_commit_final_top_window:false,
-	    low_light:meterLowLightReadState(),
-	    steps:autocalSteps
-	   }));
-	  meterAutoCalRunning=true;
-	  meterAutoCalPhase='running';
-	  meterActionPending=true;
-	  let r=null;
-	  for(let attempt=0;attempt<5;attempt++){
-	   r=await fetchJSON('/api/meter/lg-autocal',{
-	    method:'POST',
-	    headers:{'Content-Type':'application/json'},
-	    body:adjustBody,
-	    _timeoutMs:10000
-	   });
-	   if(r&&r.status==='started') break;
-	   if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
-	   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for Magic Wand'},{workflow:fullWorkflow?'full':'greyscale',label:'Waiting for Magic Wand'});
-	   await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
-	  }
-	  if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start Magic Wand');
-	  meterActionPending=false;
-	  meterAutoCalSetOverlay(false,{phase:'running',current_name:'Magic Wand started',message:'Showing live charts'});
-	  if(meterAutoCalPolling) clearInterval(meterAutoCalPolling);
-	  meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
-	  await meterPollAutoCal();
-	  return true;
-	 }catch(e){
-	  meterAutoCalMagicWandActive=false;
-	  meterAutoCalMagicWandBaseStatus=null;
-	  meterAutoCalMagicWandFullWorkflow=false;
-	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand failed',true);
-	  else{
-	   meterAutoCalPhase='error';
-	   meterAutoCalRunning=true;
-	   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Magic Wand error',message:(e&&e.message)||'Magic Wand failed',status:'error'});
-	   toast((e&&e.message)||'Magic Wand failed',true);
-	  }
-	  return false;
-	 }finally{
-	  meterUpdateReadButtons();
-	 }
-	}
-
-	async function meterAutoCalFinishMagicWandAdjustment(adjustStatus,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 try{
-	  if(fullWorkflow) meterFullAutoCalMarkCompletionHandled(adjustStatus);
-	  meterAutoCalRunning=false;
-	  meterAutoCalPhase='';
-	  meterAutoCalPendingConfig=null;
-	  meterActionPending=false;
-	  const afterSnap=await meterAutoCalCaptureMagicWandLg26Series('after','Magic Wand verification',{fullWorkflow});
-	  const revertStatus=await meterAutoCalRunMagicWandRevert(adjustStatus,afterSnap,{fullWorkflow});
-	  const mergedStatus={
-	   ...(adjustStatus||{}),
-	   full_autocal_post_series_adjust:true,
-	   magic_wand:true,
-	   post_series_revert:revertStatus&&revertStatus.post_cal_series_revert?revertStatus.post_cal_series_revert:null,
-	   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand?meterFullAutoCalReportData.stages.magic_wand.before:null,
-	   post_series_after:afterSnap,
-	   readings:afterSnap&&Array.isArray(afterSnap.readings)?afterSnap.readings:[],
-	   steps:afterSnap&&Array.isArray(afterSnap.steps)?afterSnap.steps:[],
-	   white_reading:afterSnap&&afterSnap.white_reading?afterSnap.white_reading:null,
-	   summary_readings_source:'magic_wand_after_snapshot'
-	  };
-	  meterAutoCalMagicWandActive=false;
-		  meterAutoCalMagicWandBaseStatus=null;
-		  meterAutoCalMagicWandFullWorkflow=false;
-		  if(fullWorkflow){
-		   await meterFullAutoCalCompleteAfterHdrToneMap(mergedStatus,undefined,'magic-wand');
-		  }else{
-		   // Wizard-owned HDR tone-map prompt: the original autocal
-		   // commit set hdr20_1d_tonemap_pending; we still need the
-		   // fresh 100% peak read + operator decision before showing
-		   // the final "Greyscale Auto Cal complete" overlay.
-		   let completeStatus=mergedStatus;
-		   if(mergedStatus&&mergedStatus.hdr20_1d_tonemap_pending){
-		    const promptResult=await meterAutoCalPromptHdrToneMapUpload(mergedStatus,'magic-wand-standalone');
-		    if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
-		   }
-		   meterAutoCalPhase='complete';
-		   meterAutoCalRunning=true;
-	   meterAutoCalClearSavedState();
-	   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete',current_name:'Greyscale Auto Cal complete',message:'Greyscale Auto Cal and Magic Wand complete.'});
-	   toast('LG Auto Cal complete');
-	  }
-	  return true;
-	 }catch(e){
-	  meterAutoCalMagicWandActive=false;
-	  meterAutoCalMagicWandBaseStatus=null;
-	  meterAutoCalMagicWandFullWorkflow=false;
-	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand verification failed',true);
-	  else{
-	   meterAutoCalPhase='error';
-	   meterAutoCalRunning=true;
-	   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Magic Wand error',message:(e&&e.message)||'Magic Wand verification failed',status:'error'});
-	   toast((e&&e.message)||'Magic Wand verification failed',true);
-	  }
-	  return false;
-	 }finally{
-	  meterUpdateReadButtons();
-	 }
-	}
-
-	async function meterAutoCalRunMagicWandRevert(adjustStatus,afterSnap,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const adjustment=adjustStatus&&adjustStatus.post_cal_series_adjustment;
-	 if(!adjustment||!Array.isArray(adjustment.changes)||!adjustment.changes.length) return null;
-	 if(!afterSnap||!Array.isArray(afterSnap.readings)||!afterSnap.readings.length) return null;
-	 const afterTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(afterSnap);
-	 if(!(Number.isFinite(afterTargetY)&&afterTargetY>0)) throw new Error('Magic Wand verification did not include a usable 100% white luminance');
-	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:adjustment.changes.length,current_name:'Magic Wand failsafe'},{workflow:fullWorkflow?'full':'greyscale',label:'Magic Wand failsafe'});
-	 meterActiveSeriesType='greyscale';
- meterActiveSeriesPoints=26;
- meterActiveSeriesKey='greyscale-26';
- meterSetActiveSeriesChartContext();
- meterSeriesSteps=meterBuildStepsJS('greyscale',26);
- const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
-	 if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available for Magic Wand failsafe');
-	 const whiteStep=meterAutoCalWhiteStep();
-	 if(!whiteStep) throw new Error('100% white is required before Magic Wand failsafe can start');
-	 const ctx=meterAutoCalMagicWandContext(meterAutoCalMagicWandBaseStatus||adjustStatus,fullWorkflow);
-	 const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
- const body=JSON.stringify(meterMeasurementSignalContext({
-   type:'greyscale',
-   points:26,
-	   display_type:ctx.dtype,
-   delay_ms:meterDelayMs(),
-   patch_size:getMeterPatchSize(),
-   signal_range:getVal('rgb_quant_range'),
-	   pattern_signal_range:ctx.patternSignalRange||undefined,
-   lg_greyscale_21:false,
-   lg_autocal_26:true,
-   lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
-   lg_autocal_26_anchor_predrive:false,
-   lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-   ...meterPatternInsertionPayload(),
-	   target_delta_e:ctx.target,
-	   delta_e_formula:'deitp',
-	   target_luminance:afterTargetY,
-	   setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	   headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	   target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
-	   target_white:{x:ctx.wp.x,y:ctx.wp.y},
-	   picture_mode:meterLgPictureModeValue(),
-	   ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
-   force_ddc_white_balance:true,
-   lg_autocal_sdr_1d_dpg_upload_enabled:true,
-   restore_factory_levels:false,
-   reset_ddc_baseline:false,
-   refresh_rate:getMeterRefreshRate()||undefined,
-   require_device_ready:false,
-	   full_autocal_post_series_revert:true,
-	   full_workflow:fullWorkflow?true:undefined,
-	   full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	   full_autocal_phase:fullWorkflow?'magic-wand':undefined,
-   post_cal_series_after_readings:afterSnap.readings,
-   post_cal_series_adjustment_status:adjustment,
-   post_commit_polish:false,
-   post_commit_verify:false,
-   post_commit_body_polish:false,
-   post_commit_body_verify:false,
-   post_commit_final_all_level_verify:false,
-   post_commit_final_top_window:false,
-   low_light:meterLowLightReadState(),
-   steps:autocalSteps
-  }));
- let r=null;
- for(let attempt=0;attempt<5;attempt++){
-  r=await fetchJSON('/api/meter/lg-autocal',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body,
-   _timeoutMs:10000
-  });
-  if(r&&r.status==='started') break;
-  if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
-  await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
- }
-	 if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start Magic Wand failsafe');
- const start=Date.now();
- let last=null;
- while(Date.now()-start<180000){
-  const status=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:8000});
-  if(status) last=status;
-  if(status&&(status.status==='complete'||status.status==='cancelled'||status.status==='error')){
-	   if(status.status!=='complete') throw new Error((status&&status.message)||(status&&status.current_name)||'Magic Wand failsafe failed');
-	   if(fullWorkflow){
-	    meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	    if(meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand){
-	     meterFullAutoCalReportData.stages.magic_wand.revert={status:'complete',completed_at:Date.now(),snapshot:status.post_cal_series_revert||null};
-	     meterFullAutoCalSaveReportData();
-	     meterFullAutoCalArchiveReportData('magic_wand-revert-complete',{reverted:status.post_cal_series_revert&&Array.isArray(status.post_cal_series_revert.reverted)?status.post_cal_series_revert.reverted.length:0});
-	    }
-	   }
-	   return status;
-  }
-  await meterFullAutoCalSleep(750);
- }
-	 throw new Error((last&&last.current_name)||'Timed out waiting for Magic Wand failsafe');
-	}
-
 	async function meterFullAutoCalStartPost3dPolish(lutStatus){
 	 if(!meterFullAutoCalRunning) return false;
 	 meterFullAutoCalMergeCleanupConfigFromStatus(lutStatus);
-	 const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
 	 const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	 const post3dPostCommitVerifyEnabled=false;
 	 if(!post3dPostCommitPolishEnabled){
-	  if(magicWandEnabled) return meterAutoCalStartMagicWand(lutStatus,{fullWorkflow:true});
 	  return false;
 	 }
  meterFullAutoCalResults.lut3d=lutStatus||null;
@@ -31981,9 +31466,8 @@ function meterFullAutoCalTouchupTargetY(){
     full_workflow:true,
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'post-3d-polish',
-    full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
-    full_autocal_magic_wand:magicWandEnabled,
-    low_light:meterLowLightReadState(),
+     full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
+     low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
   let r=null;
@@ -32141,7 +31625,6 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'touchup-greyscale',
     full_autocal_post_commit_polish:touchupPostCommitPolishEnabled,
-    full_autocal_magic_wand:meterFullAutoCalMagicWandEnabled(),
     low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
@@ -32197,7 +31680,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
 	  touchup_skipped:skipTouchup,
 	  phase:'complete',
 	  current_name:'Full Auto Cal complete',
-		  message:(touchupStatus&&touchupStatus.full_autocal_post_series_adjust)?'Greyscale, 3D LUT, and Magic Wand complete.':(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.')),
+		  message:(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.')),
   first_greyscale:meterFullAutoCalResults.first,
   lut3d:meterFullAutoCalResults.lut3d,
 	  touchup:(skipTouchup&&!post3dPolish)?null:(touchupStatus||null)
@@ -32238,7 +31721,7 @@ async function meterPollAutoCal(options){
 	 const recover=!!(options&&options.recover);
 	 const timeoutMs=Number((options&&options.timeoutMs)||0)|| (initial?15000:8000);
 	 const setupOverlayActiveBeforeFetch=meterAutoCalSetupOverlayActive();
-		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand'));
+		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'));
 	 const fullGreyscaleBackendActive=!!(fullGreyscalePhase&&(meterAutoCalPolling||meterAutoCalPhase==='running'));
 	 if(setupOverlayActiveBeforeFetch&&!fullGreyscaleBackendActive) return;
 	 meterAutoCalPollInFlight=true;
@@ -32298,18 +31781,7 @@ async function meterPollAutoCal(options){
 	   meterActionPending=false;
 	   meterAutoCalRunning=false;
 	   meterAutoCalPendingConfig=null;
-	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-	   else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
-	   return;
-	  }
-	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
-	   meterActionPending=false;
-	   meterAutoCalRunning=false;
-	   meterAutoCalPendingConfig=null;
-	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
+	   await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 	   return;
 	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
@@ -32321,7 +31793,7 @@ async function meterPollAutoCal(options){
 	   return;
 	  }
 	  const backendGreyscaleActive=!!(r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running');
-		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
+		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
 	  const localAutoCalActive=!!(backendGreyscaleActive||fullGreyscaleActive);
 	  if(initial&&r.status!=='running'&&!localAutoCalActive){
 	   meterAutoCalRunning=false;
@@ -32360,40 +31832,10 @@ async function meterPollAutoCal(options){
 			    if(meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
 			     meterAutoCalRunning=false;
 			     meterAutoCalPendingConfig=null;
-			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-			     else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
+			     await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 			     return;
 			    }
-				    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPendingConfig=null;
-				     if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-					     else if(meterAutoCalMagicWandStatusAlreadyFinal(r)) meterFullAutoCalMarkCompletionHandled(r);
-					     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
-				     return;
-				    }
-			    if(r.full_autocal_post_series_adjust&&meterAutoCalMagicWandActive&&!meterAutoCalMagicWandFullWorkflow){
-			     meterAutoCalRunning=false;
-			     meterAutoCalPendingConfig=null;
-			     await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:false});
-			     return;
-			    }
-				    if(!r.full_workflow&&meterAutoCalStandaloneMagicWandEnabled&&!meterAutoCalMagicWandActive){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPendingConfig=null;
-				     meterAutoCalStandaloneMagicWandEnabled=false;
-				     await meterAutoCalStartMagicWand(r,{fullWorkflow:false});
-				     return;
-				    }
-				    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPhase='';
-				     meterAutoCalPendingConfig=null;
-				     meterAutoCalSetOverlay(false,r);
-				     return;
-				    }
-				   // Success popup only when this browser was actively
+			   // Success popup only when this browser was actively
 				   // tracking the run. A cancelled cal (or a cancel race
 				   // that left status=complete) must not open "Auto Cal
 				   // complete" on the next poll or page refresh.
@@ -32451,7 +31893,7 @@ let completeStatus=r;
 	  }
  }catch(e){
   const backendGreyscaleActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
-	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
+	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
   const active=!!(backendGreyscaleActive||fullGreyscaleActive);
   if(active){
    meterAutoCalPollErrors++;
@@ -32543,10 +31985,6 @@ async function meterStartAutoCal(options){
 	 meterAutoCalPhase='disclaimer';
 	 meterAutoCalSetupReading=null;
 	 meterAutoCalPendingConfig=null;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
 			 meterAutoCalCapturedTargetY=0;
 		 meterAutoCalResetPanelLightState();
 		 meterAutoCalLuminanceReadBusy=false;
@@ -32589,7 +32027,6 @@ async function meterStartAutoCal(options){
 	  whiteStep,
 	  fullWorkflow:fullWorkflow,
 	  postCommitPolishEnabled:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():true,
-	  magicWandEnabled:false,
 	  // Snapshot the meter port that was active when the operator kicked off
 	  // the autocal. If the SELECT drifted (e.g. saved port changed, a meter
 	  // reconnected, the user toggled to Auto) while the run was in flight,
@@ -32890,17 +32327,7 @@ async function meterAutoCalConfirmAndStart(){
 		 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 		 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
 		 const postCommitVerifyEnabled=false;
-		 // Gated off 2026-06-29: the Magic Wand experimental feature is
-		 // no longer used. Force magicWandEnabled to false so a stale
-		 // captured option cannot re-enable the post-series-adjust /
-		 // meterAutoCalStartMagicWand path. The Magic Wand checkbox was
-		 // removed from both the greyscale and full autocal wizards; this
-		 // is the JS gate that prevents the feature from running even if
-		 // some serialized config still carries magicWandEnabled=true.
-		 const magicWandEnabled=false;
 		 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
-		 meterAutoCalPendingConfig.magicWandEnabled=magicWandEnabled;
-		 meterAutoCalStandaloneMagicWandEnabled=magicWandEnabled;
 	 if(!hdrWorkflow&&Number.isFinite(targetY)&&targetY>0) meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
  const dtype=meterAutoCalPendingConfig.dtype;
  const patternSignalRange=meterAutoCalPendingConfig.patternSignalRange;
@@ -32983,7 +32410,6 @@ async function meterAutoCalConfirmAndStart(){
 		    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
 		    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
 		    full_autocal_post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalPostCommitPolishEnabled():undefined,
-		    full_autocal_magic_wand:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalMagicWandEnabled():undefined,
 		    post_commit_polish:postCommitPolishEnabled,
 		    post_commit_verify:postCommitVerifyEnabled,
 		    post_commit_body_polish:postCommitPolishEnabled?undefined:false,
@@ -33098,10 +32524,6 @@ async function meterStopAutoCal(){
 	 meterAutoCalCapturedMeasurementLabel='';
 	 meterAutoCalSetupReading=null;
 	 meterAutoCalLevelPreflight=null;
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
  if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
  meterAutoCalRunning=false;
  meterActionPending=true;
@@ -33516,11 +32938,6 @@ async function meterPollLg3dAutoCal(options){
 	     await meterFullAutoCalStartTouchup(r);
 	     return;
 	    }
-	    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
-	     meterAutoCalPhase='';
-	     meterAutoCalSetOverlay(false,r);
-	     return;
-	    }
 	    // Same cancel/refresh guard as greyscale: do not open the
 	    // success popup unless this browser was tracking the run.
 	    if(!localActive||meterAutoCalStopRequested){
@@ -33661,8 +33078,7 @@ async function meterStartLg3dAutoCal(options){
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
  const skipPreprofileUnityReset=!!(fullWorkflow&&preflightLut3d&&preflightLut3d.upload_verified===true&&(!preflightPictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
- const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
- const rawTargetGamma=meterAutoCalTargetGammaValue();
+  const rawTargetGamma=meterAutoCalTargetGammaValue();
  const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
  const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
  // Committed (applied) quant range — same source as meterMeasurementSignalContext.
@@ -33720,9 +33136,8 @@ refresh_rate:getMeterRefreshRate()||undefined,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
-  full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
-  full_autocal_magic_wand:fullWorkflow?fullMagicWand:undefined,
-  // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
+   full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
+   // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
   // Presence of this key in the payload makes the server-side conf merge
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
