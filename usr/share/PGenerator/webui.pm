@@ -34489,11 +34489,13 @@ function meterUpdateColorDeltaEScrollLayout(sortedSteps){
  if(!scroller||!canvas) return;
  const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  const steps=Array.isArray(sortedSteps)?sortedSteps:[];
- // Only LONG series scroll-sync with the thumbnails. Short series
- // (ColorChecker, Sat Sweep — and therefore every post-cal report set)
- // always fit-to-width so every bar is visible: engaging the wide canvas for
- // them clipped the report ΔE charts to the visible scroll window.
- const needsScroll=steps.length>26;
+ // Only LONG series scroll-sync with the thumbnails. Short series —
+ // ColorChecker (30), Sat Sweep (~28), Cube 3³ (27), every post-cal report
+ // set — always fit-to-width so every bar is visible: engaging the wide
+ // canvas for them clipped the report ΔE charts to the visible scroll
+ // window. 40 bars still render legibly in a normal viewport; real lattices
+ // (125+) and long customs are what the scroll exists for.
+ const needsScroll=steps.length>40;
  const row=meterGreyscaleScrollSource();
  const viewport=Math.max(320,Math.round(scroller.clientWidth||((row&&row.clientWidth)||0)||800));
  const content=(isColor&&needsScroll)?meterSeriesThumbContentWidth(steps,scroller):0;
