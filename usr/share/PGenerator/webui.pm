@@ -11088,16 +11088,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div id="meterLg3dStartModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT AutoCal</div>
-    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose how the display is profiled before the 3D LUT is solved and uploaded. Greyscale / 1D should already be calibrated. The 3D stage builds a full 33&sup3; payload for the active picture mode.</div>
+    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose how the display is profiled before the 3D LUT is solved and uploaded. Greyscale / 1D should already be calibrated. Regardless of profiling method, the worker always generates and uploads a full 33&sup3; (35,937-node) 12-bit payload for the active picture mode. Patch counts below are the profile measurements only.</div>
     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
     <select id="meterLg3dModalProfileSource" onchange="meterLg3dModalProfileSourceChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
-     <option value="matrix">Matrix (5-point) — fastest</option>
-     <option value="skeleton">Skeleton (multi-level WRGB) — fast edge profile</option>
-     <option value="hybrid3" selected>Hybrid 3&sup3; — recommended</option>
-     <option value="hybrid5">Hybrid 5&sup3; — more volume samples</option>
-     <option value="hybrid9">Hybrid 9&sup3; — dense volume</option>
+     <option value="matrix">Matrix (5-point) — 5 patches, fastest</option>
+     <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
+     <option value="hybrid3" selected>Hybrid 3&sup3; — 63 patches (recommended)</option>
+     <option value="hybrid5">Hybrid 5&sup3; — 161 patches</option>
+     <option value="hybrid9">Hybrid 9&sup3; — 765 patches</option>
      <option value="lattice">Lattice series — full N&sup3; volume only</option>
-     <option value="imported">Imported .cube — upload only</option>
+     <option value="imported">Imported .cube — upload only (0 profile patches)</option>
     </select>
     <div id="meterLg3dModalLatticeRow" style="display:none;margin-bottom:10px">
      <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
@@ -11868,15 +11868,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterFullAutoCalProfilingRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px;flex-wrap:wrap">
 	    3D LUT profiling
 	    <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
-	     <option value="matrix">Matrix (5-point, fastest)</option>
-	     <option value="skeleton">Skeleton (multi-level WRGB)</option>
-	     <option value="hybrid3" selected>Hybrid 3³ (recommended)</option>
-	     <option value="hybrid5">Hybrid 5³</option>
-	     <option value="hybrid9">Hybrid 9³</option>
-	     <option value="lattice">Lattice series…</option>
+	     <option value="matrix">Matrix (5 patches)</option>
+	     <option value="skeleton">Skeleton WRGB (45 patches)</option>
+	     <option value="hybrid3" selected>Hybrid 3³ (63 patches)</option>
+	     <option value="hybrid5">Hybrid 5³ (161 patches)</option>
+	     <option value="hybrid9">Hybrid 9³ (765 patches)</option>
+	     <option value="lattice">Lattice series… (N³ only)</option>
 	    </select>
 	    <select id="meterFullAutoCalLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px"></select>
-	    <span style="font-size:.68rem;color:var(--text2)">(skeleton/hybrid measure multi-level WRGB edges; hybrid also samples a small volume cube)</span>
+	    <span style="font-size:.68rem;color:var(--text2)">(Matrix=W/R/G/B/K. Skeleton=multi-level WRGB ramps. Hybrid=skeleton + volume cube, deduped. Lattice=N³ only. All produce a 33³ upload.)</span>
 	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
@@ -32730,14 +32730,17 @@ function meterLg3dLatticeResidualsEnabled(){
 
 function meterLg3dProfilingExplain(source){
  const src=String(source||'hybrid3').toLowerCase();
+ // Patch counts are exact for default skeleton levels
+ // [0,5,10,20,30,40,50,60,70,80,90,100] and default lattice params
+ // (size N, no grey ramp, no threshold). Hybrid = skeleton∪volume by name.
  const map={
-  matrix:'Matrix (5-point)\n\nMeasures white, red, green, blue, and black only, then builds a full 33³ 3D LUT from a white-preserving gamut matrix.\n\nFastest option. Best when you just need a quick primary/gamut correction after greyscale. Does not sample mid-level or interior colours.',
-  skeleton:'Skeleton (multi-level WRGB)\n\nMeasures white/red/green/blue ramps at many levels (about 45 patches), not a full cube. Builds a full 33³ LUT from those edges with per-node corrections where the multi-level ramps provide information.\n\nMuch faster than a dense lattice while tracking how primaries change with level. Does not measure true mid-saturation interiors (partial mixes).',
-  hybrid3:'Hybrid 3³ (recommended)\n\nCombines the multi-level WRGB skeleton with a 3×3×3 volume cube (about 60–70 patches after dedupe). Edges give level-aware primaries; the small volume samples real interior mixes for residual corrections.\n\nBest balance of time vs accuracy for standalone AutoCal, especially on WRGB OLED. Greyscale diagonal stays identity so the 1D greyscale path remains in charge.',
-  hybrid5:'Hybrid 5³\n\nSkeleton WRGB ramps plus a 5×5×5 volume (125 cube nodes, less overlap with skeleton).\n\nMore interior colour samples than Hybrid 3³ — better mid-sat detail, longer run. Use when Hybrid 3³ still leaves colour error on the chart.',
-  hybrid9:'Hybrid 9³\n\nSkeleton WRGB ramps plus a 9×9×9 volume (729 cube nodes).\n\nDense volume sampling for maximum lattice detail. Slow (similar class to a full 9³ lattice plus skeleton). Prefer when accuracy matters more than time.',
-  lattice:'Lattice series (full volume)\n\nMeasures only an N³ RGB cube (no multi-level skeleton). Pick a built-in or custom lattice series below.\n\nPure volume profile: good for comparing sizes (3³/5³/9³/17³). Without the skeleton, level-dependent primary behaviour must be inferred from the cube alone.',
-  imported:'Imported .cube (upload only)\n\nNo meter, no solve. Resamples a .cube already in LUT Tools (or the live import preview) to the LG 33-point payload and uploads it.\n\nUse when you already have a LUT file and only need to push it to the TV.'
+  matrix:'Matrix (5-point) — exactly 5 profile patches\n\nMeasures white, red, green, blue, and black at 100%/0% only. Solves a white-preserving 3×3 gamut matrix, then synthesises the full 33³ upload LUT (35,937 nodes).\n\nFastest. Good quick primary/gamut correction after greyscale. Does not measure mid-level primaries or interior mixes. Greyscale diagonal in the LUT is forced to identity so 1D greyscale stays in charge.',
+  skeleton:'Skeleton (multi-level WRGB) — exactly 45 profile patches\n\nBlack once, then white/red/green/blue at each of 11 levels (5,10,20,30,40,50,60,70,80,90,100%): 1 + 11×4 = 45. No full cube interiors.\n\nBuilds a full 33³ upload LUT. Residual corrections use the multi-level edge samples. Tracks how primaries change with level without a dense cube. Does not measure mid-saturation interiors (e.g. 50/50/0 yellow mixes) unless they fall on a pure axis. Greyscale diagonal remains identity.',
+  hybrid3:'Hybrid 3³ (recommended) — exactly 63 profile patches\n\nSkeleton WRGB (45) plus a 3×3×3 volume cube (27 nodes on axes 0/50/100%). Nine nodes appear in both sets and are measured once, so 45 + 27 − 9 = 63.\n\nEdges give multi-level primaries; the volume adds real interior mixes for residual corrections. Full 33³ upload still. Greyscale diagonal remains identity. Best default balance of time vs interior colour sampling.',
+  hybrid5:'Hybrid 5³ — exactly 161 profile patches\n\nSkeleton WRGB (45) plus a 5×5×5 volume cube (125 nodes). After name-dedupe against the skeleton: 45 + 125 − 9 = 161.\n\nMore interior samples than Hybrid 3³ (axes at 0/25/50/75/100%). Longer run; use when 3³ still leaves mid-sat error. Full 33³ upload; greyscale diagonal identity.',
+  hybrid9:'Hybrid 9³ — exactly 765 profile patches\n\nSkeleton WRGB (45) plus a 9×9×9 volume cube (729 nodes). After name-dedupe: 45 + 729 − 9 = 765.\n\nDense volume sampling. Slow (on the order of a full 9³ lattice plus the skeleton). Prefer when maximum measured interior detail matters more than time. Full 33³ upload; greyscale diagonal identity.',
+  lattice:'Lattice series (full volume only)\n\nMeasures an N×N×N RGB cube only — no multi-level WRGB skeleton. Built-in sizes: 3³ = 27, 5³ = 125, 9³ = 729, 17³ = 4,913 patches (plus any custom lattice you created). Choose the series below.\n\nPure volume profile. Level-dependent pure-primary behaviour must be inferred from the cube nodes alone. Full 33³ upload; greyscale diagonal identity when residuals are on (default).',
+  imported:'Imported .cube — 0 profile patches (upload only)\n\nNo meter, no profile, no solve. Resamples a .cube from LUT Tools (or the live import preview) to the LG 33³ 12-bit payload and uploads it to the active picture mode.\n\nUse when you already have a finished LUT file and only need to push it to the TV.'
  };
  return map[src]||map.hybrid3;
 }
@@ -32761,11 +32764,11 @@ function meterLg3dModalProfileSourceChanged(){
  if(countEl){
   try{
    const resolved=meterLg3dResolveProfilingChoice(src,null);
-   if(resolved.method==='matrix') countEl.textContent='About 5 profile patches.';
-   else if(resolved.method==='imported') countEl.textContent='No profile patches — upload only.';
+   if(resolved.method==='matrix') countEl.textContent='Profile measurements: 5 patches. Output: full 33³ LUT upload.';
+   else if(resolved.method==='imported') countEl.textContent='Profile measurements: 0. Output: resample + upload only.';
    else if(resolved.series){
     const n=meterLg3dLatticePatchesForStart(resolved.series).length;
-    countEl.textContent='About '+n+' profile patches for this choice (plus solve + upload).';
+    countEl.textContent='Profile measurements: '+n+' patches (exact expand). Output: full 33³ LUT upload after solve.';
    } else countEl.textContent='';
   }catch(e){ countEl.textContent=''; }
  }
