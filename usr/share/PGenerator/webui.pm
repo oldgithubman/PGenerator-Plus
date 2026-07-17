@@ -32921,8 +32921,12 @@ function meterLg3dApplyLatticeProfileStatus(status){
  meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
  meterSeriesSteps=steps;
- // Stamp target_x/y/Yn + wire codes from the matching series step so CIE/ΔE/
- // detail "Target" swatches and live RGB bars grade the right patch.
+ // Drop prior ColorChecker / sat-sweep selection so detail + Delta-E cannot
+ // keep grading the previous series against hybrid thumbs.
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ // Stamp target_x/y/Yn + wire codes from the matching series step so CIE/Delta-E
+ // detail Target swatches and live RGB bars grade the right patch.
  const readings=typeof meterAttachSeriesMeta==='function'
   ? meterAttachSeriesMeta(raw.map(rd=>Object.assign({},rd)))
   : raw.map(rd=>{
@@ -32934,12 +32938,17 @@ function meterLg3dApplyLatticeProfileStatus(status){
  meterReadings=readings;
  const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd))
   ||readings.find(rd=>String(rd.name||'')==='100/100/100'&&meterReadingHasLuminance(rd));
+ // Never keep a previous series white ref once the volume profile owns the UI.
  if(whiteRd) meterWhiteReading=whiteRd;
+ else if(!readings.length||phase==='drift_anchor') meterWhiteReading=null;
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
  document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
+ // Hide ColorChecker-style Delta-E section before hybrid thumbs widen its scroller
+ // (otherwise a prior ColorChecker canvas is CSS-stretched across 63 slots).
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
  const stepKeys=new Set(steps.map(s=>meterStepNameKey(s)));
  const completed=new Set(readings.map(rd=>meterStepNameKey(rd)).filter(k=>k&&stepKeys.has(k)));
  const currentStep=meterLg3dLatticeCurrentStep(status,steps);
@@ -32955,24 +32964,41 @@ function meterLg3dApplyLatticeProfileStatus(status){
  }
  meterBuildPatchThumbs(meterSeriesSteps,completed,currentKey);
  const restoreLiveThumb=()=>{
-  // drawAllCharts / showColorReadingDetail re-highlight the focused reading's
-  // thumb; put the pulse back on the node the worker is measuring.
   if(!currentKey) return;
   const container=document.getElementById('meterPatchThumbs');
   if(container) meterUpdateThumbStyles(container,completed,currentKey);
  };
+ const blankStaleColorUi=()=>{
+  // Wipe prior series off CIE / Delta-E canvases and the detail card.
+  try{ drawAllChartsPreset(steps); }catch(e){}
+  try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+  try{
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+  }catch(e){}
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  const tableWrap=document.getElementById('colorReadingsTableWrap');
+  if(tableWrap) tableWrap.style.display='none';
+ };
+ const clearLiveMeters=()=>{
+  try{
+   document.getElementById('meterLum').textContent='--';
+   document.getElementById('meterCCT').textContent='--';
+   document.getElementById('meterCIEx').textContent='--';
+   document.getElementById('meterCIEy').textContent='--';
+   meterUpdateLiveReadingTargets(null);
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+  }catch(e){}
+ };
  if(readings.length){
-  // Draw charts from completed nodes first (drawAllCharts focuses last reading).
   drawAllCharts(readings);
   const curRd=currentStep?meterFindReadingForStep(currentStep):null;
   if(curRd){
-   // Just finished this node (or re-polling after it landed).
    showColorReadingDetail(curRd,{pin:false});
    updateLiveReading(curRd);
   } else if(currentStep){
-   // Mid-read: worker has advanced current_name to the next node but the
-   // reading is not in status yet. Detail/label must follow current_name so
-   // the operator does not see "0/5/0" while the bar says "10/10/10".
    const pending={
     name:currentStep.name,
     ire:currentStep.ire,
@@ -32983,6 +33009,13 @@ function meterLg3dApplyLatticeProfileStatus(status){
    };
    showColorReadingDetail(pending,{pin:false});
    meterClearLiveReading(currentStep);
+  } else if(phase==='drift_anchor'){
+   // Mid-run WRGB re-anchor: keep the profile CIE cloud, clear stale detail.
+   showColorReadingDetail(null,{pin:false});
+   const liveLabel=document.getElementById('meterLiveReadingLabel');
+   if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift re-anchor');
+   document.getElementById('meterLiveReading').style.display='';
+   clearLiveMeters();
   } else {
    const liveRd=readings[readings.length-1];
    if(liveRd){
@@ -32991,22 +33024,25 @@ function meterLg3dApplyLatticeProfileStatus(status){
    }
   }
   restoreLiveThumb();
- } else if(currentStep){
-  const pending={
-   name:currentStep.name,
-   ire:currentStep.ire,
-   r:currentStep.r,g:currentStep.g,b:currentStep.b,
-   r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
-   target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn
-  };
-  showColorReadingDetail(pending,{pin:false});
-  meterClearLiveReading(currentStep);
-  restoreLiveThumb();
- } else if(phase==='drift_anchor'){
-  // No lattice reading yet — still show progress context without lying about blacks.
-  const liveLabel=document.getElementById('meterLiveReadingLabel');
-  if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift anchor');
-  document.getElementById('meterLiveReading').style.display='';
+ } else {
+  // Zero profile readings: start WRGB drift, or first profile node not stored.
+  blankStaleColorUi();
+  if(currentStep){
+   const pending={
+    name:currentStep.name,
+    ire:currentStep.ire,
+    r:currentStep.r,g:currentStep.g,b:currentStep.b,
+    r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
+    target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn
+   };
+   showColorReadingDetail(pending,{pin:false});
+   meterClearLiveReading(currentStep);
+  } else {
+   const liveLabel=document.getElementById('meterLiveReadingLabel');
+   if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift re-anchor');
+   document.getElementById('meterLiveReading').style.display='';
+   clearLiveMeters();
+  }
   restoreLiveThumb();
  }
  meterUpdateDeltaEFormControl();
@@ -35152,7 +35188,11 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
- try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
+ try{
+  const isVolume=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+   ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries());
+  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!isVolume);
+ }catch(e){}
  meterUpdateHdrConfigVisibility();
  if(!readings||readings.length===0) return;
  meterEnsureDeltaECache(readings);
@@ -36566,6 +36606,15 @@ let meterCubeViewLast=null;
 function meterActiveLatticeSeries(){
  const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
  return (series&&series.kind==='lattice')?series:null;
+}
+
+// Lattice / skeleton / hybrid volume profiling is characterization, not a
+// ColorChecker-style verification series. Hide Delta-E averages for all three.
+function meterActiveVolumeProfileSeries(){
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ if(!series) return null;
+ const k=String(series.kind||'');
+ return (k==='lattice'||k==='skeleton'||k==='hybrid')?series:null;
 }
 
 function cubeViewProject(fr,fg,fb,layout){
