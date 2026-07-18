@@ -10867,13 +10867,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap;flex:1 1 auto">
-      <!-- 3D LUT profiling lattices: measured like any colour series (CIE
-           charts only — no target grading; profiling data feeds the LUT
-           solve). The LUT cube visual lives in LUT Tools. -->
-      <button class="btn btn-sm btn-secondary" data-series="colors-903" onclick="meterSelectSeries('colors',903)" title="3D LUT profiling lattice: 3x3x3 RGB cube (27 patches - corners plus one interior step; the quickest lattice profile)">Cube 3&sup3;</button>
-      <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="3D LUT profiling lattice: 5x5x5 RGB cube (125 patches)">Cube 5&sup3;</button>
-      <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
-      <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
+      <!-- 3D LUT profiling series: measured like any colour series (CIE charts
+           only — no target grading; profiling data feeds the LUT solve). The
+           per-lattice quick buttons were replaced by a single Select series…
+           picker that reuses the standalone 3D LUT AutoCal method chooser and
+           its descriptions. The LUT cube visual lives in LUT Tools. -->
+      <button class="btn btn-sm btn-secondary" id="meter3dLutSelectSeriesBtn" onclick="meterOpenLg3dSelectSeriesModal()" title="Choose a 3D LUT profiling series to measure (lattice / skeleton / hybrid) — same method chooser and descriptions as the standalone 3D LUT AutoCal">Select series&hellip;</button>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
       <span id="meterCustomSeriesLoaded3dLut" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
       <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="View, import and download 3D LUTs">LUT Tools</button>
@@ -11182,6 +11181,30 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
      <button type="button" class="btn btn-sm btn-secondary" onclick="meterCloseLg3dAutoCalModal()">Cancel</button>
      <button type="button" class="btn btn-sm btn-primary" id="meterLg3dModalStartBtn" onclick="meterConfirmLg3dAutoCalModal()">&#9654; Start 3D LUT AutoCal</button>
+    </div>
+   </div>
+  </div>
+  <div id="meterLg3dSelectSeriesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">Select 3D LUT Series</div>
+    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose a profiling series to <strong>measure</strong> (CIE charts only — this does not solve or upload a LUT). It uses the same method chooser as the standalone 3D LUT AutoCal; the descriptions below note what each set samples. Patch counts are the measurements taken.</div>
+    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
+    <select id="meterLg3dSelSeriesSource" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
+     <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
+     <option value="hybrid3" selected>Hybrid 3&sup3; — 63 patches (recommended)</option>
+     <option value="hybrid5">Hybrid 5&sup3; — 161 patches</option>
+     <option value="hybrid9">Hybrid 9&sup3; — 765 patches</option>
+     <option value="lattice">Lattice series — full N&sup3; volume only</option>
+    </select>
+    <div id="meterLg3dSelSeriesLatticeRow" style="display:none;margin-bottom:10px">
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
+     <select id="meterLg3dSelSeriesLattice" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
+    </div>
+    <div id="meterLg3dSelSeriesExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
+    <div id="meterLg3dSelSeriesCount" style="font-size:.75rem;color:var(--text2);margin-bottom:14px">&nbsp;</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterCloseLg3dSelectSeriesModal()">Cancel</button>
+     <button type="button" class="btn btn-sm btn-primary" id="meterLg3dSelSeriesLoadBtn" onclick="meterConfirmLg3dSelectSeries()">Load series</button>
     </div>
    </div>
   </div>
@@ -24161,7 +24184,7 @@ function meterSeriesTabForSeries(type,points){
  // Lattice (3D LUT profiling) series live under the 3D LUT tab; manual custom
  // colour series stay under Color, custom greyscale under Greyscale.
  const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
- if(series&&series.kind==='lattice') return '3dlut';
+ if(series&&(series.kind==='lattice'||series.kind==='hybrid'||series.kind==='skeleton')) return '3dlut';
  return meterSeriesTabForType(type);
 }
 
@@ -24257,6 +24280,13 @@ function meterUpdateSeriesTabUi(){
   tab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
   meterSeriesTab=tab;
  }
+ // The 3D LUT series tab is measurement-only (profile a lattice/skeleton/hybrid
+ // with the meter), so it is hidden with no meter attached. Fall back to a
+ // usable tab if it was active when the meter went away.
+ if(tab==='3dlut'&&!meterDetected){
+  tab=(meterSeriesTabForType(meterActiveSeriesType)==='color')?'color':'greyscale';
+  meterSeriesTab=tab;
+ }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
  const lutGroup=document.getElementById('meterSeriesGroup3dLut');
@@ -24269,6 +24299,7 @@ function meterUpdateSeriesTabUi(){
   const tabKey=btn.dataset.seriesTab||'';
   let visible=true;
   if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
+  else if(tabKey==='3dlut') visible=!!meterDetected;
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -33300,6 +33331,79 @@ async function meterConfirmLg3dAutoCalModal(){
  };
  // Imported path reads meterLg3dModalImportedLut via meterLg3dImportedLutValue().
  await meterStartLg3dAutoCal(opts);
+}
+
+// ---- Non-autocal "Select 3D LUT series" modal (measure-only) ----
+// Replaces the old per-lattice quick buttons with one picker that reuses the
+// standalone AutoCal method chooser + descriptions. Confirm LOADS the chosen
+// profiling series into the charts for measurement (meterSelectSeries) — it does
+// NOT solve or upload a LUT. Matrix (5-point solve) and Imported (upload only)
+// are AutoCal-only concepts with no measurable series, so they are omitted here.
+let meterLg3dSelSeriesLastSource='hybrid3';
+function meterLg3dSelectSeriesSourceValue(){
+ const el=document.getElementById('meterLg3dSelSeriesSource');
+ const v=el?String(el.value||'').toLowerCase():'';
+ if(v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice') return v;
+ return 'hybrid3';
+}
+function meterLg3dPopulateSelectLatticeSeries(){
+ const sel=document.getElementById('meterLg3dSelSeriesLattice');
+ if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const prev=String(sel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ sel.innerHTML=list.map(s=>{
+  const count=meterProfilingSeriesPatchCount(s);
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
+ else if(list.some(s=>String(s.id)==='905')) sel.value='905';
+}
+function meterLg3dSelectSeriesChanged(){
+ const src=meterLg3dSelectSeriesSourceValue();
+ meterLg3dSelSeriesLastSource=src;
+ const latRow=document.getElementById('meterLg3dSelSeriesLatticeRow');
+ if(latRow){
+  latRow.style.display=(src==='lattice')?'block':'none';
+  if(src==='lattice') meterLg3dPopulateSelectLatticeSeries();
+ }
+ const explain=document.getElementById('meterLg3dSelSeriesExplain');
+ if(explain) explain.textContent=meterLg3dProfilingExplain(src);
+ const countEl=document.getElementById('meterLg3dSelSeriesCount');
+ if(countEl){
+  try{
+   const latSel=document.getElementById('meterLg3dSelSeriesLattice');
+   const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
+   const n=resolved.series?meterProfilingSeriesPatchCount(resolved.series):0;
+   countEl.textContent=n?('Measurements: '+n+' patches. CIE charts only — no solve or upload.'):'';
+  }catch(e){ countEl.textContent=''; }
+ }
+}
+function meterOpenLg3dSelectSeriesModal(){
+ if(meterActionPending||meterLg3dAutoCalRunning||meterAutoCalRunning||meterFullAutoCalRunning||meterSeriesRunning){
+  toast('Meter operation already in progress',true);
+  return;
+ }
+ const modal=document.getElementById('meterLg3dSelectSeriesModal');
+ if(!modal) return;
+ const srcSel=document.getElementById('meterLg3dSelSeriesSource');
+ if(srcSel&&meterLg3dSelSeriesLastSource){ try{ srcSel.value=meterLg3dSelSeriesLastSource; }catch(e){} }
+ meterLg3dSelectSeriesChanged();
+ modal.style.display='flex';
+ try{ const b=document.getElementById('meterLg3dSelSeriesLoadBtn'); if(b) b.focus(); }catch(e){}
+}
+function meterCloseLg3dSelectSeriesModal(){
+ const modal=document.getElementById('meterLg3dSelectSeriesModal');
+ if(modal) modal.style.display='none';
+}
+async function meterConfirmLg3dSelectSeries(){
+ const src=meterLg3dSelectSeriesSourceValue();
+ meterLg3dSelSeriesLastSource=src;
+ const latSel=document.getElementById('meterLg3dSelSeriesLattice');
+ const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
+ if(!resolved.series||resolved.series.id==null){ toast('No measurable series for that choice',true); return; }
+ meterCloseLg3dSelectSeriesModal();
+ await meterSelectSeries('colors',resolved.series.id,{force:true});
 }
 
 // Upload-only picker for the start modal (and any legacy callers).
