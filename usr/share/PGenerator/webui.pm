@@ -11004,16 +11004,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
      <div class="btn-row" id="meterCustomSeriesExportRow" style="margin:0">
       <button class="btn btn-sm btn-danger" id="meterCustomSeriesDeleteBtn" onclick="meterDeleteCustomSeries()" style="display:none">Delete Series</button>
-      <select id="meterCustomSeriesImportBits" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;font-size:.74rem" title="Bit depth of the codes in the CSV you import. Auto uses a '# Bitdepth' header, then a filename hint (e.g. '10bit'), then the largest code. Set it explicitly when the filename does not say.">
-       <option value="auto" selected>Auto bit depth</option>
-       <option value="8">8-bit codes</option>
-       <option value="10">10-bit codes</option>
-       <option value="12">12-bit codes</option>
-      </select>
-      <button class="btn btn-sm btn-secondary" onclick="meterOpenCustomSeriesImport()" title="Import a CalMAN or ColourSpace patch list CSV into this editor">Import CSV</button>
       <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('calman')" title="Export the patch list as 8-bit RGB triplets (CalMAN import)">Export CalMAN CSV</button>
       <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as a ColourSpace CSV (10-bit, # Bitdepth/# Range header)">Export ColourSpace CSV</button>
-      <input type="file" id="meterCustomSeriesImportInput" accept="text/csv,.csv,.txt" style="display:none">
      </div>
      <div class="btn-row" style="margin:0">
       <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesEditor()">Cancel</button>
@@ -11033,6 +11025,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
      <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterOpenImportWizard()" title="Import patch series from a CalMAN CSV, ColourSpace CSV, or CalMAN CCFX (multiple series)">Import&hellip;</button>
     </div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
@@ -11047,6 +11040,30 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </thead>
       <tbody id="meterCustomSeriesManagerBody"></tbody>
      </table>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterImportWizardModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(940px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">Import Patch Series</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseImportWizard()">Close</button>
+    </div>
+    <div style="font-size:.78rem;color:var(--text2);margin-bottom:8px">Choose the source format, pick the file, then review before importing. CalMAN CCFX files can hold many series — you pick which to import and set each one's name, bit depth and SDR/HDR.</div>
+    <div class="btn-row" style="margin:0 0 10px 0;align-items:center;gap:10px;flex-wrap:wrap">
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="calman_csv" checked onchange="meterImportWizardFormatChanged()"> CalMAN CSV</label>
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="colourspace_csv" onchange="meterImportWizardFormatChanged()"> ColourSpace CSV</label>
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="calman_ccfx" onchange="meterImportWizardFormatChanged()"> CalMAN CCFX (multiple series)</label>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0;align-items:center;gap:8px;flex-wrap:wrap">
+     <button class="btn btn-sm btn-primary" onclick="meterImportWizardChooseFile()">Choose file&hellip;</button>
+     <input type="file" id="meterImportWizardFile" style="display:none">
+     <span id="meterImportWizardFileName" style="font-size:.76rem;color:var(--text2)"></span>
+    </div>
+    <div id="meterImportWizardBody" style="margin-bottom:12px"></div>
+    <div id="meterImportWizardActions" style="display:none;text-align:right">
+     <button class="btn btn-sm btn-primary" id="meterImportWizardCommitBtn" onclick="meterImportWizardCommit()">Import</button>
     </div>
    </div>
   </div>
@@ -26654,54 +26671,200 @@ function meterCustomSeriesParseCsv(text,bitsHint){
  return {patches:patches,bits:bits};
 }
 
-function meterOpenCustomSeriesImport(){
- const input=document.getElementById('meterCustomSeriesImportInput');
- if(!input) return;
- input.value='';
- input.click();
-}
+// ---- Import wizard (CalMAN CSV / ColourSpace CSV / CalMAN CCFX) ----
+// One "Import…" entry point. CSV formats create a single series; CCFX can hold
+// many series (SDR and HDR mixed), so its step lists every set with a per-row
+// checkbox, editable name, bit depth and SDR/HDR — auto-detected from the set
+// name, all editable before import.
+let meterImportWizardState=null;
 
-function meterImportCustomSeriesCsv(evt){
+function meterImportWizardFormat(){
+ const r=document.querySelector('input[name="meterImpFmt"]:checked');
+ return r?r.value:'calman_csv';
+}
+function meterImportBitOptions(sel){
+ return [8,10,12].map(b=>'<option value="'+b+'"'+(Number(b)===Number(sel)?' selected':'')+'>'+b+'-bit</option>').join('');
+}
+function meterImportModeOptions(sel){
+ return ['sdr','hdr'].map(m=>'<option value="'+m+'"'+(m===sel?' selected':'')+'>'+m.toUpperCase()+'</option>').join('');
+}
+function meterImportDetectBits(name){
+ const n=String(name||'').toLowerCase();
+ if(/12\s*-?\s*bit/.test(n)||/\b12b(it)?[_\-. ]/.test(n)) return 12;
+ if(/8\s*-?\s*bit/.test(n)||/\b8b(it)?[_\-. ]/.test(n)) return 8;
+ return 10;
+}
+function meterImportDetectMode(name){
+ const n=String(name||'').toLowerCase();
+ if(/\bhdr\b|hdr10|pq\b|st\.?2084|\b2084\b|hlg\b|smpte2084/.test(n)) return 'hdr';
+ return 'sdr';
+}
+function meterImportDetectRange(name){
+ const n=String(name||'').toLowerCase();
+ if(/\bfull\b|pc\s*range|0-255|0-1023/.test(n)) return 'full';
+ return 'legal';
+}
+function meterImportPctToCode(pct,bits,range){
+ let p=Number(pct); if(!Number.isFinite(p)) p=0;
+ p=Math.max(0,Math.min(100,p))/100;
+ if(Number(bits)===8) return Math.round(range==='full'?p*255:16+p*219);
+ return Math.round(range==='full'?p*1023:64+p*876);   // 10-bit store (12-bit maps here too)
+}
+function meterImportCcfxPatch(p,bits,range,idx){
+ const raw={name:p.name};
+ if(Number(bits)===8){
+  raw.r8=meterImportPctToCode(p.r,8,range); raw.g8=meterImportPctToCode(p.g,8,range); raw.b8=meterImportPctToCode(p.b,8,range);
+ } else {
+  raw.r10=meterImportPctToCode(p.r,10,range); raw.g10=meterImportPctToCode(p.g,10,range); raw.b10=meterImportPctToCode(p.b,10,range);
+ }
+ return meterCustomSeriesSanitizePatch(raw,idx);
+}
+function meterImportParseCcfx(text){
+ let xml=String(text||'').replace(/^﻿/,'').replace(/<\?xml[\s\S]*?\?>/i,'');
+ const doc=new DOMParser().parseFromString(xml,'application/xml');
+ if(doc.getElementsByTagName('parsererror').length) throw new Error('bad xml');
+ const setEls=doc.getElementsByTagName('ColorSet');
+ const sets=[];
+ for(let i=0;i<setEls.length;i++){
+  const se=setEls[i];
+  const nm=se.getAttribute('Name')||('Set '+(i+1));
+  const defs=se.getElementsByTagName('ColorDefinition');
+  const patches=[];
+  for(let j=0;j<defs.length;j++){
+   const d=defs[j];
+   patches.push({name:d.getAttribute('Name')||('#'+(j+1)),
+    r:parseFloat(d.getAttribute('Data1'))||0,
+    g:parseFloat(d.getAttribute('Data2'))||0,
+    b:parseFloat(d.getAttribute('Data3'))||0});
+  }
+  if(patches.length) sets.push({name:nm,patches:patches});
+ }
+ return sets;
+}
+function meterOpenImportWizard(){
+ meterImportWizardState=null;
+ const body=document.getElementById('meterImportWizardBody');
+ if(body) body.innerHTML='<div style="font-size:.78rem;color:var(--text2)">Pick a format above, then choose a file.</div>';
+ const act=document.getElementById('meterImportWizardActions'); if(act) act.style.display='none';
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent='';
+ const m=document.getElementById('meterImportWizardModal'); if(m){ m.style.display='flex'; uiSyncBodyScrollLock(); }
+}
+function meterCloseImportWizard(){
+ const m=document.getElementById('meterImportWizardModal'); if(m) m.style.display='none';
+ uiSyncBodyScrollLock();
+}
+function meterImportWizardFormatChanged(){
+ meterImportWizardState=null;
+ const body=document.getElementById('meterImportWizardBody');
+ if(body) body.innerHTML='<div style="font-size:.78rem;color:var(--text2)">Choose a file to continue.</div>';
+ const act=document.getElementById('meterImportWizardActions'); if(act) act.style.display='none';
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent='';
+}
+function meterImportWizardChooseFile(){
+ const inp=document.getElementById('meterImportWizardFile');
+ if(!inp) return;
+ inp.accept=(meterImportWizardFormat()==='calman_ccfx')?'.ccfx,.xml':'.csv,.txt';
+ inp.value=''; inp.click();
+}
+function meterImportWizardOnFile(evt){
  const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
  if(!file) return;
- if(!meterCustomSeriesEditor){ toast('Open a custom series editor first',true); return; }
+ const fmt=meterImportWizardFormat();
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent=file.name;
  const reader=new FileReader();
  reader.onload=()=>{
   try{
-   // Bit-depth hint precedence: an explicit selector choice wins; otherwise a
-   // filename hint (e.g. "..._10bit_10b_legal.csv"). The CSVs carry no
-   // "# Bitdepth" header, and low-stimulus 10-bit files would otherwise
-   // auto-detect as 8-bit and quadruple every code. When both are Auto/absent
-   // the parser falls back to max-code detection.
-   let _bitsHint=0;
-   const _sel=String((document.getElementById('meterCustomSeriesImportBits')||{}).value||'auto');
-   if(_sel==='8'||_sel==='10'||_sel==='12'){
-    _bitsHint=parseInt(_sel,10);
-   } else {
-    const _bn=String((file&&file.name)||'').toLowerCase();
-    if(/12\s*-?\s*bit/.test(_bn)||/\b12b(it)?[_\-. ]/.test(_bn)) _bitsHint=12;
-    else if(/10\s*-?\s*bit/.test(_bn)||/\b10b(it)?[_\-. ]/.test(_bn)) _bitsHint=10;
-    else if(/8\s*-?\s*bit/.test(_bn)||/\b8b(it)?[_\-. ]/.test(_bn)) _bitsHint=8;
-   }
-   const parsed=meterCustomSeriesParseCsv(String(reader.result||''),_bitsHint);
-   if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
-   meterCustomSeriesEditor.patches=parsed.patches;
-   meterCustomSeriesEditorUnsaved=true;
-   // Auto-populate the series name from the CSV filename (without extension)
-   // when the operator hasn't typed one — they can still change it before Save.
-   const baseName=String(file.name||'').replace(/\.[^.]+$/,'').replace(/[\[\]{}"\\]/g,'').trim();
-   const nameInput=document.getElementById('meterCustomSeriesNameInput');
-   if(nameInput&&!String(nameInput.value||'').trim()&&baseName){
-    nameInput.value=baseName;
-    meterCustomSeriesEditor.name=baseName;
-   }
-   meterRenderCustomSeriesEditor();
-   toast('Imported '+parsed.patches.length+' patches ('+parsed.bits+'-bit) — review and Save');
-  }catch(e){
-   toast('Could not read that CSV',true);
-  }
+   if(fmt==='calman_ccfx') meterImportWizardRenderCcfx(String(reader.result||''),file.name);
+   else meterImportWizardRenderCsv(String(reader.result||''),file.name);
+  }catch(e){ toast('Could not read that file',true); }
  };
- reader.readAsText(file);
+ if(fmt==='calman_ccfx') reader.readAsText(file,'utf-16'); else reader.readAsText(file);
+}
+function meterImportWizardRenderCsv(text,filename){
+ meterImportWizardState={mode:'csv',csvText:text,filename:filename};
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+ const base=String(filename||'').replace(/\.[^.]+$/,'').replace(/[\[\]{}"\\]/g,'').trim();
+ const bits=meterImportDetectBits(filename);
+ const md=meterImportDetectMode(filename);
+ const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;box-sizing:border-box';
+ const body=document.getElementById('meterImportWizardBody');
+ body.innerHTML='<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:.8rem;color:#ddd;max-width:560px">'
+  +'<label>Series name</label><input type="text" id="meterImpCsvName" maxlength="96" value="'+esc(base)+'" style="'+inpStyle+';width:100%">'
+  +'<label>Bit depth</label><select id="meterImpCsvBits" style="'+inpStyle+'">'+meterImportBitOptions(bits)+'</select>'
+  +'<label>Mode</label><select id="meterImpCsvMode" style="'+inpStyle+'">'+meterImportModeOptions(md)+'</select>'
+  +'</div>'
+  +'<div style="font-size:.72rem;color:var(--text2);margin-top:8px">CSV codes are used as-is at the chosen bit depth.</div>';
+ const act=document.getElementById('meterImportWizardActions'); act.style.display='';
+ document.getElementById('meterImportWizardCommitBtn').textContent='Import series';
+}
+function meterImportWizardRenderCcfx(text,filename){
+ let sets; try{ sets=meterImportParseCcfx(text); }catch(e){ toast('Could not parse that CCFX file',true); return; }
+ if(!sets.length){ toast('No color sets found in that CCFX file',true); return; }
+ meterImportWizardState={mode:'ccfx',sets:sets,filename:filename};
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+ const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:4px;box-sizing:border-box';
+ let rows='';
+ sets.forEach((s,i)=>{
+  rows+='<tr style="border-bottom:1px solid #1a1a28">'
+   +'<td style="padding:4px;text-align:center"><input type="checkbox" id="meterImpCk_'+i+'" checked></td>'
+   +'<td style="padding:4px"><input type="text" id="meterImpNm_'+i+'" maxlength="96" value="'+esc(s.name)+'" style="'+inpStyle+';width:100%;min-width:220px"></td>'
+   +'<td style="padding:4px"><select id="meterImpBd_'+i+'" style="'+inpStyle+'">'+meterImportBitOptions(meterImportDetectBits(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select id="meterImpMd_'+i+'" style="'+inpStyle+'">'+meterImportModeOptions(meterImportDetectMode(s.name))+'</select></td>'
+   +'<td style="padding:4px;text-align:center">'+s.patches.length+'</td>'
+   +'</tr>';
+ });
+ const body=document.getElementById('meterImportWizardBody');
+ body.innerHTML='<div style="font-size:.76rem;color:var(--text2);margin-bottom:6px">'+sets.length+' series found. Check the ones to import; edit name / bit depth / mode as needed (auto-set from the set name).</div>'
+  +'<label style="font-size:.76rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="meterImpCkAll" checked onchange="meterImportToggleAll(this.checked)"> Select all</label>'
+  +'<div style="max-height:46vh;overflow:auto;border:1px solid #2a3140;border-radius:6px">'
+  +'<table style="width:100%;border-collapse:collapse;font-size:.74rem;color:#ddd">'
+  +'<thead><tr style="border-bottom:1px solid #2a3140;position:sticky;top:0;background:#111723">'
+  +'<th style="padding:5px">Import</th><th style="text-align:left;padding:5px">Name</th><th style="padding:5px">Bit depth</th><th style="padding:5px">Mode</th><th style="padding:5px">Patches</th>'
+  +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+ const act=document.getElementById('meterImportWizardActions'); act.style.display='';
+ document.getElementById('meterImportWizardCommitBtn').textContent='Import checked series';
+}
+function meterImportToggleAll(checked){
+ const st=meterImportWizardState; if(!st||st.mode!=='ccfx') return;
+ st.sets.forEach((s,i)=>{ const c=document.getElementById('meterImpCk_'+i); if(c) c.checked=!!checked; });
+}
+function meterImportAddSeries(name,mode,patches){
+ const st=meterCustomSeriesNormalizeState();
+ const series={id:st.next_id,category:'color',mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
+  name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:patches};
+ st.next_id+=1; st.series.push(series);
+ return series;
+}
+function meterImportWizardCommit(){
+ const st=meterImportWizardState; if(!st){ toast('Choose a file first',true); return; }
+ let created=0;
+ if(st.mode==='csv'){
+  const bits=parseInt((document.getElementById('meterImpCsvBits')||{}).value,10)||10;
+  const name=String((document.getElementById('meterImpCsvName')||{}).value||'').trim();
+  const mode=((document.getElementById('meterImpCsvMode')||{}).value==='hdr')?'hdr':'sdr';
+  const parsed=meterCustomSeriesParseCsv(st.csvText,bits);
+  if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
+  meterImportAddSeries(name,mode,parsed.patches); created=1;
+ } else {
+  st.sets.forEach((s,i)=>{
+   const ck=document.getElementById('meterImpCk_'+i); if(!ck||!ck.checked) return;
+   const name=String((document.getElementById('meterImpNm_'+i)||{}).value||s.name).trim()||s.name;
+   const bits=parseInt((document.getElementById('meterImpBd_'+i)||{}).value,10)||10;
+   const mode=((document.getElementById('meterImpMd_'+i)||{}).value==='hdr')?'hdr':'sdr';
+   const range=meterImportDetectRange(s.name);
+   const patches=s.patches.map((p,pi)=>meterImportCcfxPatch(p,bits,range,pi));
+   meterImportAddSeries(name,mode,patches); created++;
+  });
+  if(!created){ toast('Check at least one series to import',true); return; }
+ }
+ meterCustomSeriesNormalizeState();
+ meterCustomSeriesDirty=true;
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ meterCloseImportWizard();
+ const mgr=document.getElementById('meterCustomSeriesManagerModal');
+ if(mgr&&mgr.style.display!=='none') meterRenderCustomSeriesManager();
+ toast('Imported '+created+' series');
 }
 
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
@@ -39946,8 +40109,8 @@ meterPatternInsertionControlIds().forEach(id=>{
 });
 const meterGreyImportInput=document.getElementById('meterGreyProfileImportInput');
 if(meterGreyImportInput) meterGreyImportInput.addEventListener('change',meterImportGreyProfile);
-const meterCustomSeriesImportInput=document.getElementById('meterCustomSeriesImportInput');
-if(meterCustomSeriesImportInput) meterCustomSeriesImportInput.addEventListener('change',meterImportCustomSeriesCsv);
+const meterImportWizardFileInput=document.getElementById('meterImportWizardFile');
+if(meterImportWizardFileInput) meterImportWizardFileInput.addEventListener('change',meterImportWizardOnFile);
 const meterCubeImportInputEl=document.getElementById('meterCubeImportInput');
 if(meterCubeImportInputEl) meterCubeImportInputEl.addEventListener('change',meterImportCubeFile);
 meterCieViewOptsLoad();
