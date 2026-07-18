@@ -34037,6 +34037,9 @@ async function meterPollLg3dAutoCal(options){
 	     return;
 	    }
 	    meterAutoCalPhase='complete';
+	    // Clear again when the complete modal opens (in case a late pattern
+	    // write raced the first clear, or full-workflow touch-up left a patch).
+	    meterClearDisplayPattern();
 	    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'complete'});
     toast('LG 3D LUT AutoCal complete');
    }else if(r.status==='error'){
@@ -34722,6 +34725,11 @@ async function meterPollSeries(){
   document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  // Always clear the last series patch (often a saturated colour / blue) so
+  // the TV does not sit on it during complete-modal / idle (burn-in + drift).
+  // Worker should also blank, but lattice/custom series and racey completes
+  // have left a solid colour on screen until the operator closed the UI.
+  try{ if(typeof meterClearDisplayPattern==='function') meterClearDisplayPattern(); }catch(e){}
   // On completion the series worker blanks the panel to black (a "stop"
   // pattern) so no bright patch is left burning into an emissive display.
   // Match that in the UI: deselect every thumbnail and clear the live readout

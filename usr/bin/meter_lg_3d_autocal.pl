@@ -1661,22 +1661,33 @@ sub generate_lut_cube {
 
 sub neutral_identity_output {
  my ($model,$r,$g,$b,$size)=@_;
+ $size=2 if(!defined($size) || $size < 2);
+ my $den=$size-1;
+ my $min=$r; $min=$g if($g < $min); $min=$b if($b < $min);
+ my $max=$r; $max=$g if($g > $max); $max=$b if($b > $max);
+ my $span=$max-$min;
+ my $frac_span=$span/$den;
+ # Exact diagonal always identity (DPG owns greyscale).
+ # Hybrid/skeleton measured-response cubes: protect a THICKER grey tube.
+ # DPG 1D can leave slight R/G/B imbalance on "grey" codes; those land off
+ # the exact diagonal and used to hit fm_invert, which remapped them toward
+ # chromatic targets and destroyed greyscale luminance (and pushed CIE +x).
+ # Matrix-only cubes never had this because they stay near identity off-axis.
+ # Allow ~8% channel imbalance (~2-3 lattice steps on 33) for forward-model
+ # solves; legacy LG generations keep the old 1-step neighborhood guard.
  my $adjacent=(ref($model) eq "HASH" && $model->{"neutral_neighborhood_identity_enabled"}) ? 1 : 0;
- if(!$adjacent) {
+ my $has_fm=(ref($model) eq "HASH" && ref($model->{"forward_model"}) eq "HASH") ? 1 : 0;
+ if($has_fm) {
+  return undef if($frac_span > 0.08 && $span > 2);
+ } elsif(!$adjacent) {
   return undef if(!($r==$g && $g==$b));
  } else {
- my $min=$r;
- $min=$g if($g < $min);
- $min=$b if($b < $min);
- my $max=$r;
- $max=$g if($g > $max);
- $max=$b if($b > $max);
- return undef if(($max-$min) > 1);
+  return undef if($span > 1);
  }
  return [
-  100*$r/($size-1),
-  100*$g/($size-1),
-  100*$b/($size-1),
+  100*$r/$den,
+  100*$g/$den,
+  100*$b/$den,
  ];
 }
 
