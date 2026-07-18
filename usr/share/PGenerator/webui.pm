@@ -25608,7 +25608,7 @@ function meterCustomSeriesLoad(id){
  if(!series){ toast('Series not found',true); return; }
  meterCloseCustomSeriesManager();
  const type=(series.kind==='lattice'||series.category==='color')?'colors':'greyscale';
- meterSelectSeries(type,series.id);
+ meterSelectSeries(type,series.id,{force:true});
 }
 
 function meterManagerNewSeries(category){
@@ -26620,7 +26620,12 @@ function meterCustomSeriesParseCsv(text){
   if(nums.length>=4){ rgb=[nums[1],nums[2],nums[3]]; nameIdx=4; }
   else if(nums.length===3){ rgb=[nums[0],nums[1],nums[2]]; nameIdx=3; }
   if(!rgb) return;
-  const name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
+  let name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
+  // ColourSpace grid CSVs pack "<stimulus>% <name>" into the trailing field
+  // (e.g. "10.0% #1"): keep only the descriptive name and drop the redundant
+  // stimulus prefix (the stimulus is already implied by the code values).
+  const stimMatch=name.match(/^[\d.]+%\s+(.+)$/);
+  if(stimMatch) name=stimMatch[1].trim();
   rows.push({rgb:rgb,name:name});
  });
  let bits=headerBits;
@@ -26656,6 +26661,14 @@ function meterImportCustomSeriesCsv(evt){
    if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
    meterCustomSeriesEditor.patches=parsed.patches;
    meterCustomSeriesEditorUnsaved=true;
+   // Auto-populate the series name from the CSV filename (without extension)
+   // when the operator hasn't typed one — they can still change it before Save.
+   const baseName=String(file.name||'').replace(/\.[^.]+$/,'').replace(/[\[\]{}"\\]/g,'').trim();
+   const nameInput=document.getElementById('meterCustomSeriesNameInput');
+   if(nameInput&&!String(nameInput.value||'').trim()&&baseName){
+    nameInput.value=baseName;
+    meterCustomSeriesEditor.name=baseName;
+   }
    meterRenderCustomSeriesEditor();
    toast('Imported '+parsed.patches.length+' patches ('+parsed.bits+'-bit) — review and Save');
   }catch(e){
@@ -27028,7 +27041,10 @@ async function meterSelectSeries(type,points,opts){
   // live mode instead of keeping the stale context.
   const _liveMode=String(meterChartSignalMode()||'sdr').toLowerCase();
   const _activeMode=String(meterActiveSeriesSignalMode||_liveMode).toLowerCase();
-  if(_activeMode===_liveMode){
+  // opts.force (Custom Series manager "Load") always rebuilds: after saving a
+  // new series it is auto-selected, so a manual Load would otherwise hit this
+  // same-key early return and appear to "not load".
+  if(_activeMode===_liveMode&&!opts.force){
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
