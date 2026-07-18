@@ -10989,7 +10989,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </div>
     <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;margin-bottom:10px;max-width:340px">
      <span>Series name</span>
-     <input type="text" id="meterCustomSeriesNameInput" maxlength="48" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     <input type="text" id="meterCustomSeriesNameInput" maxlength="96" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
     </label>
     <div id="meterCustomSeriesEditorHint" style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Enter either the 8-bit or 10-bit code — the other converts automatically. For greyscale series a 100% white patch first is recommended (it becomes the white reference).</div>
     <div style="overflow:auto;margin-bottom:12px">
@@ -25183,7 +25183,7 @@ function meterCustomSeriesNormalizeState(){
   const kind=(s.kind==='lattice')?'lattice':'manual';
   return {
    id:valid?id:0,
-   name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,48).trim()||('Custom '+(si+1)),
+   name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Custom '+(si+1)),
    category:(kind==='lattice')?'color':((s.category==='color')?'color':'greyscale'),
    mode:meterCustomSeriesModeKey(s.mode),
    kind:kind,
