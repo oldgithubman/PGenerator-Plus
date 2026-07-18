@@ -11018,10 +11018,19 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <div id="meterCustomSeriesModalModeLabel" style="font-size:.68rem;color:var(--text2)">Current mode</div>
      </div>
     </div>
-    <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;margin-bottom:10px;max-width:340px">
-     <span>Series name</span>
-     <input type="text" id="meterCustomSeriesNameInput" maxlength="96" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
-    </label>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end">
+     <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;flex:1 1 260px;max-width:340px">
+      <span>Series name</span>
+      <input type="text" id="meterCustomSeriesNameInput" maxlength="96" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px" title="The signal range these patch codes are authored for. The series is only offered while the display is outputting this range (Limited = legal/video codes, Full = PC range). Defaults to what you're outputting now.">
+      <span>Range</span>
+      <select id="meterCustomSeriesRangeInput" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="limited">Limited (legal)</option>
+       <option value="full">Full</option>
+      </select>
+     </label>
+    </div>
     <div id="meterCustomSeriesEditorHint" style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Enter either the 8-bit or 10-bit code — the other converts automatically. For greyscale series a 100% white patch first is recommended (it becomes the white reference).</div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
@@ -11058,6 +11067,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
      <button class="btn btn-sm btn-secondary" onclick="meterOpenImportWizard()" title="Import patch series from a CalMAN CSV, ColourSpace CSV, or CalMAN CCFX (multiple series)">Import&hellip;</button>
     </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 8px 0">
+     <div id="meterCustomSeriesManagerScope" style="font-size:.72rem;color:var(--text2)"></div>
+     <label style="font-size:.74rem;color:#ddd;display:inline-flex;gap:5px;align-items:center;cursor:pointer" title="Off: only series that match the display you're driving right now (its signal mode and output range) are shown, because those are the only ones that will render correctly. On: show every custom series across all modes (SDR/HDR/DV) and ranges (Limited/Full).">
+      <input type="checkbox" id="meterCustomSeriesManagerShowAll" onchange="meterCustomSeriesManagerToggleShowAll(this.checked)"> Show all modes &amp; ranges
+     </label>
+    </div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
       <thead>
@@ -11065,6 +11080,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <th style="text-align:left;padding:6px">Name</th>
         <th style="text-align:left;padding:6px">Category</th>
         <th style="text-align:left;padding:6px">Mode</th>
+        <th style="text-align:left;padding:6px">Range</th>
         <th style="text-align:left;padding:6px">Patches</th>
         <th style="text-align:left;padding:6px"></th>
        </tr>
@@ -25176,6 +25192,31 @@ function meterCustomSeriesModeKey(mode){
  return 'sdr';
 }
 
+// A manual series stores range-specific codes (Limited/legal vs Full), so it is
+// tagged with the range its codes were authored for. '' = untagged/legacy (or a
+// lattice, whose codes are re-derived from params at read time) and matches any
+// output range. Only 'full' and 'limited' are meaningful tags.
+function meterCustomSeriesRangeKey(range){
+ const r=String(range==null?'':range).toLowerCase();
+ if(r==='full'||r==='pc'||r==='extended') return 'full';
+ if(r==='limited'||r==='legal'||r==='video'||r==='tv') return 'limited';
+ return '';
+}
+
+// The range the WebUI is currently driving to the TV (from rgb_quant_range),
+// used to show the operator only the series that will render correctly.
+function meterCurrentOutputRangeKey(){
+ return (typeof meterIsLimitedRange==='function' && meterIsLimitedRange()) ? 'limited' : 'full';
+}
+
+// A series is shown for the current output when it is untagged (legacy/lattice)
+// or its tag matches the range being output right now.
+function meterSeriesMatchesCurrentRange(series){
+ if(!series) return false;
+ const r=meterCustomSeriesRangeKey(series.range);
+ return r==='' || r===meterCurrentOutputRangeKey();
+}
+
 function meterCustomSeriesClampCode(value,max){
  const numeric=Math.round(Number(value));
  if(!Number.isFinite(numeric)) return 0;
@@ -25240,6 +25281,7 @@ function meterCustomSeriesNormalizeState(){
    name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Custom '+(si+1)),
    category:(kind==='lattice')?'color':((s.category==='color')?'color':'greyscale'),
    mode:meterCustomSeriesModeKey(s.mode),
+   range:(kind==='lattice')?'':meterCustomSeriesRangeKey(s.range),
    kind:kind,
    params:(kind==='lattice')?meterLatticeSanitizeParams(s.params):undefined,
    patches:(kind==='lattice')?[]:((Array.isArray(s.patches)?s.patches:[]).slice(0,200).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi)))
@@ -25322,7 +25364,10 @@ function meterCustomSeriesForMode(category,mode){
  const state=meterCustomSeriesNormalizeState();
  const modeKey=meterCustomSeriesModeKey(mode);
  const cat=(category==='color')?'color':'greyscale';
- return state.series.filter(s=>s.mode===modeKey&&s.category===cat);
+ // Only series that render correctly for the current output range are offered
+ // (untagged/lattice series match any range). Keeps the read-side dropdowns
+ // from listing a Limited grid while the display is outputting Full, etc.
+ return state.series.filter(s=>s.mode===modeKey&&s.category===cat&&meterSeriesMatchesCurrentRange(s));
 }
 
 function meterActiveSeriesIsCustom(){
@@ -25595,6 +25640,8 @@ async function meterOpenCustomSeriesManager(){
  const modal=document.getElementById('meterCustomSeriesManagerModal');
  if(!modal) return;
  meterCustomSeriesReturnToManager=false;
+ const showAllEl=document.getElementById('meterCustomSeriesManagerShowAll');
+ if(showAllEl) showAllEl.checked=meterCustomSeriesManagerShowAll;
  meterRenderCustomSeriesManager();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -25622,17 +25669,42 @@ function meterCloseLutTools(){
  uiSyncBodyScrollLock();
 }
 
+let meterCustomSeriesManagerShowAll=false;
+function meterCustomSeriesManagerToggleShowAll(on){
+ meterCustomSeriesManagerShowAll=!!on;
+ meterRenderCustomSeriesManager();
+}
+function meterCustomSeriesRangeLabel(range){
+ const r=meterCustomSeriesRangeKey(range);
+ return r==='full'?'Full':(r==='limited'?'Limited':'Any');
+}
 function meterRenderCustomSeriesManager(){
  const body=document.getElementById('meterCustomSeriesManagerBody');
  if(!body) return;
  const state=meterCustomSeriesNormalizeState();
- // Only the CURRENT display mode's series are listed (HDR series in HDR
- // mode, SDR series in SDR mode) — loading a cross-mode series would chart
- // against the wrong law and send wrong-range codes.
+ // By default only the series that match the display being driven RIGHT NOW are
+ // listed — the current signal mode AND the current output range — because those
+ // are the only ones that chart against the right law and send correct-range
+ // codes. "Show all" lifts both filters so nothing is ever permanently hidden.
  const modeKey=meterCustomSeriesModeKey();
- const listed=state.series.filter(series=>series.mode===modeKey);
+ const rangeKey=meterCurrentOutputRangeKey();
+ const showAll=meterCustomSeriesManagerShowAll;
+ const listed=showAll?state.series.slice()
+  :state.series.filter(series=>series.mode===modeKey&&meterSeriesMatchesCurrentRange(series));
+ const scope=document.getElementById('meterCustomSeriesManagerScope');
+ if(scope){
+  const hidden=state.series.length-listed.length;
+  scope.textContent=showAll
+   ?('Showing all '+state.series.length+' custom series (every mode and range).')
+   :('Showing '+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+' series for your current output'
+     +(hidden>0?(' — '+hidden+' other-mode/range series hidden (tick “Show all”).'):'.'));
+ }
  if(!listed.length){
-  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series for the current display mode ('+modeKey.toUpperCase()+') yet. Use New Greyscale, New Color or New 3D LUT Lattice to create one.</td></tr>';
+  body.innerHTML='<tr><td colspan="6" style="padding:10px;color:var(--text2)">'
+   +(showAll
+     ?'No custom series yet. Use New Greyscale, New Color, New 3D LUT Lattice or Import to create one.'
+     :'No custom series match your current output ('+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+'). Tick “Show all modes &amp; ranges” to see series for other displays, or create/import one.')
+   +'</td></tr>';
   return;
  }
  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -25641,10 +25713,12 @@ function meterRenderCustomSeriesManager(){
   const patchInfo=isLattice
    ?('Lattice '+series.params.size+'³ ('+meterLatticeCountForParams(series.params)+' patches)')
    :(series.patches.length+' patches');
+  const rangeLbl=isLattice?'Any':meterCustomSeriesRangeLabel(series.range);
   return '<tr style="border-bottom:1px solid #1a1a28">'
    +'<td style="padding:6px">'+esc(series.name)+'</td>'
    +'<td style="padding:6px">'+(series.category==='color'?'Color':'Greyscale')+'</td>'
    +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
+   +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px" title="'+(isLattice?'Lattice codes are re-derived for the current range at read time':'Signal range these patch codes are authored for')+'">'+rangeLbl+'</span></td>'
    +'<td style="padding:6px">'+patchInfo+'</td>'
    +'<td style="padding:6px"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">'
     +'<button class="btn btn-sm btn-primary" onclick="meterCustomSeriesLoad('+series.id+')" title="Close this window and load the series into the charts">Load</button>'
@@ -26445,8 +26519,8 @@ function meterOpenCustomSeriesEditor(category,id){
  meterCustomSeriesNormalizeState();
  const existing=(id!=null)?meterCustomSeriesById(id):null;
  meterCustomSeriesEditor=existing
-  ?{id:existing.id,category:existing.category,mode:existing.mode,patches:existing.patches.map(p=>Object.assign({},p))}
-  :{id:null,category:(category==='color')?'color':'greyscale',mode:meterCustomSeriesModeKey(),patches:[meterCustomSeriesSanitizePatch({},0)]};
+  ?{id:existing.id,category:existing.category,mode:existing.mode,range:existing.range,patches:existing.patches.map(p=>Object.assign({},p))}
+  :{id:null,category:(category==='color')?'color':'greyscale',mode:meterCustomSeriesModeKey(),range:meterCurrentOutputRangeKey(),patches:[meterCustomSeriesSanitizePatch({},0)]};
  const modal=document.getElementById('meterCustomSeriesModal');
  if(!modal) return;
  const title=document.getElementById('meterCustomSeriesModalTitle');
@@ -26455,6 +26529,8 @@ function meterOpenCustomSeriesEditor(category,id){
  if(modeLabel) modeLabel.textContent=meterCustomSeriesEditor.mode.toUpperCase()+' · saved per signal mode';
  const nameInput=document.getElementById('meterCustomSeriesNameInput');
  if(nameInput) nameInput.value=existing?existing.name:'';
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ if(rangeInput) rangeInput.value=(meterCustomSeriesRangeKey(meterCustomSeriesEditor.range)==='full')?'full':'limited';
  const deleteBtn=document.getElementById('meterCustomSeriesDeleteBtn');
  if(deleteBtn) deleteBtn.style.display=existing?'':'none';
  meterRenderCustomSeriesEditor();
@@ -26582,6 +26658,8 @@ function meterSaveCustomSeriesEditor(){
  const name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
  if(!name){ toast('Enter a series name',true); return; }
  if(!editor.patches.length){ toast('Add at least one patch',true); return; }
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ const range=(rangeInput&&rangeInput.value==='full')?'full':'limited';
  const state=meterCustomSeriesNormalizeState();
  let series;
  if(editor.id!=null){
@@ -26593,6 +26671,7 @@ function meterSaveCustomSeriesEditor(){
   state.series.push(series);
  }
  series.name=name;
+ series.range=range;
  series.patches=editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i));
  meterCustomSeriesNormalizeState();
  const seriesType=(series.category==='color')?'colors':'greyscale';
@@ -26620,8 +26699,10 @@ function meterCustomSeriesCsv(series,format){
  if(format==='colourspace'){
   // Light Illusion ColourSpace layout: "# Bitdepth"/"# Range" comment header,
   // then "index,R,G,B,name" with integer code values at the declared bit depth.
-  // We store full-range codes, so emit 10-bit Full.
-  const header='# Bitdepth 10\r\n# Range Full\r\n';
+  // Codes are stored as-authored, so the header must reflect the series' range
+  // tag (Full = PC range, otherwise Legal/Limited) for a clean round-trip.
+  const rangeHdr=(meterCustomSeriesRangeKey(series&&series.range)==='full')?'Full':'Legal';
+  const header='# Bitdepth 10\r\n# Range '+rangeHdr+'\r\n';
   const body=rows.map((p,i)=>{
    const name=String(p.name||('Patch '+(i+1))).replace(/[\r\n,]/g,' ').trim();
    return [(i+1),meterCustomSeriesClampCode(p.r10,1023),meterCustomSeriesClampCode(p.g10,1023),meterCustomSeriesClampCode(p.b10,1023),name].join(',');
@@ -26636,7 +26717,9 @@ function meterExportCustomSeries(format){
  if(!editor){ toast('Open a custom series first',true); return; }
  const nameInput=document.getElementById('meterCustomSeriesNameInput');
  const seriesName=String((nameInput&&nameInput.value)||'custom-series');
- const draft={name:seriesName,patches:editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i))};
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ const draftRange=(rangeInput&&rangeInput.value==='full')?'full':'limited';
+ const draft={name:seriesName,range:draftRange,patches:editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i))};
  if(!draft.patches.length){ toast('Add at least one patch before exporting',true); return; }
  const fmt=(format==='colourspace')?'colourspace':'calman';
  const base=(seriesName.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'custom-series')+'-'+fmt;
@@ -26718,6 +26801,22 @@ function meterImportBitOptions(sel){
 }
 function meterImportModeOptions(sel){
  return ['sdr','hdr'].map(m=>'<option value="'+m+'"'+(m===sel?' selected':'')+'>'+m.toUpperCase()+'</option>').join('');
+}
+function meterImportRangeOptions(sel){
+ const k=(sel==='full')?'full':'limited';
+ return [['limited','Limited (legal)'],['full','Full']].map(o=>'<option value="'+o[0]+'"'+(o[0]===k?' selected':'')+'>'+o[1]+'</option>').join('');
+}
+// Range TAG for the stored series ('full'|'limited'). meterImportDetectRange
+// returns the code-conversion form ('full'|'legal'); map 'legal' -> 'limited'.
+function meterImportRangeKeyFromName(name){
+ return meterImportDetectRange(name)==='full'?'full':'limited';
+}
+// A ColourSpace CSV may carry a "# Range Legal|Extended|Full" header; honour it
+// over the filename guess. Extended/PC == Full; Legal/Video == Limited.
+function meterImportDetectRangeFromCsv(text,filename){
+ const m=String(text||'').match(/^#\s*range\s*[:=]?\s*(legal|video|tv|limited|extended|pc|full)/im);
+ if(m){ const v=m[1].toLowerCase(); return (v==='full'||v==='extended'||v==='pc')?'full':'limited'; }
+ return meterImportRangeKeyFromName(filename);
 }
 function meterImportDetectBits(name){
  const n=String(name||'').toLowerCase();
@@ -26820,14 +26919,16 @@ function meterImportWizardRenderCsv(text,filename){
  const base=String(filename||'').replace(/\.[^.]+$/,'').replace(/[\[\]{}"\\]/g,'').trim();
  const bits=meterImportDetectBits(filename);
  const md=meterImportDetectMode(filename);
+ const rg=meterImportDetectRangeFromCsv(text,filename);
  const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;box-sizing:border-box';
  const body=document.getElementById('meterImportWizardBody');
  body.innerHTML='<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:.8rem;color:#ddd;max-width:560px">'
   +'<label>Series name</label><input type="text" id="meterImpCsvName" maxlength="96" value="'+esc(base)+'" style="'+inpStyle+';width:100%">'
   +'<label>Bit depth</label><select id="meterImpCsvBits" style="'+inpStyle+'">'+meterImportBitOptions(bits)+'</select>'
   +'<label>Mode</label><select id="meterImpCsvMode" style="'+inpStyle+'">'+meterImportModeOptions(md)+'</select>'
+  +'<label title="The signal range these codes are in. The series is only offered while the display outputs this range.">Range</label><select id="meterImpCsvRange" style="'+inpStyle+'">'+meterImportRangeOptions(rg)+'</select>'
   +'</div>'
-  +'<div style="font-size:.72rem;color:var(--text2);margin-top:8px">CSV codes are used as-is at the chosen bit depth.</div>';
+  +'<div style="font-size:.72rem;color:var(--text2);margin-top:8px">CSV codes are used as-is at the chosen bit depth and range.</div>';
  const act=document.getElementById('meterImportWizardActions'); act.style.display='';
  document.getElementById('meterImportWizardCommitBtn').textContent='Import series';
 }
@@ -26844,16 +26945,17 @@ function meterImportWizardRenderCcfx(text,filename){
    +'<td style="padding:4px"><input type="text" id="meterImpNm_'+i+'" maxlength="96" value="'+esc(s.name)+'" style="'+inpStyle+';width:100%;min-width:220px"></td>'
    +'<td style="padding:4px"><select id="meterImpBd_'+i+'" style="'+inpStyle+'">'+meterImportBitOptions(meterImportDetectBits(s.name))+'</select></td>'
    +'<td style="padding:4px"><select id="meterImpMd_'+i+'" style="'+inpStyle+'">'+meterImportModeOptions(meterImportDetectMode(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select id="meterImpRg_'+i+'" style="'+inpStyle+'">'+meterImportRangeOptions(meterImportRangeKeyFromName(s.name))+'</select></td>'
    +'<td style="padding:4px;text-align:center">'+s.patches.length+'</td>'
    +'</tr>';
  });
  const body=document.getElementById('meterImportWizardBody');
- body.innerHTML='<div style="font-size:.76rem;color:var(--text2);margin-bottom:6px">'+sets.length+' series found. Check the ones to import; edit name / bit depth / mode as needed (auto-set from the set name).</div>'
+ body.innerHTML='<div style="font-size:.76rem;color:var(--text2);margin-bottom:6px">'+sets.length+' series found. Check the ones to import; edit name / bit depth / mode / range as needed (auto-set from the set name).</div>'
   +'<label style="font-size:.76rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="meterImpCkAll" checked onchange="meterImportToggleAll(this.checked)"> Select all</label>'
   +'<div style="max-height:46vh;overflow:auto;border:1px solid #2a3140;border-radius:6px">'
   +'<table style="width:100%;border-collapse:collapse;font-size:.74rem;color:#ddd">'
   +'<thead><tr style="border-bottom:1px solid #2a3140;position:sticky;top:0;background:#111723">'
-  +'<th style="padding:5px">Import</th><th style="text-align:left;padding:5px">Name</th><th style="padding:5px">Bit depth</th><th style="padding:5px">Mode</th><th style="padding:5px">Patches</th>'
+  +'<th style="padding:5px">Import</th><th style="text-align:left;padding:5px">Name</th><th style="padding:5px">Bit depth</th><th style="padding:5px">Mode</th><th style="padding:5px">Range</th><th style="padding:5px">Patches</th>'
   +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
  const act=document.getElementById('meterImportWizardActions'); act.style.display='';
  document.getElementById('meterImportWizardCommitBtn').textContent='Import checked series';
@@ -26862,9 +26964,10 @@ function meterImportToggleAll(checked){
  const st=meterImportWizardState; if(!st||st.mode!=='ccfx') return;
  st.sets.forEach((s,i)=>{ const c=document.getElementById('meterImpCk_'+i); if(c) c.checked=!!checked; });
 }
-function meterImportAddSeries(name,mode,patches){
+function meterImportAddSeries(name,mode,patches,range){
  const st=meterCustomSeriesNormalizeState();
  const series={id:st.next_id,category:'color',mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
+  range:(range==='full'?'full':'limited'),
   name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:patches};
  st.next_id+=1; st.series.push(series);
  return series;
@@ -26876,18 +26979,19 @@ function meterImportWizardCommit(){
   const bits=parseInt((document.getElementById('meterImpCsvBits')||{}).value,10)||10;
   const name=String((document.getElementById('meterImpCsvName')||{}).value||'').trim();
   const mode=((document.getElementById('meterImpCsvMode')||{}).value==='hdr')?'hdr':'sdr';
+  const range=((document.getElementById('meterImpCsvRange')||{}).value==='full')?'full':'limited';
   const parsed=meterCustomSeriesParseCsv(st.csvText,bits);
   if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
-  meterImportAddSeries(name,mode,parsed.patches); created=1;
+  meterImportAddSeries(name,mode,parsed.patches,range); created=1;
  } else {
   st.sets.forEach((s,i)=>{
    const ck=document.getElementById('meterImpCk_'+i); if(!ck||!ck.checked) return;
    const name=String((document.getElementById('meterImpNm_'+i)||{}).value||s.name).trim()||s.name;
    const bits=parseInt((document.getElementById('meterImpBd_'+i)||{}).value,10)||10;
    const mode=((document.getElementById('meterImpMd_'+i)||{}).value==='hdr')?'hdr':'sdr';
-   const range=meterImportDetectRange(s.name);
-   const patches=s.patches.map((p,pi)=>meterImportCcfxPatch(p,bits,range,pi));
-   meterImportAddSeries(name,mode,patches); created++;
+   const rangeKey=((document.getElementById('meterImpRg_'+i)||{}).value==='full')?'full':'limited';
+   const patches=s.patches.map((p,pi)=>meterImportCcfxPatch(p,bits,(rangeKey==='full'?'full':'legal'),pi));
+   meterImportAddSeries(name,mode,patches,rangeKey); created++;
   });
   if(!created){ toast('Check at least one series to import',true); return; }
  }
