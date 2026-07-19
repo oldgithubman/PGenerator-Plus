@@ -10402,6 +10402,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterResetRow,
 #meterCard.meter-patterns-only #meterProgress,
 #meterCard.meter-patterns-only #meterStopBtn{display:none !important}
+/* Empty 3D LUT tab: leftover greyscale/ColorChecker charts must stay dead even
+   if a later JS path tries to re-open #meterCharts (tone-map restore, status poll). */
+#meterCharts[data-3dlut-empty="1"]{display:none !important}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-display,
 #meterCard.meter-patterns-only #meterSettingsGrid .meter-target-white-row,
 #meterCard.meter-patterns-only #meterSettingsGrid .meter-target-black-row,
@@ -21799,7 +21802,7 @@ function meterRecoverSeries(s){
 	 }
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  meterShowSeriesTabForSeries(type,points);
  // Toggle greyscale vs color chart sections
  if(type==='greyscale'){
@@ -24057,7 +24060,11 @@ function meterUpdateReadButtons(){
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
- const showClear=hasData&&meterDetected;
+ const on3dLutTab=meterSeriesTab==='3dlut';
+ const has3dLutSeries=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
+ const empty3dLutTab=on3dLutTab&&!has3dLutSeries;
+ // Clear Chart is meaningless on an empty 3D LUT tab (and would expose leftover ColorChecker data).
+ const showClear=hasData&&meterDetected&&!empty3dLutTab;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
@@ -24072,10 +24079,8 @@ function meterUpdateReadButtons(){
  const manualPromptBtn=document.getElementById('meterManualPromptBtn');
  if(clearBtn){
   clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
-  clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal;
+  clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal||empty3dLutTab;
  }
- const on3dLutTab=meterSeriesTab==='3dlut';
- const has3dLutSeries=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
  // On the 3D LUT tab, only expose Build 3D LUT once a profiling series is selected.
  const seriesControlsOk=on3dLutTab?has3dLutSeries:showSeries;
  if(readSeriesBtn){
@@ -24129,6 +24134,8 @@ function meterUpdateReadButtons(){
   toneMapBtn.title=!toneMapHdrOk?'HDR tone map requires HDR10 signal mode':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy||window._meterToneMapBusy?'Meter operation already in progress':'Measure 100% white peak and upload the HDR tone map';
  }
  try{ meterUpdateToneMapPanelVisibility(); }catch(e){}
+ // Re-assert empty 3D LUT hide after tone-map restore (which used to re-open ColorChecker).
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
  if(autoCalTarget) autoCalTarget.disabled=busy&&meterAutoCalPhase!=='confirm';
  if(readOnceBtn){
   readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
@@ -24513,7 +24520,7 @@ function meterLg3dPrepareChartContext(opts){
  try{
   document.getElementById('chartsGreyscaleWrap').style.display='none';
   document.getElementById('chartsColorWrap').style.display='';
-  document.getElementById('meterCharts').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  }catch(e){}
  // Force-hide ColorChecker-style Delta-E + averages for every 3D LUT profile.
  try{
@@ -24575,10 +24582,38 @@ function meter3dLutTabHasSelectedSeries(){
 }
 // When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
 let meter3dLutChartsAllowed=true;
+// Live gate (does not rely on the cached flag alone): empty 3D LUT always wins.
+function meterShouldSuppressMeterCharts(){
+ try{
+  if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') return false;
+  return !meter3dLutTabHasSelectedSeries();
+ }catch(e){ return false; }
+}
+// Sole show/hide path for #meterCharts so tone-map restore / status polls cannot
+// re-open ColorChecker leftovers on an empty 3D LUT tab.
+function meterSetMeterChartsVisible(wantShow){
+ const charts=document.getElementById('meterCharts');
+ if(!charts) return false;
+ if(wantShow&&meterShouldSuppressMeterCharts()){
+  meter3dLutChartsAllowed=false;
+  charts.style.display='none';
+  charts.setAttribute('data-3dlut-empty','1');
+  return false;
+ }
+ if(wantShow){
+  charts.style.display='';
+  charts.removeAttribute('data-3dlut-empty');
+  return true;
+ }
+ charts.style.display='none';
+ return false;
+}
 function meterSync3dLutTabChartVisibility(){
  const on3d=meterNormalizeSeriesTab(meterSeriesTab)==='3dlut';
  if(!on3d){
   meter3dLutChartsAllowed=true;
+  const charts=document.getElementById('meterCharts');
+  if(charts) charts.removeAttribute('data-3dlut-empty');
   return;
  }
  const has=meter3dLutTabHasSelectedSeries();
@@ -24589,13 +24624,16 @@ function meterSync3dLutTabChartVisibility(){
  const color=document.getElementById('chartsColorWrap');
  const thumbs=document.getElementById('meterPatchThumbs');
  const thumbsWrap=document.getElementById('meterPatchThumbsWrap')||(thumbs&&thumbs.parentElement);
+ const clearBtn=document.getElementById('meterClearChartBtn');
  if(!has){
-  if(charts){ charts.style.display='none'; charts.setAttribute('data-3dlut-empty','1'); }
+  meterSetMeterChartsVisible(false);
+  if(charts) charts.setAttribute('data-3dlut-empty','1');
   if(exportRow) exportRow.style.display='none';
   if(grey) grey.style.display='none';
   if(color) color.style.display='none';
   if(thumbs) thumbs.style.display='none';
   if(thumbsWrap&&thumbsWrap!==charts) try{ thumbsWrap.style.display='none'; }catch(e){}
+  if(clearBtn) clearBtn.style.display='none';
   try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
   try{ if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false}); }catch(e){}
   try{ if(typeof meterResetLiveReadingDisplay==='function') meterResetLiveReadingDisplay(); }catch(e){}
@@ -24605,14 +24643,15 @@ function meterSync3dLutTabChartVisibility(){
   const progress=document.getElementById('meterProgress');
   if(progress&&!meterSeriesRunning) progress.style.display='none';
  } else {
-  if(charts){ charts.style.display=''; charts.removeAttribute('data-3dlut-empty'); }
+  meterSetMeterChartsVisible(true);
   if(grey) grey.style.display='none';
   if(color) color.style.display='';
  }
 }
 // drawAllCharts / preset must not fight the empty 3D LUT tab.
 function meter3dLutChartsBlocked(){
- return meterNormalizeSeriesTab(meterSeriesTab)==='3dlut'&&!meter3dLutChartsAllowed;
+ // Prefer live series check so a stale allowed=true cannot keep charts open.
+ return meterShouldSuppressMeterCharts()||(meterNormalizeSeriesTab(meterSeriesTab)==='3dlut'&&!meter3dLutChartsAllowed);
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
@@ -24645,8 +24684,11 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  // Leaving Tone Map / 3D LUT empty shell: restore charts if another series is live.
  try{
   if(meterSeriesTab!=='3dlut'&&meterActiveSeriesType&&meterDetected){
-   const charts=document.getElementById('meterCharts');
-   if(charts) charts.style.display='';
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+   else{
+    const charts=document.getElementById('meterCharts');
+    if(charts) charts.style.display='';
+   }
    const grey=document.getElementById('chartsGreyscaleWrap');
    const color=document.getElementById('chartsColorWrap');
    if(meterActiveSeriesType==='greyscale'){
@@ -24720,15 +24762,24 @@ function meterUpdateToneMapPanelVisibility(){
  if(panel) panel.style.display=show?'':'none';
  if(show){
   // Peak-only UI: luminance bar + Measure & Upload — no greyscale/color charts.
-  if(charts) charts.style.display='none';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(false);
+  else if(charts) charts.style.display='none';
   if(exportRow) exportRow.style.display='none';
   try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
   try{ meterUpdateGreyscaleChartMode(); }catch(e){}
  } else {
-  // Leaving Tone Map: restore chart shell when a series is active.
+  // Leaving Tone Map: restore chart shell when a series is active — but never
+  // on an empty 3D LUT tab (ColorChecker leftovers must stay hidden).
   try{ meterUpdateGreyscaleChartMode(); }catch(e){}
+  if(typeof meterShouldSuppressMeterCharts==='function'&&meterShouldSuppressMeterCharts()){
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(false);
+   else if(charts){ charts.style.display='none'; charts.setAttribute('data-3dlut-empty','1'); }
+   if(exportRow) exportRow.style.display='none';
+   return;
+  }
   if(charts&&meterActiveSeriesType&&meterDetected){
-   charts.style.display='';
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+   else charts.style.display='';
    const grey=document.getElementById('chartsGreyscaleWrap');
    const color=document.getElementById('chartsColorWrap');
    if(meterActiveSeriesType==='greyscale'){
@@ -27760,7 +27811,7 @@ async function meterSelectSeries(type,points,opts){
   document.getElementById('chartsGreyscaleWrap').style.display='none';
   document.getElementById('chartsColorWrap').style.display='';
  }
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterReadSeriesBtn').style.display='';
  meterHideWorkflowProgress();
@@ -30606,7 +30657,7 @@ async function meterAutoCalApplyStatus(status){
 	  }
   document.getElementById('chartsGreyscaleWrap').style.display='';
   document.getElementById('chartsColorWrap').style.display='none';
-  document.getElementById('meterCharts').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
   document.getElementById('meterExportRow').style.display='';
   meterSetThumbsVisible(true);
  }
@@ -33704,7 +33755,7 @@ function meterLg3dApplyPostCheckStatus(status){
  }
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
  const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
@@ -34066,7 +34117,7 @@ function meterLg3dApplyLatticeProfileStatus(status){
  else if(!readings.length||phase==='drift_anchor') meterWhiteReading=null;
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
  // Hide ColorChecker-style Delta-E section before hybrid thumbs widen its scroller
@@ -34275,7 +34326,7 @@ function meterLg3dApplyProfileStatus(status){
  if(whiteRd) meterWhiteReading=whiteRd;
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
  const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
@@ -39739,7 +39790,7 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
  if(meterSeriesSteps&&meterSeriesSteps.length>0){
   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
   const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
-  document.getElementById('meterCharts').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
   meterSetThumbsVisible(true);
   document.getElementById('meterReadSeriesBtn').style.display='';
   meterBuildPatchThumbs(sortedSteps,new Set(),null);
