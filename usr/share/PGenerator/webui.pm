@@ -11980,7 +11980,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">This sets the HDMI output format the calibration will be built on. Pick the one that matches how the display is normally fed.</div>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;(YCbCr 4:4:4, Limited 16-235 video with super-white to 254, 10-bit)</span></label>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Limited 16-235, 10-bit)</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalUseCase" value="keep" checked> Keep current output settings</label>
 	   <div id="meterAutoCalUseCaseHdrNote" style="display:none;font-size:.72rem;color:var(--text2);margin-top:8px">HDR10 note: YCbCr 4:4:4 Limited is the panel's native HDR signalling mode and the recommended choice. RGB modes are supported for PC and console sources. The HDR gamma target is fixed and not part of this wizard.</div>
 	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
@@ -33328,7 +33328,9 @@ async function meterStartAutoCal(options){
 const METER_AUTOCAL_USECASE_OUTPUT={
  pc:{color_format:'0',rgb_quant_range:'2',max_bpc:'10'},
  tv:{color_format:'1',rgb_quant_range:'1',max_bpc:'10'},
- console:{color_format:'0',rgb_quant_range:'1',max_bpc:'10'}
+ // Game console: RGB Full 10-bit (not Limited). PGenerator is not bit-perfect
+ // in RGB Limited, so console use-case matches PC Full transport.
+ console:{color_format:'0',rgb_quant_range:'2',max_bpc:'10'}
 };
 const METER_AUTOCAL_USECASE_GAMMA={pc:'2.2',tv:'bt1886',console:'2.2'};
 async function meterAutoCalUseCaseContinue(){
