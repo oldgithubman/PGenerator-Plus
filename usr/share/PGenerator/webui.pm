@@ -2539,8 +2539,10 @@ sub webui_custom_series_steps_from_body (@) {
  return () unless($body=~/"custom_steps"\s*:\s*\[(.*?)\](?=\s*[,}])/s);
  my $list=$1;
  my @out;
+ # Match WebUI METER_CUSTOM_SERIES_MAX_PATCHES (large CalMAN/ColourSpace imports).
+ my $max_patches=3000;
  while($list=~/\{([^{}]*)\}/g) {
-  last if(scalar(@out)>=200);
+  last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
   foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits)) {
@@ -25425,6 +25427,10 @@ function meterSaveGreyProfileEditor(){
 // (same mechanism as grey_patch_profiles_json). Series ids start at 1001 so
 // the series key "greyscale-<id>" / "colors-<id>" can never collide with the
 // built-in points values (2,11,21,24,26,30,100,256).
+// Manual / CSV / CCFX patch lists were historically capped at 200; raise high
+// enough for large CalMAN / ColourSpace imports (400–2k+ nodes). Lattice
+// series expand from params and are not subject to this store limit.
+const METER_CUSTOM_SERIES_MAX_PATCHES=3000;
 let meterCustomSeriesState={format:'pgenerator-custom-series-v1',next_id:1001,series:[]};
 
 // Durability backup: every custom-series mutation is mirrored to localStorage
@@ -25559,7 +25565,7 @@ function meterCustomSeriesNormalizeState(){
    range:(kind==='lattice')?'':meterCustomSeriesRangeKey(s.range),
    kind:kind,
    params:(kind==='lattice')?meterLatticeSanitizeParams(s.params):undefined,
-   patches:(kind==='lattice')?[]:((Array.isArray(s.patches)?s.patches:[]).slice(0,200).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi)))
+   patches:(kind==='lattice')?[]:((Array.isArray(s.patches)?s.patches:[]).slice(0,METER_CUSTOM_SERIES_MAX_PATCHES).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi)))
   };
  });
  meterCustomSeriesState.series.forEach(s=>{
@@ -26969,7 +26975,7 @@ function meterCustomSeriesEditorSync(input){
 function meterCustomSeriesEditorAddRow(){
  const editor=meterCustomSeriesEditor;
  if(!editor) return;
- if(editor.patches.length>=200){ toast('Patch limit reached (200)',true); return; }
+ if(editor.patches.length>=METER_CUSTOM_SERIES_MAX_PATCHES){ toast('Patch limit reached ('+METER_CUSTOM_SERIES_MAX_PATCHES+')',true); return; }
  editor.patches.push(meterCustomSeriesSanitizePatch({},editor.patches.length));
  meterRenderCustomSeriesEditor();
 }
@@ -27107,13 +27113,14 @@ function meterCustomSeriesParseCsv(text,bitsHint){
  }
  const tenBit=(bits>=10);
  const scale=(bits===12)?0.25:1;   // store is 10-bit; scale 12-bit codes down
- const patches=rows.slice(0,200).map((r,idx)=>{
+ const totalRows=rows.length;
+ const patches=rows.slice(0,METER_CUSTOM_SERIES_MAX_PATCHES).map((r,idx)=>{
   const raw=tenBit
    ?{name:r.name,r10:Math.round(r.rgb[0]*scale),g10:Math.round(r.rgb[1]*scale),b10:Math.round(r.rgb[2]*scale)}
    :{name:r.name,r8:r.rgb[0],g8:r.rgb[1],b8:r.rgb[2]};
   return meterCustomSeriesSanitizePatch(raw,idx);
  });
- return {patches:patches,bits:bits};
+ return {patches:patches,bits:bits,truncated:totalRows>patches.length,sourceCount:totalRows};
 }
 
 // ---- Import wizard (CalMAN CSV / ColourSpace CSV / CalMAN CCFX) ----
@@ -27312,15 +27319,18 @@ function meterImportToggleAll(checked){
 }
 function meterImportAddSeries(name,mode,patches,range){
  const st=meterCustomSeriesNormalizeState();
+ const src=Array.isArray(patches)?patches:[];
+ const kept=src.slice(0,METER_CUSTOM_SERIES_MAX_PATCHES);
  const series={id:st.next_id,category:'color',mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
   range:(range==='full'?'full':'limited'),
-  name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:patches};
+  name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:kept};
  st.next_id+=1; st.series.push(series);
- return series;
+ return {series:series,truncated:src.length>kept.length,sourceCount:src.length,keptCount:kept.length};
 }
 function meterImportWizardCommit(){
  const st=meterImportWizardState; if(!st){ toast('Choose a file first',true); return; }
  let created=0;
+ let truncNotes=[];
  if(st.mode==='csv'){
   const bits=parseInt((document.getElementById('meterImpCsvBits')||{}).value,10)||10;
   const name=String((document.getElementById('meterImpCsvName')||{}).value||'').trim();
@@ -27328,7 +27338,9 @@ function meterImportWizardCommit(){
   const range=((document.getElementById('meterImpCsvRange')||{}).value==='full')?'full':'limited';
   const parsed=meterCustomSeriesParseCsv(st.csvText,bits);
   if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
-  meterImportAddSeries(name,mode,parsed.patches,range); created=1;
+  const added=meterImportAddSeries(name,mode,parsed.patches,range);
+  if(added.truncated||parsed.truncated) truncNotes.push((name||'CSV')+': '+(added.sourceCount||parsed.sourceCount)+' → '+added.keptCount);
+  created=1;
  } else {
   st.sets.forEach((s,i)=>{
    const ck=document.getElementById('meterImpCk_'+i); if(!ck||!ck.checked) return;
@@ -27337,7 +27349,9 @@ function meterImportWizardCommit(){
    const mode=((document.getElementById('meterImpMd_'+i)||{}).value==='hdr')?'hdr':'sdr';
    const rangeKey=((document.getElementById('meterImpRg_'+i)||{}).value==='full')?'full':'limited';
    const patches=s.patches.map((p,pi)=>meterImportCcfxPatch(p,bits,(rangeKey==='full'?'full':'legal'),pi));
-   meterImportAddSeries(name,mode,patches,rangeKey); created++;
+   const added=meterImportAddSeries(name,mode,patches,rangeKey);
+   if(added.truncated) truncNotes.push(name+': '+added.sourceCount+' → '+added.keptCount);
+   created++;
   });
   if(!created){ toast('Check at least one series to import',true); return; }
  }
@@ -27348,7 +27362,8 @@ function meterImportWizardCommit(){
  meterCloseImportWizard();
  const mgr=document.getElementById('meterCustomSeriesManagerModal');
  if(mgr&&mgr.style.display!=='none') meterRenderCustomSeriesManager();
- toast('Imported '+created+' series');
+ if(truncNotes.length) toast('Imported '+created+' series (capped at '+METER_CUSTOM_SERIES_MAX_PATCHES+' patches: '+truncNotes.join('; ')+')',true);
+ else toast('Imported '+created+' series');
 }
 
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
