@@ -2642,6 +2642,48 @@ sub _patch_insert_resolve {
  return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
 }
 
+# Blank the panel after profiling finishes and before the (often multi-minute)
+# cube generate. Without this the last measured patch — frequently pure blue
+# on lattice/hybrid orderings — sits on-screen for the whole solve and risks
+# burn-in on WOLED. Prefer the idle "stop" pattern; fall back to an explicit
+# full-field black patch if stop fails (e.g. mid-session guard quirks).
+sub blank_display_for_solve {
+ my ($config,$state)=@_;
+ return if(ref($config) ne "HASH");
+ return if($config->{"fixture_mode"});
+ my $stop_result=api_json("POST","/api/pattern",{ name=>"stop" },10);
+ my $mode="stop";
+ my $ok=(ref($stop_result) eq "HASH" && ($stop_result->{"status"}||"") ne "error") ? 1 : 0;
+ if(!$ok) {
+  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
+  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+  my $payload={
+   name => "patch",
+   r => 0, g => 0, b => 0,
+   size => 100,
+   input_max => 255,
+   signal_mode => $config->{"signal_mode"}||"sdr",
+   max_luma => $config->{"max_luma"}||1000,
+   # Meter session may still hold the post-read stop guard; allow black through.
+   allow_after_stop => json_true(),
+  };
+  $payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
+  $payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+  my $black_result=api_json("POST","/api/pattern",$payload,10);
+  $mode="black";
+  $ok=(ref($black_result) eq "HASH" && ($black_result->{"status"}||"") ne "error") ? 1 : 0;
+ }
+ if(ref($state) eq "HASH") {
+  $state->{"solve_pattern_blank"}={
+   mode => $mode,
+   ok => $ok ? json_true() : json_false(),
+  };
+  write_state($state);
+ }
+ log_line("3D LUT solve pattern blank: $mode ".($ok ? "ok" : "failed"));
+ return $ok;
+}
+
 sub apply_pattern_insert_before_read {
  my ($config,$step)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
@@ -4450,6 +4492,11 @@ eval {
    $rep->{"anchors"}||0,$rep->{"corrected"}||0,$sy,$ey,$drift_summary->{"dy_pct"}||0,
    $drift_summary->{"elapsed_s"}||0,$drift_interval_s,$drift_interval_patches));
  }
+
+ # Last profile patch is often a saturated primary (e.g. blue). Leave it up
+ # during the multi-minute cube solve and WOLEDs burn. Blank to black/stop
+ # before generate (same idea as greyscale completion pattern cleanup).
+ blank_display_for_solve($config,$state);
 
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
