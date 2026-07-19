@@ -11275,7 +11275,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div id="meterLg3dSelectSeriesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">Select 3D LUT Series</div>
-    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose a profiling series to <strong>measure</strong> (CIE charts only — this does not solve or upload a LUT). It uses the same method chooser as the standalone 3D LUT AutoCal; the descriptions below note what each set samples. Patch counts are the measurements taken.</div>
+    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose a profiling series to measure. It uses the same method chooser as the standalone 3D LUT AutoCal; the descriptions below note what each set samples.</div>
     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
     <select id="meterLg3dSelSeriesSource" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
      <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
@@ -33987,7 +33987,7 @@ function meterLg3dSelectSeriesChanged(){
    const latSel=document.getElementById('meterLg3dSelSeriesLattice');
    const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
    const n=resolved.series?meterProfilingSeriesPatchCount(resolved.series):0;
-   countEl.textContent=n?('Measurements: '+n+' patches. CIE charts only — no solve or upload.'):'';
+   countEl.textContent=n?(n+' patches'):'';
   }catch(e){ countEl.textContent=''; }
  }
 }
