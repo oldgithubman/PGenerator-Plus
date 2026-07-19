@@ -33955,25 +33955,24 @@ function meterLg3dHdrMatrixOnly(){
  }catch(e){ return false; }
 }
 
-// Show/hide <option>s on a profiling select for HDR matrix-only mode.
-// allowImported: keep "imported" for the AutoCal upload path.
-// matrixOnlyOnHdr: matrix option is HDR-only (Select Series); SDR keeps volume methods.
+// Show/hide <option>s when HDR is matrix-only (Calman parity).
+// Matrix remains available for SDR always. Under HDR10, hide hybrid /
+// skeleton / lattice (and imported unless allowImported).
 function meterLg3dGateProfilingSelectOptions(selectEl,opts){
  if(!selectEl||!selectEl.options) return;
  const hdr=meterLg3dHdrMatrixOnly();
  const allowImported=!!(opts&&opts.allowImported);
- const matrixOnlyOnHdr=!!(opts&&opts.matrixOnlyOnHdr);
  Array.from(selectEl.options).forEach(opt=>{
   const v=String(opt.value||'').toLowerCase();
   let show=true;
   if(hdr){
+   // HDR: matrix only (+ optional imported upload). Matrix is still valid on SDR too.
    if(v==='matrix') show=true;
    else if(v==='imported'&&allowImported) show=true;
    else show=false;
   } else {
-   // SDR: volume (+ optional imported/matrix from the AutoCal modal).
-   if(matrixOnlyOnHdr&&v==='matrix') show=false;
-   else show=true;
+   // SDR: every option stays available, including matrix.
+   show=true;
   }
   opt.hidden=!show;
   opt.disabled=!show;
@@ -33984,11 +33983,6 @@ function meterLg3dGateProfilingSelectOptions(selectEl,opts){
    try{ selectEl.value='matrix'; }catch(e){}
   } else if(allowImported){
    try{ selectEl.value='imported'; }catch(e){}
-  }
- } else if(matrixOnlyOnHdr){
-  const cur=String(selectEl.value||'').toLowerCase();
-  if(cur==='matrix'){
-   try{ selectEl.value='hybrid3'; }catch(e){}
   }
  }
 }
@@ -34163,14 +34157,14 @@ async function meterConfirmLg3dAutoCalModal(){
 // standalone AutoCal method chooser + descriptions. Confirm LOADS the chosen
 // profiling series into the charts for measurement (meterSelectSeries) — it does
 // NOT solve or upload a LUT. Imported (upload only) is AutoCal-only. Matrix is
-// omitted on SDR (no multi-patch series); on HDR10 Calman only supports matrix,
-// so the chooser is matrix-only and confirm installs the matrix chart shell.
+// available on SDR and HDR; under HDR10 Calman only supports matrix so volume
+// methods are hidden and confirm installs the matrix chart shell.
 let meterLg3dSelSeriesLastSource='hybrid3';
 function meterLg3dSelectSeriesSourceValue(){
  const el=document.getElementById('meterLg3dSelSeriesSource');
  let v=el?String(el.value||'').toLowerCase():'';
  if(meterLg3dHdrMatrixOnly()) return 'matrix';
- if(v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice') return v;
+ if(v==='matrix'||v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice') return v;
  return 'hybrid3';
 }
 function meterLg3dPopulateSelectLatticeSeries(){
@@ -34197,7 +34191,7 @@ function meterLg3dSelectSeriesChanged(){
  const explain=document.getElementById('meterLg3dSelSeriesExplain');
  if(explain){
   if(src==='matrix'&&meterLg3dHdrMatrixOnly()){
-   explain.textContent='HDR10 matrix only — Calman supports matrix for HDR 3D LUTs.\n\nMatrix measures white/red/green/blue/black (5 patches) and solves a white-preserving 3×3 gamut matrix into a full 33³ upload LUT. Hybrid / skeleton / lattice profiling is SDR-only.\n\nUse 3D LUT AutoCal to measure and solve; this picker only installs the matrix chart context.';
+   explain.textContent='HDR10 matrix only — Calman supports matrix for HDR 3D LUTs (matrix remains available for SDR too).\n\nMatrix measures white/red/green/blue/black (5 patches) and solves a white-preserving 3×3 gamut matrix into a full 33³ upload LUT. Hybrid / skeleton / lattice are not offered under HDR.\n\nUse 3D LUT AutoCal to measure and solve; this picker installs the matrix chart context.';
   } else {
    explain.textContent=meterLg3dProfilingExplain(src);
   }
@@ -34221,14 +34215,13 @@ function meterOpenLg3dSelectSeriesModal(){
  const modal=document.getElementById('meterLg3dSelectSeriesModal');
  if(!modal) return;
  const srcSel=document.getElementById('meterLg3dSelSeriesSource');
- // HDR: Calman only supports matrix — hide hybrid/skeleton/lattice.
- // SDR: hide matrix (AutoCal-only; no multi-patch series to load).
- meterLg3dGateProfilingSelectOptions(srcSel,{allowImported:false,matrixOnlyOnHdr:true});
+ // HDR: only matrix. SDR: keep matrix + hybrid/skeleton/lattice all available.
+ meterLg3dGateProfilingSelectOptions(srcSel,{allowImported:false});
  if(srcSel){
   if(meterLg3dHdrMatrixOnly()){
    try{ srcSel.value='matrix'; }catch(e){}
    meterLg3dSelSeriesLastSource='matrix';
-  } else if(meterLg3dSelSeriesLastSource&&meterLg3dSelSeriesLastSource!=='matrix'){
+  } else if(meterLg3dSelSeriesLastSource){
    try{ srcSel.value=meterLg3dSelSeriesLastSource; }catch(e){}
   } else {
    try{ srcSel.value='hybrid3'; }catch(e){}
@@ -34253,7 +34246,11 @@ async function meterConfirmLg3dSelectSeries(){
   try{ meterLg3dPrepareChartContext({method:'matrix',clearReadings:true}); }catch(e){}
   try{ meterSync3dLutTabChartVisibility(); }catch(e){}
   try{ meterUpdateReadButtons(); }catch(e){}
-  toast('HDR 3D LUT uses matrix profiling only — use 3D LUT AutoCal to measure and solve');
+  if(meterLg3dHdrMatrixOnly()){
+   toast('HDR 3D LUT uses matrix profiling only — use 3D LUT AutoCal to measure and solve');
+  } else {
+   toast('Matrix profile selected — use 3D LUT AutoCal to measure and solve');
+  }
   return;
  }
  const latSel=document.getElementById('meterLg3dSelSeriesLattice');
