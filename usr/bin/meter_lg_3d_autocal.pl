@@ -1300,23 +1300,31 @@ sub model_from_readings {
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
   # Chromatic LUMINANCE compensation in the gamut-matrix cube path
-  # (gamut_matrix_output). OPT-IN ONLY (lg_autocal_3dlut_chroma_luma_comp=1):
-  # the mid-saturation-weighted variant measured WORSE on the C1 panel
-  # (2026-07-03 A/B) despite matching the chart targets offline -- do not
-  # enable by default until the interior model is validated on-panel.
-  wrgb_chroma_luma_comp => (($chromatic_white_y < $white_y*0.98)
-   && ref($config) eq "HASH" && ($config->{"lg_autocal_3dlut_chroma_luma_comp"}||0)+0) ? 1 : 0,
+  # (gamut_matrix_output). Default ON when WRGB is detected (addY << white);
+  # can force with lg_autocal_3dlut_chroma_luma_comp=0/1.
+  wrgb_chroma_luma_comp => wrgb_chroma_luma_comp_enabled($config,$chromatic_white_y,$white_y),
   wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
    && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
    ? ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) : 0.8,
+  # Hybrid mid-sat oversat damp: blend measured-inverse toward the white-
+  # preserving matrix where W-subpixel engagement peaks (sat ~ 2/3). Default
+  # ON for hybrid/skeleton; strength 0.55 is conservative (matrix never
+  # oversat; full inverse alone did on C2 hybrid5). Use config method (volume
+  # paths call model_from_readings with "matrix" for corner contrib only).
+  wrgb_mid_sat_matrix_blend => wrgb_mid_sat_matrix_blend_enabled($config,(ref($config) eq "HASH" ? ($config->{"method"}||$method) : $method)),
+  wrgb_mid_sat_matrix_blend_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_mid_sat_blend_strength"})
+   && ($config->{"lg_autocal_3dlut_mid_sat_blend_strength"}+0) > 0)
+   ? ($config->{"lg_autocal_3dlut_mid_sat_blend_strength"}+0) : 0.55,
   gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
+  # Neutral identity: LG AutoCal / dual-LUT keeps greys for 1D DPG. Export /
+  # solve_only for Resolve includes greys in the cube unless the operator
+  # opts out (include_greyscale=0 / neutral_axis_identity=1).
+  neutral_axis_identity => neutral_axis_identity_enabled($config),
   neutral_neighborhood_identity_enabled => json_bool($neutral_neighborhood_identity),
-  neutral_axis_source => $neutral_neighborhood_identity
-   ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
-   : "exact diagonal identity after current 1D greyscale path",
+  neutral_axis_source => neutral_axis_source_label($config,$neutral_neighborhood_identity),
  };
 }
 
@@ -1628,18 +1636,30 @@ sub node_output_pct {
    ? gamut_matrix_output($model,$r,$g,$b,$size)
    : solve_output_rgb($model,$target,$r,$g,$b,$size);
   my $inv=fm_invert($fm,$model,$target,$seed);
-  # Near-grey ONLY: soft-blend matrix seed -> inverse by saturation so pure
-  # greyscale stays DPG-owned and low-chroma codes cannot get a full chroma
-  # remap. Above sat~0.12 the inverse owns the node completely -- multi-level
-  # ramps and volume samples actually shape the cube (not a matrix clone).
   my $den=$size-1; $den=1 if($den < 1);
   my @f=($r/$den,$g/$den,$b/$den);
   my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
   my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
   my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+  # Near-grey: soft-blend matrix seed -> inverse (DPG greys / low-chroma).
   if($sat < 0.12) {
    my $w=($sat <= 0.03) ? 0 : (($sat-0.03)/(0.12-0.03));
    return [ map { $seed->[$_]*(1-$w)+$inv->[$_]*$w } (0..2) ];
+  }
+  # Mid-sat WRGB damp: pure inverse oversaturates mid-sats on WOLED (W
+  # subpixel + hard BT.709 targets). Blend toward white-preserving matrix
+  # with the same sat envelope as luma-comp (peak at sat~2/3, 0 at pure
+  # primary). Matrix does not oversat; hybrid still owns multi-level axes.
+  if($model->{"wrgb_mid_sat_matrix_blend"}) {
+   my $env=$sat*$sat*(1-$sat)*6.75;
+   $env=1 if($env > 1); $env=0 if($env < 0);
+   my $strength=$model->{"wrgb_mid_sat_matrix_blend_strength"};
+   $strength=0.55 if(!defined($strength) || $strength+0 <= 0);
+   $strength=$strength+0; $strength=1.0 if($strength > 1.0);
+   my $w=$env*$strength;
+   if($w > 0) {
+    return [ map { $inv->[$_]*(1-$w)+$seed->[$_]*$w } (0..2) ];
+   }
   }
   return $inv;
  }
@@ -1674,16 +1694,16 @@ sub generate_lut_cube {
 
 sub neutral_identity_output {
  my ($model,$r,$g,$b,$size)=@_;
+ # Export / complete-cube mode: greys are solved like chroma (Resolve, host
+ # apps with no separate 1D). LG AutoCal keeps identity for DPG ownership.
+ return undef if(ref($model) eq "HASH" && !$model->{"neutral_axis_identity"});
  $size=2 if(!defined($size) || $size < 2);
  my $den=$size-1;
  my $min=$r; $min=$g if($g < $min); $min=$b if($b < $min);
  my $max=$r; $max=$g if($g > $max); $max=$b if($b > $max);
  my $span=$max-$min;
- my $frac_span=$span/$den;
- # Exact diagonal always identity (DPG owns greyscale). Near-grey handling for
- # measured-inverse cubes is a SOFT sat blend in node_output_pct (not a hard
- # tube that left a discontinuity at the wall). Legacy LG generations keep the
- # old 1-step neighborhood guard when enabled.
+ # Exact diagonal identity when neutral_axis_identity is on (DPG greys).
+ # Legacy LG generations also guard a 1-step neighborhood.
  my $adjacent=(ref($model) eq "HASH" && $model->{"neutral_neighborhood_identity_enabled"}) ? 1 : 0;
  if(!$adjacent) {
   return undef if(!($r==$g && $g==$b));
@@ -2110,8 +2130,12 @@ sub run_solve_only {
  $state->{"signal_mode"}=$model->{"signal_mode"};
  $state->{"target_gamut"}=$model->{"target_gamut"};
  $state->{"target_gamma"}=$model->{"signal_gamma"}||$model->{"target_gamma"};
+ $state->{"neutral_axis_identity"}=json_bool($model->{"neutral_axis_identity"});
+ $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
+ $state->{"wrgb_mid_sat_matrix_blend"}=json_bool($model->{"wrgb_mid_sat_matrix_blend"});
+ $state->{"wrgb_chroma_luma_comp"}=json_bool($model->{"wrgb_chroma_luma_comp"});
  write_state($state);
- log_line("solve_only complete: nodes=".scalar(@nodes)." cube=$cube_size mode=".($solve_report->{"mode"}||""));
+ log_line("solve_only complete: nodes=".scalar(@nodes)." cube=$cube_size mode=".($solve_report->{"mode"}||"")." greys=".($model->{"neutral_axis_identity"}?"identity":"included")." mid_sat_blend=".($model->{"wrgb_mid_sat_matrix_blend"}?1:0));
  return 1;
 }
 
@@ -2706,6 +2730,59 @@ sub neutral_neighborhood_identity_enabled {
  return 1 if($config->{"neutral_neighborhood_identity_enabled"});
  my $generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : $config->{"preflight_lg_generation"};
  return lg_generation_legacy_neutral_guard_enabled($generation);
+}
+
+# Whether exact-neutral cube nodes stay identity (1D greyscale owns them).
+# Policies:
+#  * include_greyscale=1 / neutral_axis_identity=0  → solve greys into the cube
+#    (Resolve / madVR / host apps; default for solve_only export).
+#  * include_greyscale=0 / neutral_axis_identity=1 → force identity greys
+#    (LG AutoCal dual-LUT; default for live LG profile+upload).
+# Explicit keys win; else solve_only includes greys, everything else keeps
+# identity for DPG compatibility.
+sub neutral_axis_identity_enabled {
+ my ($config)=@_;
+ return 1 if(ref($config) ne "HASH");
+ if(defined($config->{"include_greyscale"})) {
+  return ($config->{"include_greyscale"}+0) ? 0 : 1;
+ }
+ if(defined($config->{"neutral_axis_identity"})) {
+  return ($config->{"neutral_axis_identity"}+0) ? 1 : 0;
+ }
+ # Export / offline solve: complete cube for host software.
+ return 0 if($config->{"solve_only"});
+ # LG AutoCal (standalone or full workflow): 1D DPG owns greys.
+ return 1;
+}
+
+sub neutral_axis_source_label {
+ my ($config,$adjacent)=@_;
+ if(!neutral_axis_identity_enabled($config)) {
+  return "greyscale included in 3D cube (export / complete-LUT mode)";
+ }
+ return $adjacent
+  ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
+  : "exact diagonal identity after current 1D greyscale path";
+}
+
+sub wrgb_chroma_luma_comp_enabled {
+ my ($config,$cw,$wy)=@_;
+ return 0 if(!($wy > 0 && $cw > 0 && $cw < $wy*0.98));
+ if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})) {
+  return ($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0) ? 1 : 0;
+ }
+ # Default ON when WRGB auto-detected (additive primary sum well below white).
+ return 1;
+}
+
+sub wrgb_mid_sat_matrix_blend_enabled {
+ my ($config,$method)=@_;
+ $method=lc($method||"");
+ return 0 if(!($method eq "hybrid" || $method eq "skeleton"));
+ if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_mid_sat_blend"})) {
+  return ($config->{"lg_autocal_3dlut_mid_sat_blend"}+0) ? 1 : 0;
+ }
+ return 1; # default ON for hybrid/skeleton
 }
 
 sub reset_3d_lut_to_unity_before_profile {
@@ -4219,8 +4296,11 @@ eval {
  $state->{"wrgb_compensation_active"}=json_bool(($model->{"wrgb_white_ratio"}||1) > 1.0001);
  $state->{"wrgb_comp_source"}=$model->{"wrgb_comp_source"}||"auto";
  $state->{"wrgb_chroma_luma_comp"}=json_bool($model->{"wrgb_chroma_luma_comp"});
+ $state->{"wrgb_mid_sat_matrix_blend"}=json_bool($model->{"wrgb_mid_sat_matrix_blend"});
+ $state->{"wrgb_mid_sat_matrix_blend_strength"}=$model->{"wrgb_mid_sat_matrix_blend_strength"};
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
+ $state->{"neutral_axis_identity"}=json_bool($model->{"neutral_axis_identity"});
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
  $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
  $state->{"cube_lut_size"}=17;

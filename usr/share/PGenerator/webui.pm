@@ -26436,19 +26436,41 @@ async function meterLutSolveStart(series,readings,opts){
  const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toLowerCase();
  const gamut=String(((document.getElementById('meterTargetGamut')||{}).value)||'auto');
  const gamma=(typeof meterAutoCalTargetGammaValue==='function')?String(meterAutoCalTargetGammaValue()||''):'';
+ // External / host apps (Resolve, madVR, editing): include greyscale in the
+ // cube by default — there is no LG 1D DPG. Operators can opt out if they
+ // already have a separate 1D. LG AutoCal keeps identity greys separately.
+ let includeGreyscale=true;
+ if(opts&&Object.prototype.hasOwnProperty.call(opts,'includeGreyscale')){
+  includeGreyscale=!!opts.includeGreyscale;
+ }
+ const methodGuess=(series&&(series.kind==='hybrid'||series.kind==='skeleton'||series.kind==='lattice'))
+  ?String(series.kind):'hybrid';
  const body={
   signal_mode:signalMode, requested_signal_mode:signalMode, ui_signal_mode:signalMode,
   target_gamut:gamut, target_gamma:gamma,
   display_type:(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'',
+  method:methodGuess,
   solve_cube_size:33,
-  lattice_readings:payload
+  lattice_readings:payload,
+  // Complete cube for host software (default). 0 = force identity greys.
+  include_greyscale:includeGreyscale?1:0,
+  // Mid-sat WRGB damp (hybrid): blend inverse toward matrix where W engages.
+  lg_autocal_3dlut_mid_sat_blend:1
  };
  if(!(opts&&opts.auto)){
   const ok=await meterShowChoiceModal({
    title:'Generate 3D LUT?',
-   body:'Solve a corrective 3D LUT from '+payload.length+' measured lattice patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nBaseline: white-preserving matrix from the lattice corners. Interior nodes add bounded residual corrections. The result lands in LUT Tools for 3D viewing and .cube/.3dl export — nothing is uploaded to the display.',
-   acceptLabel:'Generate',cancelLabel:'Cancel'});
+   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nWRGB mid-sat blend is on so hybrid solves do not oversaturate mid tones the way pure inverse can.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
+   acceptLabel:'Generate',cancelLabel:'Cancel',
+   // Optional second confirm path: if the modal helper supports a checkbox
+   // key we pass it; otherwise body text documents the default.
+   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT (recommended for Resolve)',checked:true}]
+  });
   if(!ok) return;
+  // If the choice modal returns an object with checkbox state, honour it.
+  if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
+   body.include_greyscale=ok.include_greyscale?1:0;
+  }
  }
  let r=null;
  try{ r=await fetchJSON('/api/3d-lut/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:15000}); }catch(e){}
@@ -30924,8 +30946,27 @@ function meterShowChoiceModal(options){
   title.style.cssText='font-size:1.0rem;font-weight:700;margin-bottom:10px;color:var(--text,#e3e6ef)';
   title.textContent=String(opts.title||'Confirm');
   const body=document.createElement('div');
-  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:18px;white-space:pre-line';
+  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:14px;white-space:pre-line';
   body.textContent=String(opts.body||'');
+  const checks=Array.isArray(opts.checkboxes)?opts.checkboxes:[];
+  const checkInputs={};
+  const checkHost=document.createElement('div');
+  checkHost.style.cssText='display:grid;gap:8px;margin-bottom:16px';
+  checks.forEach(c=>{
+   if(!c||!c.id) return;
+   const lab=document.createElement('label');
+   lab.style.cssText='display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text,#e3e6ef);cursor:pointer;line-height:1.4';
+   const inp=document.createElement('input');
+   inp.type='checkbox';
+   inp.checked=c.checked!==false;
+   inp.style.cssText='margin-top:3px;accent-color:var(--accent,#5b7fff)';
+   lab.appendChild(inp);
+   const span=document.createElement('span');
+   span.textContent=String(c.label||c.id);
+   lab.appendChild(span);
+   checkHost.appendChild(lab);
+   checkInputs[c.id]=inp;
+  });
   const row=document.createElement('div');
   row.style.cssText='display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap';
   const cancelBtn=document.createElement('button');
@@ -30938,6 +30979,7 @@ function meterShowChoiceModal(options){
   row.appendChild(acceptBtn);
   card.appendChild(title);
   card.appendChild(body);
+  if(checks.length) card.appendChild(checkHost);
   card.appendChild(row);
   root.appendChild(card);
   document.body.appendChild(root);
@@ -30949,7 +30991,12 @@ function meterShowChoiceModal(options){
    try{ root.remove(); }catch(e){}
    resolve(value);
   };
-  acceptBtn.onclick=()=>cleanup(true);
+  acceptBtn.onclick=()=>{
+   if(!checks.length){ cleanup(true); return; }
+   const out={accepted:true};
+   Object.keys(checkInputs).forEach(id=>{ out[id]=!!(checkInputs[id]&&checkInputs[id].checked); });
+   cleanup(out);
+  };
   cancelBtn.onclick=()=>cleanup(false);
   root.onclick=(ev)=>{ if(ev.target===root) cleanup(false); };
   function onKey(ev){ if(ev.key==='Escape') cleanup(false); }
