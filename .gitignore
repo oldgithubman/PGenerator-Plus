@@ -34,6 +34,7 @@ usr/share/PGenerator/*.bak
 
 # Local agent workspaces
 .qwen/
+.continue/
 
 # On-device / cross build outputs (renderer objects, linked binaries,
 # and the vc4 kernel-module build tree with its extracted kernel source)
