@@ -10049,7 +10049,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 }
 #colorTopLayout.cie-3d-layout #meterRGBColorWrap,
 #colorTopLayout.cie-3d-layout #meterXYYColorWrap{
- flex:0 0 126px!important;width:126px!important;height:480px!important;flex-shrink:0
+ flex:0 0 180px!important;width:180px!important;height:480px!important;flex-shrink:0
 }
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
@@ -10564,7 +10564,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 .desktop-nav-btn:hover{background:rgba(255,255,255,.055);color:var(--text)}
 .desktop-nav-btn[aria-current="page"]{background:rgba(91,127,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
 .desktop-workspace-title{display:none}
-body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px)}
+body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px);--desktop-eotf-chart-height:clamp(300px,40vh,420px)}
 body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start;transition:width .22s ease}
 body.layout-desktop.desktop-utility-open .desktop-shell{width:calc(100% - var(--desktop-utility-width))}
 body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
@@ -10582,7 +10582,7 @@ body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:b
 body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:stretch}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr);grid-template-rows:var(--desktop-rgb-chart-height) auto;column-gap:8px;row-gap:10px;min-width:0;padding-top:18px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:repeat(2,minmax(0,1fr));gap:10px!important;min-width:0;height:100%;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:repeat(2,var(--desktop-eotf-chart-height));gap:10px!important;min-width:0;height:auto;align-self:start;margin-bottom:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceBlock{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfScroller,
@@ -12002,11 +12002,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
        <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" aria-label="Expand CIE chart to full width" onclick="meterToggleChartExpand('cie')"></button>
       </div>
-      <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
+      <div id="meterRGBColorWrap" style="flex:0 0 180px;width:180px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
-      <div id="meterXYYColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
+      <div id="meterXYYColorWrap" style="flex:0 0 180px;width:180px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">XyY</div>
        <canvas id="meterXYYCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
@@ -23176,7 +23176,8 @@ function drawDeltaBarsVertical(canvasId,spec){
   return;
  }
  const useHorizontal=(canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor')&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
- const padTop=18,padBot=24,padL=6,padR=6;
+ const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor';
+ const padTop=themedColorBars?28:18,padBot=themedColorBars?30:24,padL=6,padR=6;
  const plotH=H-padTop-padBot;
  const plotW=W-padL-padR;
  const labelColor=pgThemeColor('--chart-label','#d7e1f3');
@@ -23233,9 +23234,8 @@ function drawDeltaBarsVertical(canvasId,spec){
  const cyPx=Math.round(cy)+0.5;
  // Bars
  const slot=plotW/spec.entries.length;
- const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor';
- const trackW=Math.max(20,Math.min(38,slot*0.72));
- const barW=themedColorBars?Math.max(10,Math.min(24,trackW-10)):Math.min(28,slot*0.74);
+ const trackW=themedColorBars?42:Math.max(20,Math.min(38,slot*0.72));
+ const barW=themedColorBars?20:Math.min(28,slot*0.74);
  const roundedRect=(x,y,w,h,r)=>{
   const rr=Math.max(0,Math.min(r,w/2,h/2));
   ctx.beginPath();ctx.moveTo(x+rr,y);ctx.lineTo(x+w-rr,y);ctx.quadraticCurveTo(x+w,y,x+w,y+rr);
@@ -23254,12 +23254,13 @@ function drawDeltaBarsVertical(canvasId,spec){
    roundedRect(trackLeft,padTop,trackW,plotH,6);ctx.fill();
    ctx.fillStyle=pgThemeColor('--meter-bar-zero','rgba(255,255,255,.28)');
    ctx.fillRect(trackLeft+6,Math.round(cy),trackW-12,1);
+   ctx.fillStyle=e.color;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';
+   ctx.fillText(e.label,Math.round(cx),14);
   }
   if(e.v==null){
    ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
-   ctx.fillText('--',Math.round(cx),cyPx+4);
-   ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';
-   ctx.fillText(e.label,Math.round(cx),H-padBot+15);
+   ctx.fillText('--',Math.round(cx),themedColorBars?H-6:cyPx+4);
+   if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
    return;
   }
   const yV=valToY(e.v);
@@ -23273,21 +23274,21 @@ function drawDeltaBarsVertical(canvasId,spec){
   if(themedColorBars){ctx.shadowColor=e.color;ctx.shadowBlur=8;roundedRect(left,top,width,height,3);ctx.fill();}
   else {ctx.fillRect(left,top,width,height);ctx.beginPath();ctx.arc(Math.round(cx),yVPx,3,0,Math.PI*2);ctx.fill();}
   ctx.restore();
-  // Channel label below
-  ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';
-  ctx.fillText(e.label,Math.round(cx),H-padBot+15);
-  // Signed numeric value above positive bars and below negative bars.
+  // Themed color-series values use the same fixed footer row as greyscale
+  // RGB balance instead of following the moving bar endpoint.
+  if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
   ctx.fillStyle=labelColor;ctx.font='10px sans-serif';ctx.textAlign='center';
   const dec=(spec.decimals!=null)?spec.decimals:1;
   const labelVal=(e.labelV!=null)?e.labelV:e.v;
   const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
-  let labelY=e.v<0 ? (yVPx+16) : (yVPx-8);
-  if(e.v<0){
+  let labelY=themedColorBars?H-6:(e.v<0 ? (yVPx+16) : (yVPx-8));
+  if(!themedColorBars&&e.v<0){
    if(labelY>H-padBot-4) labelY=H-padBot-4;
-  } else if(labelY<padTop) {
+  } else if(!themedColorBars&&labelY<padTop) {
    labelY=padTop;
   }
-  ctx.fillText(prefix+labelVal.toFixed(dec),Math.round(cx),labelY);
+  const unit=themedColorBars?(e.unit||spec.unit||''):'';
+  ctx.fillText(prefix+labelVal.toFixed(dec)+unit,Math.round(cx),labelY);
  });
 }
 

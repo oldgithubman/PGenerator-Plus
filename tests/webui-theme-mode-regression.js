@@ -78,6 +78,10 @@ assert(source.includes('const pixelsPerUnit=Math.max(1,Math.min(availableW/xSpan
 assert(source.includes('function meterChartExpandIcon(expanded)'), 'chart expand controls use a platform-independent SVG icon');
 assert(source.includes('--meter-bar-track:#f1f3f7;--meter-bar-zero:rgba(70,84,102,.28)'), 'Light color-series delta bars use themed tracks and zero markers');
 assert(source.includes("const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor'"), 'Color-series RGB and XyY canvases share the themed glowing-bar renderer');
+assert(source.includes('const trackW=themedColorBars?42:'), 'Color-series tracks match the 42px greyscale RGB balance tracks');
+assert(source.includes('const barW=themedColorBars?20:'), 'Color-series fills match the 20px greyscale RGB balance fills');
+assert(source.includes('flex:0 0 180px!important;width:180px!important;height:480px!important'), 'Color-series side charts match the 180px greyscale RGB balance panel width');
+assert(source.includes('let labelY=themedColorBars?H-6:'), 'Color-series values stay in a fixed footer below their tracks');
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');
 assert(source.includes('border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}'),'Tablet Light chart workspace leaves space above export controls');

@@ -51,6 +51,9 @@ assert(webui.includes("localStorage.getItem('cardCollapse')"), 'collapse prefere
 assert(webui.includes("localStorage.setItem('pg_widget_order'"), 'tablet widget ordering remains supported');
 assert(webui.includes('body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr)'), 'desktop greyscale reserves a right chart column');
 assert(webui.includes('#meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important'), 'desktop stacks EOTF above luminance');
+assert(webui.includes('--desktop-eotf-chart-height:clamp(300px,40vh,420px)'), 'Desktop EOTF and luminance charts have a bounded responsive height');
+assert(webui.includes('grid-template-rows:repeat(2,var(--desktop-eotf-chart-height))'), 'Desktop EOTF/luminance rows cannot grow from resized canvas buffers');
+assert(webui.includes('height:auto;align-self:start;margin-bottom:0!important'), 'Desktop EOTF/luminance stack does not feed parent height back into its canvases');
 assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLuminanceGrid"'), 'greyscale chart regions have stable layout anchors');
 assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.includes("home.insertAdjacentElement('afterend',live)"), 'live reading moves into the Desktop RGB rail and returns home in Tablet');
 assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
@@ -68,7 +71,7 @@ assert(webui.includes('#chartRGB{height:100%!important;min-height:220px}'), 'Des
 assert(webui.includes('#chartDeltaE,\nbody.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}'), 'Desktop Delta E and Gamma charts use the taller layout');
 assert(webui.includes("set('meterLumTgt', tY!=null?('Target: '+tY.toFixed(2)):'')"), 'live readings use explicit target labels instead of arrows');
 assert(webui.includes('#meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}'), 'Gamma begins to the right of the live-reading rail');
-assert(webui.includes('grid-template-rows:repeat(2,minmax(0,1fr))'), 'EOTF and Luminance share the full left-stack height');
+assert(webui.includes('grid-template-rows:repeat(2,var(--desktop-eotf-chart-height))'), 'EOTF and Luminance use equal stable responsive heights');
 
 // Conditional panels and workflow affordances must stay correct.
 assert(webui.includes("const available=panel.style.display!=='none';"), 'workspace selection respects existing conditional panel visibility');
