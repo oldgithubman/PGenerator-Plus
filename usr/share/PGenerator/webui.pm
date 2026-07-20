@@ -11258,6 +11258,17 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
+  <div id="lutSolveProgressModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(440px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:20px;box-sizing:border-box;text-align:center">
+    <div class="apply-settings-spinner" style="margin:0 auto 14px"></div>
+    <div id="lutSolveProgressTitle" style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:8px">Building 3D LUT</div>
+    <div id="lutSolveProgressMsg" style="font-size:.8rem;color:var(--text2);line-height:1.5;margin-bottom:12px">Starting solve&hellip;</div>
+    <div style="height:10px;border-radius:3px;background:#0d0f18;border:1px solid rgba(255,255,255,.12);overflow:hidden;text-align:left">
+     <div id="lutSolveProgressFill" class="meter-workflow-progress-fill active" style="width:8%;height:100%"></div>
+    </div>
+    <div id="lutSolveProgressDetail" style="font-size:.7rem;color:var(--text2);margin-top:10px;line-height:1.4">&nbsp;</div>
+   </div>
+  </div>
   <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(520px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT solved</div>
@@ -11293,7 +11304,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <select id="meterLg3dModalImportedLut" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
     </div>
     <div id="meterLg3dModalExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
-    <div id="meterLg3dModalCount" style="font-size:.75rem;color:var(--text2);margin-bottom:14px">&nbsp;</div>
+    <div id="meterLg3dModalCount" style="font-size:.75rem;color:var(--text2);margin-bottom:12px">&nbsp;</div>
+    <div style="margin-bottom:14px;padding:10px 12px;background:#0d0d15;border:1px solid #2a3140;border-radius:8px">
+     <div style="font-size:.72rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Export cube size</div>
+     <label style="display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text);cursor:pointer;line-height:1.4;margin-bottom:8px">
+      <input type="radio" name="meterLg3dCubeSize" id="meterLg3dCubeSize17" value="17" checked style="margin-top:3px;accent-color:var(--accent,#5b7fff)">
+      <span><strong>17&sup3;</strong> (4,913 nodes) — faster build; fine for most host apps and TV download copies. Recommended default.</span>
+     </label>
+     <label style="display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text);cursor:pointer;line-height:1.4">
+      <input type="radio" name="meterLg3dCubeSize" id="meterLg3dCubeSize33" value="33" style="margin-top:3px;accent-color:var(--accent,#5b7fff)">
+      <span><strong>33&sup3;</strong> (35,937 nodes) — denser export cube; ~7&times; more nodes so solve takes longer. TV upload stays 33&sup3; either way.</span>
+     </label>
+    </div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
      <button type="button" class="btn btn-sm btn-secondary" onclick="meterCloseLg3dAutoCalModal()">Cancel</button>
      <button type="button" class="btn btn-sm btn-primary" id="meterLg3dModalStartBtn" onclick="meterConfirmLg3dAutoCalModal()">&#9654; Start 3D LUT AutoCal</button>
@@ -26918,6 +26940,10 @@ async function meterLutSolveStart(series,readings,opts){
  if(opts&&Object.prototype.hasOwnProperty.call(opts,'includeGreyscale')){
   includeGreyscale=!!opts.includeGreyscale;
  }
+ let cubeSize=meterNormalizeSolveCubeSize(
+  (opts&&opts.solveCubeSize!=null)?opts.solveCubeSize:meterSolveCubeSizePref(33),
+  33
+ );
  // HDR10: Calman only supports matrix — force matrix solve even if a volume series was measured.
  let methodGuess='hybrid';
  if(series&&series.kind==='matrix') methodGuess='matrix';
@@ -26928,7 +26954,7 @@ async function meterLutSolveStart(series,readings,opts){
   target_gamut:gamut, target_gamma:gamma,
   display_type:(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'',
   method:methodGuess,
-  solve_cube_size:33,
+  solve_cube_size:cubeSize,
   lattice_readings:payload,
   // Complete cube for host software (default). 0 = force identity greys.
   include_greyscale:includeGreyscale?1:0,
@@ -26937,19 +26963,25 @@ async function meterLutSolveStart(series,readings,opts){
   lg_autocal_3dlut_mid_sat_blend:signalMode==='hdr10'?0:1,
   solve_matrix_only:signalMode==='hdr10'?1:undefined
  };
- // Build 3D LUT already collected format + greyscale; other callers can still confirm.
+ // Build 3D LUT already collected greyscale + cube size; other callers can still confirm.
  if(!(opts&&opts.auto)){
   const ok=await meterShowChoiceModal({
    title:'Generate 3D LUT?',
-   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
+   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).\n\nLarger export cubes take longer to build after this confirm.',
    acceptLabel:'Generate',cancelLabel:'Cancel',
+   radios:[meterSolveCubeSizeRadios(cubeSize)],
    checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
   });
   if(!ok) return;
   if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
    body.include_greyscale=ok.include_greyscale?1:0;
   }
+  if(ok&&typeof ok==='object'&&ok.solve_cube_size!=null){
+   cubeSize=meterNormalizeSolveCubeSize(ok.solve_cube_size,cubeSize);
+   body.solve_cube_size=cubeSize;
+  }
  }
+ meterSolveCubeSizePrefSave(body.solve_cube_size);
  // Stash download preference for the poll completion handler.
  meterLutSolvePendingDownload=(opts&&opts.downloadFormat)?String(opts.downloadFormat):'';
  if(meterLutSolvePendingDownload!=='3dl') meterLutSolvePendingDownload=meterLutSolvePendingDownload==='cube'?'cube':'';
@@ -26958,6 +26990,7 @@ async function meterLutSolveStart(series,readings,opts){
  if(!r||r.status!=='started'){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
   meterLutSolvePendingDownload='';
+  meterLutSolveProgressHide();
   toast((r&&r.message)||'LUT solve failed to start',true);
   return;
  }
@@ -26974,16 +27007,70 @@ async function meterLutSolveStart(series,readings,opts){
   const prog=document.getElementById('meterProgress');
   if(prog) prog.style.display='';
  }catch(e){}
+ meterLutSolveProgressShow(
+  'Building '+body.solve_cube_size+'³ export cube…',
+  meterSolveCubeSizeLabel(body.solve_cube_size)+' · '+payload.length+' profile patches'
+ );
  if(meterLutSolvePolling) clearInterval(meterLutSolvePolling);
- meterLutSolvePolling=setInterval(meterLutSolvePoll,1500);
+ meterLutSolvePolling=setInterval(meterLutSolvePoll,1000);
  // Immediate first poll so short solves do not wait a full interval.
  try{ meterLutSolvePoll(); }catch(e){}
+}
+
+function meterLutSolveProgressShow(msg,detail){
+ const modal=document.getElementById('lutSolveProgressModal');
+ if(!modal) return;
+ const title=document.getElementById('lutSolveProgressTitle');
+ const m=document.getElementById('lutSolveProgressMsg');
+ const d=document.getElementById('lutSolveProgressDetail');
+ const fill=document.getElementById('lutSolveProgressFill');
+ if(title) title.textContent='Building 3D LUT';
+ if(m) m.textContent=String(msg||'Starting solve…');
+ if(d) d.textContent=String(detail||'');
+ if(fill){ fill.style.width='12%'; fill.classList.add('active'); }
+ modal.style.display='flex';
+ try{ uiSyncBodyScrollLock(); }catch(e){}
+}
+function meterLutSolveProgressUpdate(status){
+ const s=status||{};
+ const m=document.getElementById('lutSolveProgressMsg');
+ const d=document.getElementById('lutSolveProgressDetail');
+ const fill=document.getElementById('lutSolveProgressFill');
+ const msg=String(s.message||s.current_name||'Building 3D LUT…');
+ if(m) m.textContent=msg;
+ const bits=[];
+ const sz=Number(s.cube_lut_size||s.solve_cube_size||0);
+ if(sz===17||sz===33||sz===65) bits.push(sz+'³ export');
+ if(s.lattice_nodes!=null) bits.push(s.lattice_nodes+' profile nodes');
+ const pct=Number(s.solve_progress_pct);
+ if(Number.isFinite(pct)&&pct>=0){
+  if(fill){
+   fill.classList.add('active');
+   fill.style.width=Math.max(8,Math.min(100,pct))+'%';
+  }
+  bits.push(Math.round(Math.min(100,pct))+'%');
+ } else if(fill){
+  // Indeterminate shimmer while the worker has no percent yet.
+  const cur=parseFloat(fill.style.width)||12;
+  fill.style.width=Math.min(92,cur+3)+'%';
+  fill.classList.add('active');
+ }
+ if(d) d.textContent=bits.join(' · ')||'Solving model and generating cube…';
+}
+function meterLutSolveProgressHide(){
+ const modal=document.getElementById('lutSolveProgressModal');
+ if(modal) modal.style.display='none';
+ try{ uiSyncBodyScrollLock(); }catch(e){}
 }
 
 async function meterLutSolvePoll(){
  let s=null;
  try{ s=await fetchJSON('/api/3d-lut/solve/status',{_quiet:true,_timeoutMs:5000}); }catch(e){ return; }
  if(!s) return;
+ if(s.status==='running'||s.status==='started'){
+  try{ meterLutSolveProgressUpdate(s); }catch(e){}
+  return;
+ }
  if(s.status==='complete'){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   const rep=s.solve_report||{};
@@ -26998,6 +27085,8 @@ async function meterLutSolvePoll(){
    const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
    meterLutSolvePendingDownload='';
    meterBuild3dLutPending=null;
+   // Hand progress modal off to the solved download modal.
+   meterLutSolveProgressHide();
    if(nm){
     // Completion modal is where the operator picks .cube vs .3dl (browsers
     // also block auto-download after long async measure/solve work).
@@ -27006,6 +27095,7 @@ async function meterLutSolvePoll(){
     toast('3D LUT solved but no export file was reported',true);
    }
   }catch(e){
+   meterLutSolveProgressHide();
    toast('3D LUT solved but the download UI failed to open',true);
   }
   return;
@@ -27014,6 +27104,7 @@ async function meterLutSolvePoll(){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   meterLutSolvePendingDownload='';
   meterBuild3dLutPending=null;
+  meterLutSolveProgressHide();
   toast(s.message||'LUT solve failed',true);
  }
 }
@@ -27024,12 +27115,19 @@ async function meterLutSolvePoll(){
 let meterLutSolveDoneName=null;
 function meterLutSolveDonePrompt(name,how,state){
  meterLutSolveDoneName=String(name||'');
+ // Always drop the building spinner before the done card (standalone AutoCal
+ // may call this without going through meterLutSolvePoll).
+ try{ meterLutSolveProgressHide(); }catch(e){}
  const summary=document.getElementById('lutSolveDoneSummary');
  if(summary){
   const esc=(t)=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  const sz=(state&&state.cube_lut_size)||33;
+  const sz=meterNormalizeSolveCubeSize(
+   (state&&(state.cube_lut_size!=null?state.cube_lut_size:state.solve_cube_size)),
+   33
+  );
+  const nodes=(sz===17)?'4,913':(sz===33)?'35,937':String(sz*sz*sz);
   summary.innerHTML='<div style="font-weight:600;color:var(--text)">'+esc(meterLutSolveDoneName)+'</div>'
-   +'<div>'+esc(sz)+'&sup3; &middot; '+esc(how||'')+'</div>'
+   +'<div>'+esc(sz)+'&sup3; export ('+esc(nodes)+' nodes) &middot; '+esc(how||'')+'</div>'
    +'<div style="margin-top:6px">Choose a download format — the LUT also stays under Solved LUTs in LUT Tools.</div>';
  }
  const cubeBtn=document.getElementById('lutSolveDoneDownloadCubeBtn');
@@ -34374,6 +34472,14 @@ function meterOpenLg3dAutoCalModal(){
    try{ srcSel.value=meterLg3dModalLastSource; }catch(e){}
   }
  }
+ // Export cube size: prefer last choice; AutoCal first-run default is 17³ (fast).
+ try{
+  const pref=meterSolveCubeSizePref(17);
+  const r17=document.getElementById('meterLg3dCubeSize17');
+  const r33=document.getElementById('meterLg3dCubeSize33');
+  if(r17) r17.checked=(pref!==33);
+  if(r33) r33.checked=(pref===33);
+ }catch(e){}
  meterLg3dModalProfileSourceChanged();
  modal.style.display='flex';
  try{
@@ -34402,11 +34508,19 @@ async function meterConfirmLg3dAutoCalModal(){
   src='matrix';
  }
  meterCloseLg3dAutoCalModal();
+ let cubeSize=17;
+ try{
+  const r33=document.getElementById('meterLg3dCubeSize33');
+  if(r33&&r33.checked) cubeSize=33;
+  else cubeSize=17;
+ }catch(e){}
+ meterSolveCubeSizePrefSave(cubeSize);
  const opts={
   skipConfirm:true,
   method:method,
   latticeSeriesId:latticeSeriesId,
-  profileSource:src
+  profileSource:src,
+  solveCubeSize:cubeSize
  };
  // Imported path reads meterLg3dModalImportedLut via meterLg3dImportedLutValue().
  await meterStartLg3dAutoCal(opts);
@@ -34922,6 +35036,24 @@ async function meterPollLg3dAutoCal(options){
   if(r.status==='running'&&!meterLg3dAutoCalPolling){
    meterLg3dAutoCalPolling=setInterval(meterPollLg3dAutoCal,1500);
   }
+  // Standalone AutoCal: while the cube is generating, show a spinner modal
+  // that tracks worker messages (then hand off to the solved download modal).
+  if(!full3dActive&&r.status==='running'){
+   const phase=String(r.phase||'').toLowerCase();
+   if(phase==='building'||phase==='solving'){
+    try{
+     if(typeof meterLutSolveProgressShow==='function'){
+      const modal=document.getElementById('lutSolveProgressModal');
+      if(!modal||modal.style.display!=='flex'){
+       meterLutSolveProgressShow(r.message||r.current_name||'Building 3D LUT…',
+        meterSolveCubeSizeLabel(r.cube_lut_size||r.solve_cube_size||17));
+      } else {
+       meterLutSolveProgressUpdate(r);
+      }
+     }
+    }catch(_e){}
+   }
+  }
   // Close the preemptively-raised spectro setup modal when the worker has
   // moved past the preflight (phase!='preparing' or status moves off running).
   // Mirrors the autocal-wizard fix in meterPollAutoCal.
@@ -34935,6 +35067,9 @@ async function meterPollLg3dAutoCal(options){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
    meterActionPending=false;
    meterLg3dAutoCalRunning=false;
+   if(r.status!=='complete'){
+    try{ meterLutSolveProgressHide(); }catch(_e){}
+   }
    // Put the operator's Target Colorspace / Target Gamma back (no-op when
    // no standalone run switched them — full workflow never snapshots).
    try{ meterLg3dRestoreTargetsAfterRun(); }catch(_e){}
@@ -34964,21 +35099,37 @@ async function meterPollLg3dAutoCal(options){
     // LUT Tools and open the download / 3D-view prompt so the standalone run
     // produces the same build + save flow as the lattice "Build 3D LUT" path.
     // Without this the standalone only showed the completion overlay (no way to
-    // retrieve the cube, and the LUT list never refreshed).
+    // retrieve the cube, and the LUT list never refreshed). Progress spinner
+    // hands off to the solved modal inside meterLutSolveDonePrompt.
     setTimeout(function(){
      try{
       fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000}).then(function(resp){
        const luts=(resp&&Array.isArray(resp.luts))?resp.luts:[];
-       if(!luts.length) return;
+       if(!luts.length){
+        try{ meterLutSolveProgressHide(); }catch(_e){}
+        return;
+       }
        const newest=luts.slice().sort(function(a,b){return Number(b&&b.mtime||0)-Number(a&&a.mtime||0);})[0];
-       if(!newest||!newest.name) return;
+       if(!newest||!newest.name){
+        try{ meterLutSolveProgressHide(); }catch(_e){}
+        return;
+       }
        try{ meterLoadSolvedLutList(); }catch(_e){}
-       try{ meterLutSolveDonePrompt(newest.name,'standalone 3D LUT AutoCal',{cube_lut_size:33}); }catch(_e){}
-      }).catch(function(){});
-     }catch(_e){}
+       try{
+        const sz=meterNormalizeSolveCubeSize(
+         (r&&(r.cube_lut_size!=null?r.cube_lut_size:r.solve_cube_size)),
+         17
+        );
+        meterLutSolveDonePrompt(newest.name,'standalone 3D LUT AutoCal',{cube_lut_size:sz,solve_cube_size:sz});
+       }catch(_e){
+        try{ meterLutSolveProgressHide(); }catch(__e){}
+       }
+      }).catch(function(){ try{ meterLutSolveProgressHide(); }catch(_e){} });
+     }catch(_e){ try{ meterLutSolveProgressHide(); }catch(__e){} }
     },400);
    }else if(r.status==='error'){
     meterClearDisplayPattern();
+    try{ meterLutSolveProgressHide(); }catch(_e){}
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalPhase='error';
     meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'running',current_name:r.current_name||'LG 3D LUT AutoCal error',message:r.message||'3D LUT AutoCal failed'});
@@ -35197,6 +35348,11 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // Imported upload: the .cube saved on the generator; the worker resamples
   // it to the 33-point payload and skips profiling entirely.
   imported_cube_path:method==='imported'?importedCubePath:undefined,
+  // Downloadable export cube size (17 or 33). TV payload stays 33³ always.
+  solve_cube_size:meterNormalizeSolveCubeSize(
+   (options&&options.solveCubeSize!=null)?options.solveCubeSize:meterSolveCubeSizePref(17),
+   17
+  ),
   upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
@@ -35393,8 +35549,45 @@ function meterReadSeriesPrimaryAction(){
 // format is chosen only after the solve on the completion modal).
 let meterBuild3dLutPending=null;
 
-// Build 3D LUT: confirm greyscale policy, measure the series, solve, then
-// offer .cube / .3dl download on the completion modal.
+function meterSolveCubeSizePref(fallback){
+ try{
+  const n=Number(localStorage.getItem('pgen.meter.solveCubeSize')||0);
+  if(n===17||n===33||n===65) return n;
+ }catch(e){}
+ return meterNormalizeSolveCubeSize(fallback,33);
+}
+function meterSolveCubeSizePrefSave(size){
+ const n=Number(size);
+ if(n!==17&&n!==33&&n!==65) return;
+ try{ localStorage.setItem('pgen.meter.solveCubeSize',String(n)); }catch(e){}
+}
+function meterNormalizeSolveCubeSize(v,fallback){
+ const n=Number(v);
+ if(n===17||n===33||n===65) return n;
+ const fb=Number(fallback);
+ return (fb===17||fb===33||fb===65)?fb:33;
+}
+function meterSolveCubeSizeLabel(size){
+ const n=meterNormalizeSolveCubeSize(size,33);
+ if(n===17) return '17³ (4,913 nodes) — faster';
+ if(n===33) return '33³ (35,937 nodes) — denser, slower';
+ if(n===65) return '65³ — densest, slowest';
+ return n+'³';
+}
+function meterSolveCubeSizeRadios(selected){
+ const sel=meterNormalizeSolveCubeSize(selected,meterSolveCubeSizePref(33));
+ return {
+  id:'solve_cube_size',
+  label:'Export cube size',
+  options:[
+   {value:'17',label:'17³ (4,913 nodes) — faster build; good for most host apps',checked:sel===17},
+   {value:'33',label:'33³ (35,937 nodes) — denser cube, ~7× more nodes so solve takes longer',checked:sel===33}
+  ]
+ };
+}
+
+// Build 3D LUT: confirm greyscale policy + export cube size, measure the
+// series, solve, then offer .cube / .3dl download on the completion modal.
 async function meterBuild3dLutSeries(){
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
@@ -35404,16 +35597,24 @@ async function meterBuild3dLutSeries(){
  const series=volume||{id:'matrix',kind:'matrix',name:'Matrix (5-point)'};
  const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toUpperCase();
  const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
+ // Standalone Build defaults to 33³ (denser host export); last choice wins.
+ const prefSize=meterSolveCubeSizePref(33);
  const ok=await meterShowChoiceModal({
   title:'Build 3D LUT',
-  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the display — when the solve finishes you can download .cube or .3dl for host apps (Resolve, madVR, etc.).',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the display — when the solve finishes you can download .cube or .3dl for host apps (Resolve, madVR, etc.).\n\nCube size only affects the downloadable export file (not measurement count). Larger cubes take longer to build after the reads finish.',
   acceptLabel:'Start measurement',
   cancelLabel:'Cancel',
+  radios:[meterSolveCubeSizeRadios(prefSize)],
   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
  });
  if(!ok) return false;
  const includeGrey=!(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale'))||!!ok.include_greyscale;
- meterBuild3dLutPending={includeGreyscale:includeGrey,series:series};
+ const cubeSize=meterNormalizeSolveCubeSize(
+  (ok&&typeof ok==='object'&&ok.solve_cube_size!=null)?ok.solve_cube_size:prefSize,
+  prefSize
+ );
+ meterSolveCubeSizePrefSave(cubeSize);
+ meterBuild3dLutPending={includeGreyscale:includeGrey,solveCubeSize:cubeSize,series:series};
  const started=await meterRunSeries();
  if(!started) meterBuild3dLutPending=null;
  return started;
@@ -35764,6 +35965,7 @@ async function meterPollSeries(){
        meterGenerateLutFromLattice({
         auto:true,
         includeGreyscale:!!pending.includeGreyscale,
+        solveCubeSize:meterNormalizeSolveCubeSize(pending.solveCubeSize,meterSolveCubeSizePref(33)),
         fromBuildFlow:true,
         series:pending.series,
         readings:pending.readings
