@@ -41,6 +41,7 @@ assert(webui.includes('body.layout-desktop .dashboard{max-width:none;width:100%'
 assert(/body\.layout-desktop \.desktop-content\{[^}]*min-height:calc\(100vh - var\(--pg-header-height,61px\)\)[^}]*display:flex[^}]*flex-direction:column/.test(webui), 'desktop content fills the viewport below the header');
 assert(/body\.layout-desktop \.site-footer\{[^}]*margin:auto 0 0/.test(webui), 'desktop footer is bottom-aligned on short workspaces');
 assert(webui.includes('body.layout-desktop .dashboard > .card{display:none;'), 'inactive desktop panels are presentation-hidden');
+assert(webui.includes('body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-bottom:0}'), 'Calibration does not duplicate the footer separator in Desktop mode');
 assert(webui.includes('.dashboard > .card[data-desktop-workspace]'), 'controller addresses the existing direct dashboard panels');
 const layoutController = webui.slice(webui.indexOf('// Interface layout controller.'), webui.indexOf('async function loadInfoframes()'));
 assert(!layoutController.includes('cloneNode('), 'desktop mode does not clone controls');

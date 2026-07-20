@@ -10572,6 +10572,7 @@ body.layout-desktop .dashboard{max-width:none;width:100%;margin:0;padding:20px 2
 body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 0 18px;font-size:1.25rem;line-height:1.25;color:var(--text);font-weight:700}
 body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:transparent;border:0;border-radius:0;padding:18px 0;box-shadow:none;min-width:0;border-bottom:1px solid var(--border)}
 body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
+body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
