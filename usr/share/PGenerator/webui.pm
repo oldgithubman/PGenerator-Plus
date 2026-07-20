@@ -11516,6 +11516,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
      <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesManager()">Close</button>
     </div>
+    <div id="meterCustomSeriesManagerStatus" style="display:none;margin:0 0 10px;padding:8px 10px;border:1px solid var(--status-error);border-radius:6px;background:rgba(198,40,40,.12);color:var(--text-primary);font-size:.76rem;line-height:1.4"></div>
     <div class="btn-row" style="margin:0 0 12px 0">
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
@@ -26887,6 +26888,8 @@ async function meterRefreshCustomSeriesFromServer(){
 async function meterOpenCustomSeriesManager(){
  const modal=document.getElementById('meterCustomSeriesManagerModal');
  if(!modal) return;
+ const status=document.getElementById('meterCustomSeriesManagerStatus');
+ if(status){ status.textContent=''; status.style.display='none'; }
  meterCustomSeriesReturnToManager=false;
  const showAllEl=document.getElementById('meterCustomSeriesManagerShowAll');
  if(showAllEl) showAllEl.checked=meterCustomSeriesManagerShowAll;
@@ -26983,25 +26986,34 @@ async function meterCustomSeriesLoad(id){
  const series=meterCustomSeriesById(id);
  if(!series){ toast('Series not found',true); return; }
  const type=(series.kind==='lattice'||series.category==='color')?'colors':'greyscale';
+ const status=document.getElementById('meterCustomSeriesManagerStatus');
+ const showError=(message)=>{
+  if(status){ status.textContent=message; status.style.display='block'; }
+  toast(message,true);
+ };
+ if(status){ status.textContent=''; status.style.display='none'; }
  // A just-finished read/stop can leave the shared action guard set briefly.
  // Previously the manager closed first and meterSelectSeries silently returned,
  // making the last built-in series look as though it had been loaded again.
- for(let attempt=0;meterActionPending&&attempt<30;attempt++){
-  await new Promise(resolve=>setTimeout(resolve,100));
- }
- if(meterActionPending){
-  toast('Wait for the current meter operation to finish, then load the series again',true);
-  return;
- }
- try{
-  await meterSelectSeries(type,series.id,{force:true});
- }catch(e){
-  toast('Could not load custom series: '+(e&&e.message?e.message:'unknown error'),true);
-  return;
- }
  const expectedKey=type+'-'+series.id;
+ for(let loadAttempt=0;loadAttempt<3&&meterActiveSeriesKey!==expectedKey;loadAttempt++){
+  for(let waitAttempt=0;meterActionPending&&waitAttempt<30;waitAttempt++){
+   await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  if(meterActionPending){
+   showError('The current meter operation is still finishing. Wait a moment, then load the series again.');
+   return;
+  }
+  try{
+   await meterSelectSeries(type,series.id,{force:true});
+  }catch(e){
+   showError('Could not load custom series: '+(e&&e.message?e.message:'unknown error'));
+   return;
+  }
+  if(meterActiveSeriesKey!==expectedKey) await new Promise(resolve=>setTimeout(resolve,150));
+ }
  if(meterActiveSeriesKey!==expectedKey){
-  toast('Custom series was not loaded; try again after the current operation finishes',true);
+  showError('Custom series was not loaded. Active series remained '+meterSeriesLabelFromKey(meterActiveSeriesKey||'none')+'.');
   return;
  }
  meterRenderCustomSeriesButtons();
