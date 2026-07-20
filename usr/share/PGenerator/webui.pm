@@ -10054,6 +10054,10 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
 }
+@media(min-width:701px){
+ body.layout-tablet #colorTopLayout #meterRGBColorWrap,
+ body.layout-tablet #colorTopLayout #meterXYYColorWrap{flex:0 0 160px!important;width:160px!important}
+}
 /* Expand (2D or 3D): hide side panels, CIE fills the row, taller canvas */
 #colorTopLayout.cie-expanded{
  width:100%;align-items:stretch;flex-wrap:nowrap!important
