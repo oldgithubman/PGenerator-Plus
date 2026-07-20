@@ -10601,7 +10601,8 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceScroller{height:100%
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:100%!important;min-height:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:grid;grid-template-rows:subgrid;width:180px;min-width:0;gap:10px}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:calc(100% + 70px)!important;min-height:290px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:100%!important;min-height:220px}
+body.layout-desktop #chartsGreyscaleFullWrap .meter-lg-rgb-column.is-readonly{height:auto;grid-template-rows:auto minmax(0,calc(var(--desktop-rgb-chart-height) - 78px)) auto;align-content:start}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
@@ -10612,7 +10613,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{grid-row:1;width:100%!important;height:100%!important;min-height:220px!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:38px;min-width:0}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:18px;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
