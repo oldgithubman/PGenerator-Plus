@@ -72,6 +72,10 @@ assert(source.includes('--chart-annotation:#344255'),'Light chart annotations us
 assert(source.includes('--chart-eotf-measured:#806600'),'Light EOTF measured-maximum annotation uses a readable dark yellow');
 assert(source.includes("ctx.fillStyle=pgThemeColor('--chart-eotf-measured','#ffeb3b')"),'EOTF measured-maximum annotation uses its theme token while preserving Dark yellow');
 assert(source.includes('--chart-gamut-line:#334b70'),'Light CIE gamut lines use a visible dark stroke');
+assert(source.includes('[data-theme="light"] .chart-expand-btn{background:rgba(255,255,255,.94);color:var(--accent)'),'Light chart expand controls have an explicit readable treatment');
+assert(source.includes('const selectedName=(meterSelectedThumbIre!=null&&meterStepNameKey(view)===meterSelectedThumbIre)?view.name'), 'unpinned latest color detail does not masquerade as a selected thumbnail');
+assert(source.includes('const pixelsPerUnit=Math.max(1,Math.min(availableW/xSpan,availableH/ySpan))'), 'responsive 2D CIE plots preserve equal x/y scale');
+assert(source.includes('function meterChartExpandIcon(expanded)'), 'chart expand controls use a platform-independent SVG icon');
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');
 assert(source.includes('border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}'),'Tablet Light chart workspace leaves space above export controls');

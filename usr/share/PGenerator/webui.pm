@@ -10326,6 +10326,7 @@ font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white
 .btn-custom-series{border:1px dashed var(--accent)}
 .chart-expand-btn{position:absolute;right:6px;bottom:6px;width:24px;height:24px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;background:rgba(20,24,34,.82);border:1px solid var(--border);border-radius:4px;color:var(--text2);cursor:pointer;z-index:4}
 .chart-expand-btn:hover{color:var(--text);border-color:var(--accent)}
+.chart-expand-btn svg{display:block;width:15px;height:15px;pointer-events:none}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;
 padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:translateY(20px);
 transition:all .3s;z-index:999;pointer-events:none}
@@ -10708,6 +10709,8 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .btn-secondary:hover,[data-theme="light"] .pat-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
 [data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}
 [data-theme="light"] .diag-asset-icon-btn-delete:not(:disabled){color:var(--status-error)!important}
+[data-theme="light"] .chart-expand-btn{background:rgba(255,255,255,.94);color:var(--accent);border-color:var(--chart-axis);box-shadow:0 1px 3px rgba(18,29,45,.18)}
+[data-theme="light"] .chart-expand-btn:hover{background:var(--surface-inset);color:#174fc4;border-color:var(--accent)}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
 [data-theme="light"] #meterThumbsRow,[data-theme="light"] .meter-scroll-sync,[data-theme="light"] .meter-modal-scroll{scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-track,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-track,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-track{background:var(--scroll-track);border-color:var(--border)}
@@ -11991,13 +11994,13 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </div>
       <div id="chartCubeViewBox" style="position:relative;display:inline-block;max-width:100%">
        <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
-       <button type="button" id="chartCubeExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cube')">&#8600;</button>
+       <button type="button" id="chartCubeExpandBtn" class="chart-expand-btn" title="Expand to full width" aria-label="Expand RGB cube chart to full width" onclick="meterToggleChartExpand('cube')"></button>
       </div>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
       <div id="chartCIEBox" style="position:relative;flex:0 0 600px;max-width:100%">
        <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
-       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cie')">&#8600;</button>
+       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" aria-label="Expand CIE chart to full width" onclick="meterToggleChartExpand('cie')"></button>
       </div>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
@@ -39258,8 +39261,11 @@ function showColorReadingDetail(rd,opts){
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
- colorHighlightThumb(view.name);
- colorHighlightTableRow(view.name);
+ // Showing the latest measurement is informational. Do not paint it as a
+ // blue user selection unless a patch is actually pinned/current.
+ const selectedName=(meterSelectedThumbIre!=null&&meterStepNameKey(view)===meterSelectedThumbIre)?view.name:'';
+ colorHighlightThumb(selectedName);
+ colorHighlightTableRow(selectedName);
 }
 function colorHighlightThumb(name){
  const container=document.getElementById('meterPatchThumbs');
@@ -39454,9 +39460,14 @@ function meterCie2dGeom(cw,ch){
  const pad={t:15,r:15,b:35,l:45};
  const vp=meterCie2dViewport();
  const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
- const w=Math.max(1,cw-pad.l-pad.r);
- const h=Math.max(1,ch-pad.t-pad.b);
  const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
+ // Keep one chromaticity unit the same size on both axes. Responsive and
+ // expanded canvases letterbox instead of stretching the CIE geometry.
+ const availableW=Math.max(1,cw-pad.l-pad.r), availableH=Math.max(1,ch-pad.t-pad.b);
+ const pixelsPerUnit=Math.max(1,Math.min(availableW/xSpan,availableH/ySpan));
+ const w=xSpan*pixelsPerUnit, h=ySpan*pixelsPerUnit;
+ pad.l+=(availableW-w)/2;
+ pad.t+=(availableH-h)/2;
  return {
   pad,w,h,xMin,xMax,yMin,yMax,scale:vp.scale,
   plotRight:pad.l+w,
@@ -39609,7 +39620,8 @@ function meterApplyCie3dLayout(){
  const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
  if(cieExpandBtn){
   cieExpandBtn.style.display='flex';
-  cieExpandBtn.innerHTML=meterChartExpanded.cie?'↖':'↘';
+  cieExpandBtn.innerHTML=meterChartExpandIcon(!!meterChartExpanded.cie);
+  cieExpandBtn.setAttribute('aria-label',meterChartExpanded.cie?'Collapse CIE chart':'Expand CIE chart to full width');
   cieExpandBtn.title=meterChartExpanded.cie?'Collapse':'Expand to full width';
  }
  void canvas.offsetWidth; // reflow before getChartCtx measures the box
@@ -39772,27 +39784,33 @@ function meterRedrawCubeView(){
 // Expand toggle for RGB cube + CIE (2D or 3D). Collapsed = fixed ~600px;
 // expanded = full card width (side panels hidden), taller canvas.
 let meterChartExpanded={cie:false,cube:false};
+function meterChartExpandIcon(expanded){
+ const points=expanded
+  ? '<path d="M9 3H3v6M3 3l6 6M15 21h6v-6M21 21l-6-6"/>'
+  : '<path d="M9 21H3v-6M3 21l6-6M15 3h6v6M21 3l-6 6"/>';
+ return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+points+'</svg>';
+}
 function meterToggleChartExpand(which){
  meterChartExpanded[which]=!meterChartExpanded[which];
  meterApplyChartExpand(which);
 }
 function meterApplyChartExpand(which){
  const expanded=!!meterChartExpanded[which];
- const glyph=expanded?'↖':'↘';
+ const glyph=meterChartExpandIcon(expanded);
  if(which==='cube'){
   const box=document.getElementById('chartCubeViewBox');
   const canvas=document.getElementById('chartCubeView');
   const btn=document.getElementById('chartCubeExpandBtn');
   if(box) box.style.display=expanded?'block':'inline-block';
   if(canvas){ canvas.style.width=expanded?'100%':'600px'; canvas.style.height=expanded?'min(78vh,760px)':'450px'; }
-  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; btn.setAttribute('aria-label',expanded?'Collapse RGB cube chart':'Expand RGB cube chart to full width'); }
   meterRedrawCubeView();
  } else {
   // Class-driven layout (works for 2D and 3D CIE); hides RGB/XyY/detail.
   const layout=document.getElementById('colorTopLayout');
   const btn=document.getElementById('chartCIEExpandBtn');
   if(layout) layout.classList.toggle('cie-expanded',expanded);
-  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; btn.setAttribute('aria-label',expanded?'Collapse CIE chart':'Expand CIE chart to full width'); }
   const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
   if(Array.isArray(meterReadings)&&meterReadings.length){
    drawAllCharts(isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
