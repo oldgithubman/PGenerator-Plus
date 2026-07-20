@@ -38,6 +38,8 @@ assert(/id="lgCardTitle"[^>]*>.*LG Display/.test(lg), 'Tablet LG card is titled 
 
 // The same panels remain in place; desktop only changes presentation and visibility.
 assert(webui.includes('body.layout-desktop .dashboard{max-width:none;width:100%'), 'desktop workspace removes the tablet width cap');
+assert(/body\.layout-desktop \.desktop-content\{[^}]*min-height:calc\(100vh - var\(--pg-header-height,61px\)\)[^}]*display:flex[^}]*flex-direction:column/.test(webui), 'desktop content fills the viewport below the header');
+assert(/body\.layout-desktop \.site-footer\{[^}]*margin:auto 0 0/.test(webui), 'desktop footer is bottom-aligned on short workspaces');
 assert(webui.includes('body.layout-desktop .dashboard > .card{display:none;'), 'inactive desktop panels are presentation-hidden');
 assert(webui.includes('.dashboard > .card[data-desktop-workspace]'), 'controller addresses the existing direct dashboard panels');
 const layoutController = webui.slice(webui.indexOf('// Interface layout controller.'), webui.indexOf('async function loadInfoframes()'));

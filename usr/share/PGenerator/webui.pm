@@ -10503,8 +10503,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 .desktop-workspace-title{display:none}
 body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start}
 body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
-body.layout-desktop .desktop-content{min-width:0;width:100%}
-body.layout-desktop .dashboard{max-width:none;width:100%;margin:0;padding:20px 24px 28px;display:flex;flex-direction:column;gap:0}
+body.layout-desktop .desktop-content{min-width:0;width:100%;min-height:calc(100vh - var(--pg-header-height,61px));display:flex;flex-direction:column}
+body.layout-desktop .dashboard{max-width:none;width:100%;margin:0;padding:20px 24px 28px;display:flex;flex:1 0 auto;flex-direction:column;gap:0}
 body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 0 18px;font-size:1.25rem;line-height:1.25;color:var(--text);font-weight:700}
 body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:transparent;border:0;border-radius:0;padding:18px 0;box-shadow:none;min-width:0;border-bottom:1px solid var(--border)}
 body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
@@ -10512,7 +10512,7 @@ body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
-body.layout-desktop .site-footer{max-width:none;width:100%;margin:0;padding:0 24px 20px}
+body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 body.layout-desktop.is-widget-dragging{cursor:default!important;user-select:auto!important}
 body.layout-desktop.is-widget-dragging *{cursor:auto!important}
