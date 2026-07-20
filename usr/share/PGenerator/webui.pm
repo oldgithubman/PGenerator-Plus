@@ -10576,6 +10576,7 @@ body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+#meterGreyLiveRail{display:contents}
 body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode){display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
 body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}

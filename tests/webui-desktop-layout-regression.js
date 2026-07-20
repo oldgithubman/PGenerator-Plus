@@ -53,6 +53,7 @@ assert(webui.includes('#meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2
 assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLuminanceGrid"'), 'greyscale chart regions have stable layout anchors');
 assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.includes("home.insertAdjacentElement('afterend',live)"), 'live reading moves into the Desktop RGB rail and returns home in Tablet');
 assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
+assert(webui.includes('#meterGreyLiveRail{display:contents}'), 'the live-reading rail wrapper is layout-neutral outside standard Desktop greyscale');
 
 // Conditional panels and workflow affordances must stay correct.
 assert(webui.includes("const available=panel.style.display!=='none';"), 'workspace selection respects existing conditional panel visibility');
