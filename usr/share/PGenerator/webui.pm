@@ -9933,7 +9933,7 @@ sub webui_html (@) {
 </script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root,[data-theme="dark"]{color-scheme:dark;--bg:#0a0a0f;--card:#14141f;--border:#2a2a3a;--accent:#5b7fff;--accent2:#7c5bff;
+:root,[data-theme="dark"]{color-scheme:dark;--bg:#0a0a0f;--card:#14141f;--panel:#14141f;--border:#2a2a3a;--accent:#5b7fff;--accent2:#7c5bff;
 --text:#e0e0e8;--text2:#888898;--green:#4caf50;--red:#f44;--orange:#ff9800;--dv:#b388ff;
 --surface-page:#0a0a0f;--surface-header:#101019;--surface-sidebar:#0d0d15;--surface-card:#14141f;--surface-drawer:#101019;--surface-modal:#14141f;--surface-popover:#181824;--surface-inset:#0d0d15;--surface-field:#080a11;
 --text-primary:#e0e0e8;--text-secondary:#888898;--text-muted:#686878;--text-inverse:#fff;--text-disabled:#666675;
@@ -9941,7 +9941,7 @@ sub webui_html (@) {
 --chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
 --status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff}
-[data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
+[data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--panel:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
 --text:#18202b;--text2:#465466;--green:#217a36;--red:#c62828;--orange:#a55300;--dv:#7044bd;
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
 --text-primary:#18202b;--text-secondary:#465466;--text-muted:#596676;--text-inverse:#fff;--text-disabled:#687586;
@@ -10600,6 +10600,10 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 /* Theme bridge for legacy inline presentation styles. Measured patch, gamut,
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
+[data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
+[data-theme="light"] .offline-mask-card{background:var(--surface-modal);color:var(--text-primary);border-color:var(--border);box-shadow:0 12px 30px var(--shadow)}
+[data-theme="light"] .meter-scroll-sync,[data-theme="light"] #meterGreyRgbLegacyWrap,[data-theme="light"] #meterGreyTvWrap,[data-theme="light"] #meterRGBColorWrap,[data-theme="light"] #meterXYYColorWrap,[data-theme="light"] #colorReadingDetail{background:var(--chart-bg)!important}
+[data-theme="light"] #chartRGB,[data-theme="light"] #chartDeltaE,[data-theme="light"] #chartGammaValue,[data-theme="light"] #chartEOTF,[data-theme="light"] #chartGamma,[data-theme="light"] #chartCubeView,[data-theme="light"] #chartCIE,[data-theme="light"] #chartColorDE,[data-theme="light"] #ccssPreviewCanvas,[data-theme="light"] #lutCubeView{background:var(--chart-bg)!important}
 [data-theme="light"] [style*="background:#0d0d15"],[data-theme="light"] [style*="background: #0d0d15"]{background:var(--surface-inset)!important}
 [data-theme="light"] [style*="background:#080a11"],[data-theme="light"] [style*="background: #080a11"]{background:var(--surface-field)!important}
 [data-theme="light"] [style*="background:#111723"],[data-theme="light"] [style*="background: #111723"],
@@ -10625,8 +10629,10 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] [style*="color:#777"],[data-theme="light"] [style*="color: #777"],
 [data-theme="light"] [style*="color:#666"],[data-theme="light"] [style*="color: #666"],
 [data-theme="light"] [style*="color:#555"],[data-theme="light"] [style*="color: #555"]{color:var(--text-secondary)!important}
+[data-theme="light"] [id$="Modal"]{color:var(--text-primary)}
 [data-theme="light"] [id$="Modal"] > .meter-modal-scroll,[data-theme="light"] [id$="Modal"] > div,
 [data-theme="light"] #meterReportOverlay > div{background:var(--surface-modal)!important;color:var(--text-primary);border-color:var(--border)!important}
+[data-theme="light"] .apply-settings-card,[data-theme="light"] .meter-autocal-card,[data-theme="light"] #hdmiOverlay .hdmi-box{background:var(--surface-modal);color:var(--text-primary);border-color:var(--border)}
 [data-theme="light"] #chartTooltip{background:var(--chart-tooltip)!important;color:var(--text-primary)!important;border-color:var(--border)!important;box-shadow:0 2px 8px var(--shadow)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
@@ -10688,7 +10694,9 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 /* Tablet cards favour compact switches. The complete explanatory copy stays
    available as a keyboard/hover tooltip and remains part of the button's
    accessible name. Desktop keeps the spacious selection tiles. */
-body.layout-tablet #uiSettingsCard{order:1000!important;grid-column:1 / -1}
+body.layout-tablet #displaySettingsCard{order:-200;grid-column:1}
+body.layout-tablet #hdrCard{order:-199;grid-column:2}
+body.layout-tablet #uiSettingsCard{grid-column:1 / -1}
 body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 body.layout-tablet .ui-choice-list{gap:5px}
 body.layout-tablet .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible}
@@ -10775,8 +10783,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  <h1 class="desktop-workspace-title" id="desktopWorkspaceTitle" tabindex="-1">Output</h1>
 
  <!-- Browser-local interface preferences; never sent to the device config. -->
- <section class="card" id="uiSettingsCard" data-collapse-key="uiSettings" data-desktop-workspace="ui-settings" data-desktop-order="10">
-  <h2><span class="drag-handle">&#8942;&#8942;</span>UI Settings</h2>
+ <section class="card" id="uiSettingsCard" data-widget="ui_settings" draggable="true" data-collapse-key="uiSettings" data-desktop-workspace="ui-settings" data-desktop-order="10">
+  <h2><span class="drag-handle">&#9776;</span>UI Settings</h2>
   <div class="ui-settings-sections">
    <div class="ui-settings-group">
     <h3>Interface Layout</h3>
@@ -15268,9 +15276,9 @@ function pgApplyLayout(options){
   pgSelectDesktopWorkspace(pgDesktopWorkspace);
  }else{
   pgSetDesktopUtilityDrawer(false);
+  document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});
   // Desktop workspaces assign inline presentation order. Clear it when
   // returning to Tablet or CSS order masks DOM drag-and-drop reordering.
-  document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});
   document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
   pgRefreshVisibleWorkspace();
  }
@@ -15479,10 +15487,20 @@ async function loadInfoframes(){
  function restoreOrder(){
   try{
    const order=JSON.parse(localStorage.getItem('pg_widget_order'));
-   if(!order||!Array.isArray(order)) return;
+   const uiSettings=document.getElementById('uiSettingsCard');
+   if(!order||!Array.isArray(order)){
+    // UI Settings defaults near the bottom, but has no forced CSS order so
+    // its standard drag handle can move it like every other Tablet widget.
+    if(uiSettings&&uiSettings.parentNode===dash) dash.appendChild(uiSettings);
+    return;
+   }
    const map={}; widgets().forEach(w=>{ map[w.dataset.widget]=w; });
    const end=dash.querySelector('.toast')||null;
    order.forEach(id=>{ if(map[id]) dash.insertBefore(map[id],end); });
+   // Existing browsers have a saved order created before UI Settings became
+   // draggable. Put that newly introduced widget at the default end once;
+   // the next drag save includes it and preserves the operator's placement.
+   if(uiSettings&&order.indexOf('ui_settings')<0) dash.insertBefore(uiSettings,end);
   }catch(e){}
  }
  function clearDragState(){
