@@ -9938,7 +9938,7 @@ sub webui_html (@) {
 --surface-page:#0a0a0f;--surface-header:#101019;--surface-sidebar:#0d0d15;--surface-card:#14141f;--surface-drawer:#101019;--surface-modal:#14141f;--surface-popover:#181824;--surface-inset:#0d0d15;--surface-field:#080a11;
 --text-primary:#e0e0e8;--text-secondary:#888898;--text-muted:#686878;--text-inverse:#fff;--text-disabled:#666675;
 --divider:#2a2a3a;--focus-ring:#fff;--shadow:rgba(0,0,0,.42);--overlay:rgba(0,0,0,.82);--selected-bg:rgba(91,127,255,.16);--hover-bg:rgba(255,255,255,.055);
---chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;
+--chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;--chart-gamut-line:rgba(220,228,245,.9);
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
 --status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff;--badge-neutral:#888898}
 [data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--panel:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
@@ -9946,7 +9946,7 @@ sub webui_html (@) {
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
 --text-primary:#18202b;--text-secondary:#465466;--text-muted:#596676;--text-inverse:#fff;--text-disabled:#687586;
 --divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
---chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;
+--chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-gamut-line:#334b70;
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
 --status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8;--badge-neutral:#d5dce7}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -10606,6 +10606,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
 [data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
+[data-theme="light"] .logo img{filter:brightness(0) saturate(100%);opacity:.82}
 [data-theme="light"] .offline-mask-card{background:var(--surface-modal);color:var(--text-primary);border-color:var(--border);box-shadow:0 12px 30px var(--shadow)}
 [data-theme="light"] .meter-scroll-sync,[data-theme="light"] #meterGreyRgbLegacyWrap,[data-theme="light"] #meterGreyTvWrap,[data-theme="light"] #meterRGBColorWrap,[data-theme="light"] #meterXYYColorWrap,[data-theme="light"] #colorReadingDetail{background:var(--chart-bg)!important}
 [data-theme="light"] #chartRGB,[data-theme="light"] #chartDeltaE,[data-theme="light"] #chartGammaValue,[data-theme="light"] #chartEOTF,[data-theme="light"] #chartGamma,[data-theme="light"] #chartCubeView,[data-theme="light"] #chartCIE,[data-theme="light"] #chartColorDE,[data-theme="light"] #ccssPreviewCanvas,[data-theme="light"] #lutCubeView{background:var(--chart-bg)!important}
@@ -36674,6 +36675,10 @@ async function meterPollSeries(){
    const isColor3=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
    const sortedSteps2=isColor3?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps2,completedIres,null);
+   // Completion redraws and mode refreshes may have hidden the wrapper while
+   // leaving its thumbnail DOM intact. Reassert the active series capability
+   // after rebuilding so 2-point greyscale keeps its Low/High patch bar.
+   meterSetThumbsVisible(meterSeriesUiCaps(sortedSteps2.length).thumbs);
   }
    if(r.status==='complete'){
     meterResetLiveReadingDisplay();
@@ -39947,7 +39952,7 @@ function drawCIEChart3D(readings,opts){
    cie3dProject(prim.B.x,prim.B.y,0,layout)
   ];
   prims.push({z:cie3dAvgZ(gPts), draw:()=>{
-   ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
    cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
    ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
    ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
@@ -40380,7 +40385,7 @@ function drawCIEChart(readings){
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  if(meterCieViewOpts.gamut){
-  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
@@ -40710,7 +40715,7 @@ function drawCIEChartPreset(steps){
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  if(meterCieViewOpts.gamut){
-  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
