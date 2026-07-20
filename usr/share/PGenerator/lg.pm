@@ -2117,6 +2117,9 @@ sub webui_lg_card_html (@) {
 	   #lgDeviceList .lg-device-item:hover{background:var(--hover-bg)!important}
 	   #lgDeviceList .lg-device-item.selected{background:var(--selected-bg)!important;color:var(--text-primary);box-shadow:inset 4px 0 0 var(--accent)}
 	   #lgCardTitle::after{margin-left:0}
+	   .lg-display-control-open-desktop{display:none}
+	   body.layout-desktop #lgDisplayControlOpenBtn{display:none}
+	   body.layout-desktop .lg-display-control-open-desktop{display:inline-flex;margin:0 0 8px}
 	   #lgDisplayControlModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
 	   #lgDisplayControlPanel{width:min(920px,calc(100vw - 36px));max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px;box-sizing:border-box;scrollbar-color:#525264 #232330;scrollbar-width:auto;scrollbar-gutter:stable}
 	   #lgDisplayControlPanel::-webkit-scrollbar{width:14px;height:14px}
@@ -2140,6 +2143,7 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
 	  </style>
 	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" style="margin-left:auto" onclick="lgOpenDisplayControl()">Display Control</button></h2>
+  <button class="btn btn-sm btn-secondary lg-display-control-open-desktop" type="button" onclick="lgOpenDisplayControl()">Display Control</button>
   <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
    <span class="spinner"></span>
    <span id="lgCommandStatusText">Communicating with LG TV...</span>
