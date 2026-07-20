@@ -8650,16 +8650,16 @@ sub webui_resolve_disconnect (@) {
  # TCP socket. Client IP/software are cleared by resolve_connection_thread
  # after the socket is shut down so status stays accurate until RST goes out.
  if($calibration_client_software ne "Resolve") {
-  {
+  eval {
    lock($resolve_disconnect_request);
    $resolve_disconnect_request=0;
-  }
+  };
   return '{"status":"ok","message":"Not connected"}';
  }
- {
+ eval {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=1;
- }
+ };
  # Wait until the session thread finishes close so the API reflects RST done.
  for(my $i=0; $i<20; $i++) {
   last if($calibration_client_software ne "Resolve");

@@ -23,7 +23,10 @@
 ###############################################
 sub resolve_connection_thread (@) {
  &log("Resolve: connection thread started");
+ # Outer eval: an uncaught die in a detached ithread can take down the whole
+ # process (WebUI "offline") on some Perl builds. Never let this thread exit.
  while(1) {
+  eval {
   # Wait until a connection is requested
   {
    lock($resolve_request_ip);
@@ -48,13 +51,18 @@ sub resolve_connection_thread (@) {
   &log("Resolve: disconnected from $ip:$port");
   $calibration_client_ip="";
   $calibration_client_software="";
-    &release_source_rgb_quant_range("resolve");
-  {
+  eval { &release_source_rgb_quant_range("resolve"); };
+  eval {
    lock($resolve_last_pattern);
    $resolve_last_pattern="";
-  }
+  };
   # Show black pattern when disconnected
-  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve");
+  eval { &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve"); };
+  };
+  if($@) {
+   &log("Resolve: connection thread recovered from: $@");
+   select(undef,undef,undef,0.5);
+  }
  }
 }
 
@@ -97,25 +105,34 @@ sub resolve_connect (@) {
  my $port=shift;
  my $socket;
  # Clear any stale disconnect flag from a previous session
- {
+ eval {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=0;
- }
- # Use alarm-based timeout since IO::Socket::INET Timeout uses non-blocking
- # mode which breaks in threaded Perl on this platform
+ };
+ # NEVER use alarm()/SIGALRM here. This process is multi-threaded (webui,
+ # discovery, resolve). Process-global SIGALRM can interrupt or kill the wrong
+ # thread and take the whole daemon down (WebUI offline) after Connect.
+ # Prefer a blocking connect with a short Timeout; fall back to plain connect
+ # if Timeout misbehaves on this Perl build.
  eval {
-  local $SIG{ALRM}=sub { die "connect timeout\n"; };
-  alarm(10);
   $socket=IO::Socket::INET->new(
    PeerHost=>$ip,
    PeerPort=>$port,
    Proto=>'tcp',
+   Timeout=>8,
   );
-  alarm(0);
  };
- alarm(0);
  if(!$socket) {
-  my $err=$@||$!;
+  eval {
+   $socket=IO::Socket::INET->new(
+    PeerHost=>$ip,
+    PeerPort=>$port,
+    Proto=>'tcp',
+   );
+  };
+ }
+ if(!$socket) {
+  my $err=$@||$!||"refused/unreachable";
   &log("Resolve: connection failed to $ip:$port: $err");
   return;
  }
