@@ -10595,7 +10595,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;gr
 body.layout-desktop #chartsGreyscaleFullWrap #meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap #meterDeltaEBlock{grid-column:2;grid-row:2;margin-bottom:0!important;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:220px!important;min-height:220px!important;flex:0 0 220px!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:452px!important;min-height:452px!important;flex:0 0 452px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
