@@ -65,7 +65,7 @@ assert(source.includes('[data-theme="light"] .offline-mask-card{background:var(-
 assert(source.includes('[data-theme="light"] .meter-scroll-sync'),'chart scroller frames use the Light chart background');
 assert(source.includes('[data-theme="light"] .header{background:#e3e7ed'),'Light mode uses a light-grey header status surface');
 assert(source.includes('elsif($path eq "/pgen-logo-light.png")'),'WebUI serves the dedicated Light logo asset');
-assert(source.includes('[data-theme="light"] .logo > img:first-child{display:none}')&&source.includes('[data-theme="light"] .logo .logo-light{display:block}'),'Light mode swaps logos without filtering the colored artwork');
+assert(source.includes('[data-theme="light"] .logo > img:first-child{display:none!important}')&&source.includes('[data-theme="light"] .logo .logo-light{display:block}'),'Light mode swaps logos despite the embedded Dark logo inline display style');
 assert(source.includes('[data-theme="light"] .desktop-nav-btn[aria-current="page"]')&&source.includes('.ui-choice-title{color:var(--text-primary)!important}'),'Light selected navigation and setting tiles use dark text');
 assert(source.includes('--chart-annotation:#344255'),'Light chart annotations use a readable dark token');
 assert(source.includes('--chart-gamut-line:#334b70'),'Light CIE gamut lines use a visible dark stroke');

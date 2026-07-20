@@ -10619,7 +10619,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
 [data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
-[data-theme="light"] .logo > img:first-child{display:none}
+[data-theme="light"] .logo > img:first-child{display:none!important}
 [data-theme="light"] .logo .logo-light{display:block}
 [data-theme="light"] .offline-mask-card{background:var(--surface-modal);color:var(--text-primary);border-color:var(--border);box-shadow:0 12px 30px var(--shadow)}
 [data-theme="light"] .meter-scroll-sync,[data-theme="light"] #meterGreyRgbLegacyWrap,[data-theme="light"] #meterGreyTvWrap,[data-theme="light"] #meterRGBColorWrap,[data-theme="light"] #meterXYYColorWrap,[data-theme="light"] #colorReadingDetail{background:var(--chart-bg)!important}
