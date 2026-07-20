@@ -9940,7 +9940,7 @@ sub webui_html (@) {
 --divider:#2a2a3a;--focus-ring:#fff;--shadow:rgba(0,0,0,.42);--overlay:rgba(0,0,0,.82);--selected-bg:rgba(91,127,255,.16);--hover-bg:rgba(255,255,255,.055);
 --chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
---status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff}
+--status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff;--badge-neutral:#888898}
 [data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--panel:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
 --text:#18202b;--text2:#465466;--green:#217a36;--red:#c62828;--orange:#a55300;--dv:#7044bd;
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
@@ -9948,7 +9948,7 @@ sub webui_html (@) {
 --divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
 --chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
---status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8}
+--status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8;--badge-neutral:#d5dce7}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
@@ -10457,6 +10457,11 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .drag-handle{cursor:grab;opacity:.3;margin-right:6px;font-size:.8rem;vertical-align:middle;touch-action:none}
 .drag-handle:hover{opacity:.7}
 .drag-handle:active{cursor:grabbing;opacity:1}
+.custom-series-patch-drag{width:26px;height:30px;padding:0;border:0;background:transparent;color:var(--text-secondary);font-size:18px;line-height:1;cursor:grab;touch-action:none;border-radius:5px}
+.custom-series-patch-drag:hover,.custom-series-patch-drag:focus-visible{color:var(--accent);background:var(--hover-bg);outline:none}
+.custom-series-patch-drag:active{cursor:grabbing}
+body.is-custom-series-patch-dragging{cursor:grabbing!important;user-select:none!important}
+#meterCustomSeriesEditorBody tr.is-patch-dragging{outline:2px solid var(--accent);outline-offset:-2px;background:var(--selected-bg)}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
 @keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #5b7fff}50%{box-shadow:inset 0 0 0 3px rgba(91,127,255,.25)}}
@@ -10697,7 +10702,7 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
    accessible name. Desktop keeps the spacious selection tiles. */
 body.layout-tablet #displaySettingsCard{order:-200;grid-column:1}
 body.layout-tablet #hdrCard{order:-199;grid-column:2}
-body.layout-tablet #uiSettingsCard{grid-column:1 / -1}
+body.layout-tablet #uiSettingsCard{grid-column:auto}
 body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 body.layout-tablet .ui-choice-list{gap:5px}
 body.layout-tablet .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible}
@@ -12117,7 +12122,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 
  <!-- Resolve Protocol -->
  <div class="card" data-widget="resolve" data-desktop-workspace="connectivity" data-desktop-order="40" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
+  <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Disconnected</span></h2>
   <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect via HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
   <div class="grid">
    <div class="field">
@@ -13886,7 +13891,7 @@ async function loadInfo(quiet){
    rDisc.style.display='';
   }else{
    rBadge.textContent='Disconnected';
-   rBadge.style.background='var(--text2)';
+   rBadge.style.background='var(--badge-neutral)';
    rConn.style.display='';
    rDisc.style.display='none';
   }
@@ -27978,7 +27983,7 @@ function meterRenderCustomSeriesEditor(){
  const body=document.getElementById('meterCustomSeriesEditorBody');
  if(!head||!body) return;
  const th=(label)=>'<th style="text-align:left;padding:6px">'+label+'</th>';
- head.innerHTML=th('Patch')
+ head.innerHTML='<th style="width:34px;padding:6px" aria-label="Reorder"></th>'+th('Patch')
   +(isColor?th('R 8-bit')+th('G 8-bit')+th('B 8-bit')+th('R 10-bit')+th('G 10-bit')+th('B 10-bit'):th('8-bit')+th('10-bit'))
   +(isColor?th('Tgt x')+th('Tgt y'):'')
   +(isHdr?th('Target Y (cd/m²)'):'')
@@ -27986,7 +27991,8 @@ function meterRenderCustomSeriesEditor(){
  const inputStyle='width:72px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box';
  const codeInput=(row,field,value,max)=>'<td style="padding:6px"><input type="number" min="0" max="'+max+'" step="1" data-cs-row="'+row+'" data-cs-field="'+field+'" value="'+value+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
  body.innerHTML=editor.patches.map((p,i)=>{
-  let cells='<td style="padding:6px"><input type="text" maxlength="40" data-cs-row="'+i+'" data-cs-field="name" value="'+String(p.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+';width:120px"></td>';
+  let cells='<td style="padding:6px 2px;text-align:center"><button type="button" class="custom-series-patch-drag" data-cs-drag-row="'+i+'" onpointerdown="meterCustomSeriesPatchDragStart(event,'+i+')" title="Drag to reorder patch" aria-label="Drag patch '+(i+1)+' to reorder">&#9776;</button></td>';
+  cells+='<td style="padding:6px"><input type="text" maxlength="40" data-cs-row="'+i+'" data-cs-field="name" value="'+String(p.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+';width:120px"></td>';
   if(isColor){
    cells+=codeInput(i,'r8',p.r8,255)+codeInput(i,'g8',p.g8,255)+codeInput(i,'b8',p.b8,255);
    cells+=codeInput(i,'r10',p.r10,1023)+codeInput(i,'g10',p.g10,1023)+codeInput(i,'b10',p.b10,1023);
@@ -27999,9 +28005,50 @@ function meterRenderCustomSeriesEditor(){
   }
   if(isHdr) cells+='<td style="padding:6px"><input type="number" min="0" max="10000" step="0.1" placeholder="auto" data-cs-row="'+i+'" data-cs-field="target_nits" value="'+(p.target_nits!=null?p.target_nits:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
   cells+='<td style="padding:6px"><button class="btn btn-sm btn-danger" onclick="meterCustomSeriesEditorRemoveRow('+i+')" title="Remove patch">&#10005;</button></td>';
-  return '<tr style="border-bottom:1px solid #1a1a28">'+cells+'</tr>';
+  return '<tr data-cs-row-index="'+i+'" class="'+(meterCustomSeriesPatchDrag&&meterCustomSeriesPatchDrag.index===i?'is-patch-dragging':'')+'" style="border-bottom:1px solid var(--border)">'+cells+'</tr>';
  }).join('');
 }
+
+let meterCustomSeriesPatchDrag=null;
+function meterCustomSeriesPatchDragStart(event,index){
+ if(!meterCustomSeriesEditor||!event||(event.button!=null&&event.button!==0)) return;
+ event.preventDefault();
+ meterCustomSeriesPatchDrag={index:index};
+ document.body.classList.add('is-custom-series-patch-dragging');
+ const row=document.querySelector('#meterCustomSeriesEditorBody tr[data-cs-row-index="'+index+'"]');
+ if(row) row.classList.add('is-patch-dragging');
+}
+function meterCustomSeriesPatchDragMove(event){
+ const drag=meterCustomSeriesPatchDrag;
+ const editor=meterCustomSeriesEditor;
+ if(!drag||!editor) return;
+ event.preventDefault();
+ const modal=document.querySelector('#meterCustomSeriesModal .meter-modal-scroll');
+ if(modal){
+  const rect=modal.getBoundingClientRect();
+  if(event.clientY<rect.top+42) modal.scrollTop-=18;
+  else if(event.clientY>rect.bottom-42) modal.scrollTop+=18;
+ }
+ const under=document.elementFromPoint(event.clientX,event.clientY);
+ const row=under&&under.closest?under.closest('#meterCustomSeriesEditorBody tr[data-cs-row-index]'):null;
+ if(!row) return;
+ const target=parseInt(row.dataset.csRowIndex,10);
+ if(!Number.isFinite(target)||target===drag.index||target<0||target>=editor.patches.length) return;
+ const moved=editor.patches.splice(drag.index,1)[0];
+ editor.patches.splice(target,0,moved);
+ drag.index=target;
+ meterCustomSeriesEditorUnsaved=true;
+ meterRenderCustomSeriesEditor();
+}
+function meterCustomSeriesPatchDragEnd(){
+ if(!meterCustomSeriesPatchDrag) return;
+ meterCustomSeriesPatchDrag=null;
+ document.body.classList.remove('is-custom-series-patch-dragging');
+ document.querySelectorAll('#meterCustomSeriesEditorBody .is-patch-dragging').forEach(row=>row.classList.remove('is-patch-dragging'));
+}
+document.addEventListener('pointermove',meterCustomSeriesPatchDragMove,true);
+document.addEventListener('pointerup',meterCustomSeriesPatchDragEnd,true);
+document.addEventListener('pointercancel',meterCustomSeriesPatchDragEnd,true);
 
 function meterCustomSeriesEditorSetInput(row,field,value){
  const el=document.querySelector('#meterCustomSeriesEditorBody input[data-cs-row="'+row+'"][data-cs-field="'+field+'"]');
