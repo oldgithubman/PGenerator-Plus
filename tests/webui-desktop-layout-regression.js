@@ -54,9 +54,11 @@ assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLumi
 assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.includes("home.insertAdjacentElement('afterend',live)"), 'live reading moves into the Desktop RGB rail and returns home in Tablet');
 assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
 assert(webui.includes('#meterGreyLiveRail{display:contents}'), 'the live-reading rail wrapper is layout-neutral outside standard Desktop greyscale');
-assert(webui.includes('#meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:150px minmax(0,1fr)'), 'Desktop RGB and Delta E share the chart column beside the live-reading rail');
+assert(webui.includes('#meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr)'), 'Desktop RGB and Delta E share the chart column beside the live-reading rail');
 assert(webui.includes('#meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}'), 'the live-reading rail spans the RGB and Delta E rows');
 assert(webui.includes('#meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal'), 'compact Desktop live targets wrap inside their panel');
+assert(webui.includes('#meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}'), 'Gamma begins to the right of the live-reading rail');
+assert(webui.includes('grid-template-rows:repeat(2,minmax(0,1fr))'), 'EOTF and Luminance share the full left-stack height');
 
 // Conditional panels and workflow affordances must stay correct.
 assert(webui.includes("const available=panel.style.display!=='none';"), 'workspace selection respects existing conditional panel visibility');

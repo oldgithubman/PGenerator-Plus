@@ -10577,13 +10577,17 @@ body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
 #meterGreyLiveRail{display:contents}
-body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:150px minmax(0,1fr);column-gap:8px;row-gap:10px;min-width:0}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:stretch}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr);column-gap:8px;row-gap:10px;min-width:0;padding-top:22px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:repeat(2,minmax(0,1fr));gap:10px!important;min-width:0;height:100%;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfBlock,
+body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceBlock{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfScroller,
+body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceScroller{height:100%;min-height:0}
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
-body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:300px!important;min-height:300px!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:flex;flex:0 0 150px;width:150px;min-width:0;flex-direction:column;gap:8px}
+body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:100%!important;min-height:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:flex;flex:0 0 180px;width:180px;min-width:0;flex-direction:column;gap:8px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
@@ -10640,6 +10644,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 /* Theme bridge for legacy inline presentation styles. Measured patch, gamut,
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
+[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}
 [data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}
 [data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
 [data-theme="light"] .logo > img:first-child{display:none!important}
