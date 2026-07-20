@@ -13,6 +13,10 @@ assert(source.includes('body.layout-desktop .desktop-utility-toggle{display:flex
   'slim drawer arrow appears only in desktop mode at the right edge');
 assert(source.includes('body.layout-desktop.desktop-utility-open .desktop-utility-drawer{transform:translateX(0)}'),
   'open state slides the drawer onscreen');
+assert(source.includes('body.layout-desktop.desktop-utility-open .desktop-shell{width:calc(100% - var(--desktop-utility-width))}'),
+  'open drawer reserves horizontal workspace instead of overlaying it');
+assert(source.includes('body.layout-desktop{--desktop-utility-width:min(390px,30vw)}'),
+  'drawer stays proportional on narrower desktop displays');
 assert(source.includes("pgSetDesktopUtilityDrawer(false);\n  document.querySelectorAll('.dashboard"),
   'switching to tablet closes the desktop-only drawer');
 
@@ -39,5 +43,7 @@ assert(!/desktopUtility(?:Output|Metadata|Device)"[^>]*(?:select|input)/.test(so
   'mirrored data does not create duplicate form controls');
 assert(source.includes("setInterval(()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();},1500);"),
   'live data refreshes only while the drawer is open');
+assert(source.includes("setTimeout(()=>window.dispatchEvent(new Event('resize')),240);"),
+  'charts receive a resize event after the workspace transition');
 
 console.log('webui desktop utility drawer regression OK');
