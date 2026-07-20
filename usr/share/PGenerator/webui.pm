@@ -10588,8 +10588,8 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterEotfScroller,
 body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceScroller{height:100%;min-height:0}
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:100%!important;min-height:0!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:flex;flex:0 0 180px;width:180px;min-width:0;flex-direction:column;gap:8px}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:grid;grid-template-rows:subgrid;width:180px;min-width:0;gap:10px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:100%!important;min-height:220px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
@@ -10599,7 +10599,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #chartRGB{height:100%!important;min
 body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:452px!important;min-height:452px!important;flex:0 0 452px!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:100%!important;min-height:220px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
