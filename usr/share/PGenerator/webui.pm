@@ -10620,6 +10620,11 @@ body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{disp
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div>span{display:block;min-width:0;line-height:1.35;overflow-wrap:anywhere}
 body.layout-desktop #meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal;margin-top:2px}
 body.layout-desktop #meterExportRow{margin-top:22px!important}
+body.layout-desktop #meterCard.meter-two-point-active #meterThumbsWrap{width:min(360px,100%);margin-left:auto;margin-right:auto}
+body.layout-desktop #meterCard.meter-two-point-active #meterThumbsRow{flex:0 1 360px;width:100%}
+body.layout-desktop #meterCard.meter-two-point-active .meter-thumbs-nav{display:none}
+body.layout-desktop #chartsGreyscaleTwoPointWrap{width:min(680px,100%);margin-left:auto;margin-right:auto}
+body.layout-desktop #chartsGreyscaleTwoPointWrap>div:first-child{grid-template-columns:repeat(2,minmax(0,1fr))!important}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}
@@ -25912,14 +25917,17 @@ async function meterStartToneMapMeasureUpload(){
 function meterUpdateGreyscaleChartMode(){
  const full=document.getElementById('chartsGreyscaleFullWrap');
  const twoPoint=document.getElementById('chartsGreyscaleTwoPointWrap');
+ const card=document.getElementById('meterCard');
  // Tone Map series is peak-only — hide the full greyscale chart suite
  // (same idea as 2pt, which swaps to a minimal layout).
  if(typeof meterIsToneMapSeries==='function'&&meterIsToneMapSeries()){
+  if(card) card.classList.remove('meter-two-point-active');
   if(full) full.style.display='none';
   if(twoPoint) twoPoint.style.display='none';
   return;
  }
  const showTwoPoint=meterIsTwoPointGreyscale();
+ if(card) card.classList.toggle('meter-two-point-active',showTwoPoint);
  if(full) full.style.display=showTwoPoint?'none':'';
  if(twoPoint) twoPoint.style.display=showTwoPoint?'':'none';
 }
