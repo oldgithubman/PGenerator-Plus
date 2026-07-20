@@ -10601,10 +10601,32 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
 [data-theme="light"] [style*="background:#0d0d15"],[data-theme="light"] [style*="background: #0d0d15"]{background:var(--surface-inset)!important}
 [data-theme="light"] [style*="background:#080a11"],[data-theme="light"] [style*="background: #080a11"]{background:var(--surface-field)!important}
+[data-theme="light"] [style*="background:#111723"],[data-theme="light"] [style*="background: #111723"],
+[data-theme="light"] [style*="background:#111522"],[data-theme="light"] [style*="background: #111522"]{background:var(--surface-modal)!important}
+[data-theme="light"] [style*="background:#12121e"],[data-theme="light"] [style*="background: #12121e"]{background:var(--surface-field)!important}
+[data-theme="light"] [style*="background:#161d2a"],[data-theme="light"] [style*="background: #161d2a"],
+[data-theme="light"] [style*="background:#10131d"],[data-theme="light"] [style*="background: #10131d"]{background:var(--surface-inset)!important}
+[data-theme="light"] [style*="background:#11131b"],[data-theme="light"] [style*="background: #11131b"],
+[data-theme="light"] [style*="background:#1a1a2e"],[data-theme="light"] [style*="background: #1a1a2e"],
+[data-theme="light"] [style*="background:#181824"],[data-theme="light"] [style*="background: #181824"],
+[data-theme="light"] [style*="background:#101019"],[data-theme="light"] [style*="background: #101019"]{background:var(--surface-popover)!important}
+[data-theme="light"] [style*="background:#171523"],[data-theme="light"] [style*="background: #171523"],
+[data-theme="light"] [style*="background:#0b0b12"],[data-theme="light"] [style*="background: #0b0b12"]{background:var(--surface-inset)!important}
+[data-theme="light"] [style*="border:1px solid #2a3140"],[data-theme="light"] [style*="border: 1px solid #2a3140"],
+[data-theme="light"] [style*="border:1px solid #2d3348"],[data-theme="light"] [style*="border: 1px solid #2d3348"]{border-color:var(--border)!important}
 [data-theme="light"] [style*="color:#eee"],[data-theme="light"] [style*="color: #eee"]{color:var(--text-primary)!important}
 [data-theme="light"] [style*="color:#888"],[data-theme="light"] [style*="color: #888"]{color:var(--text-secondary)!important}
 [data-theme="light"] [style*="color:#aaa"],[data-theme="light"] [style*="color: #aaa"],
 [data-theme="light"] [style*="color:#ccc"],[data-theme="light"] [style*="color: #ccc"]{color:var(--text-secondary)!important}
+[data-theme="light"] [style*="color:#ddd"],[data-theme="light"] [style*="color: #ddd"],
+[data-theme="light"] [style*="color:#bbb"],[data-theme="light"] [style*="color: #bbb"],
+[data-theme="light"] [style*="color:#999"],[data-theme="light"] [style*="color: #999"],
+[data-theme="light"] [style*="color:#777"],[data-theme="light"] [style*="color: #777"],
+[data-theme="light"] [style*="color:#666"],[data-theme="light"] [style*="color: #666"],
+[data-theme="light"] [style*="color:#555"],[data-theme="light"] [style*="color: #555"]{color:var(--text-secondary)!important}
+[data-theme="light"] [id$="Modal"] > .meter-modal-scroll,[data-theme="light"] [id$="Modal"] > div,
+[data-theme="light"] #meterReportOverlay > div{background:var(--surface-modal)!important;color:var(--text-primary);border-color:var(--border)!important}
+[data-theme="light"] #chartTooltip{background:var(--chart-tooltip)!important;color:var(--text-primary)!important;border-color:var(--border)!important;box-shadow:0 2px 8px var(--shadow)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 [data-theme="light"] select,[data-theme="light"] textarea,[data-theme="light"] .meter-card-header-select,
@@ -15275,7 +15297,7 @@ function pgLayoutInit(){
  if(dashboard&&window.MutationObserver){
   try{
    pgLayoutPanelObserver=new MutationObserver(mutations=>{
-    if(mutations.some(m=>m.target&&m.target.matches&&m.target.matches('.dashboard > .card[data-desktop-workspace]'))) pgSyncDesktopPanels();
+    if(document.body.classList.contains('layout-desktop')&&mutations.some(m=>m.target&&m.target.matches&&m.target.matches('.dashboard > .card[data-desktop-workspace]'))) pgSyncDesktopPanels();
    });
    pgLayoutPanelObserver.observe(dashboard,{subtree:true,attributes:true,attributeFilter:['style']});
   }catch(e){}

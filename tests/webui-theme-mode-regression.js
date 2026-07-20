@@ -46,5 +46,8 @@ assert(source.includes('<h3>Theme</h3>'),'appearance group is named Theme');
 assert(source.includes('[data-theme="light"] #meterThumbsRow'),'measurement scrollbars use light-theme tokens');
 assert(source.includes('[data-theme="light"] .meter-pattern-insert-gear'),'gear buttons have an explicit light treatment');
 assert(source.includes("document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order so drag reorder remains effective');
+assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
+assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');
+assert(source.includes('[data-theme="light"] [id$="Modal"] > .meter-modal-scroll'),'modal content receives an explicit Light surface');
 
 console.log('webui theme mode regression OK');
