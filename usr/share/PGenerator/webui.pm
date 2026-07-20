@@ -24646,6 +24646,12 @@ function meterLg3dPrepareChartContext(opts){
  try{ meterClearLiveReading(); }catch(e){}
  try{ meterResetLiveReadingDisplay(); }catch(e){}
  try{ meterUpdateDeltaEFormControl(); }catch(e){}
+ // Profiling CIE defaults: Targets off (no meaningful verification targets).
+ try{
+  if(typeof meterLatticeDefault3dView==='function'){
+   meterLatticeDefault3dView((series&&series.id!=null)?series.id:(meterActiveSeriesKey==='lg-3d-matrix-profile'?'matrix':null));
+  }
+ }catch(e){}
  return true;
 }
 
@@ -24759,6 +24765,7 @@ function meterInstallMatrixProfileSeries(opts){
  try{ meterResetLiveReadingDisplay(); }catch(e){}
  try{ meterUpdateDeltaEFormControl(); }catch(e){}
  try{ meterUpdateReadButtons(); }catch(e){}
+ try{ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView('matrix'); }catch(e){}
  return true;
 }
 // When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
@@ -27941,10 +27948,10 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
-// Remembered operator preference for the lattice profiling charts. Whenever
-// the operator toggles 3D View or Targets while a lattice series is active,
-// the choice is stored and re-applied on every future lattice activation —
-// across page reloads — instead of the built-in defaults.
+// Remembered CIE chart prefs for 3D LUT *profiling* (matrix / hybrid /
+// skeleton / lattice). Target boxes are meaningless for profiling (they are
+// not ColorChecker-style verification targets), so the built-in default is
+// Targets OFF. 3D View defaults ON.
 function meterLatticeViewPrefs(){
  try{
   const raw=localStorage.getItem('pgen.meter.latticeViewPrefs');
@@ -27953,8 +27960,18 @@ function meterLatticeViewPrefs(){
  return {};
 }
 
+function meterIs3dLutProfilingChartActive(){
+ try{
+  if(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()) return true;
+  if(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext()) return true;
+  const s=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+  if(s&&(s.kind==='lattice'||s.kind==='hybrid'||s.kind==='skeleton')) return true;
+ }catch(e){}
+ return false;
+}
+
 function meterLatticeViewPrefSave(field,value){
- if(!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())) return;
+ if(!meterIs3dLutProfilingChartActive()) return;
  try{
   const p=meterLatticeViewPrefs();
   p[String(field)]=value?'1':'0';
@@ -27962,29 +27979,32 @@ function meterLatticeViewPrefSave(field,value){
  }catch(e){}
 }
 
-// Lattice (3D LUT profiling) chart view when a lattice series becomes active:
-// the operator's LAST REMEMBERED choice wins (meterLatticeViewPrefs); the
-// built-in defaults (3D xyY ON — neutral-ratio nodes separate by luminance;
-// target boxes OFF — profiling patches have no gradable reference) apply only
-// before any choice has been made. Selection AND recovery re-fire during a
-// live read (shared-series sync), so application is memoized PER SERIES KEY —
-// and the toggle handlers update the stored preference immediately, so even a
-// re-fire can only ever re-apply what the operator last chose.
+// Apply CIE defaults when a 3D LUT profiling series becomes active.
+// Last remembered choice wins; otherwise Targets OFF, 3D View ON.
+// Memoized per series key so live-read recovery re-fires do not thrash toggles.
 let meterLattice3dDefaultedKey=null;
 function meterLatticeDefault3dView(points){
  try{
-  const cubeSeries=meterCustomSeriesById(points);
-  if(!cubeSeries||cubeSeries.kind!=='lattice') return;
-  const key='colors-'+points;
+  const cubeSeries=(points!=null&&points!=='matrix')?meterCustomSeriesById(points):null;
+  const kind=cubeSeries?String(cubeSeries.kind||''):'';
+  const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
+  const isMatrix=points==='matrix'||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries());
+  if(!isVolume&&!isMatrix) return;
+  const key='colors-'+(isMatrix?'matrix':points);
   if(meterLattice3dDefaultedKey===key) return;
   meterLattice3dDefaultedKey=key;
   const prefs=meterLatticeViewPrefs();
   const want3d=(prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true;
+  // Profiling: targets off by default (no meaningful grading reference).
   const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
   const view3d=document.getElementById('meterCie3dView');
   if(view3d&&view3d.checked!==want3d){ view3d.checked=want3d; meterOnCie3dViewChange(); }
   const targets=document.getElementById('meterCieOptTargets');
   if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
+  else if(targets&&!wantTargets&&meterCieViewOpts){
+   // Ensure option state matches even if checkbox already unchecked.
+   meterCieViewOpts.targets=false;
+  }
  }catch(e){}
 }
 
