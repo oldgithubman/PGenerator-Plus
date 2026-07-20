@@ -9923,10 +9923,32 @@ sub webui_html (@) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PGenerator+</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
+<script>
+/* Apply the browser-local appearance before CSS is parsed to avoid a flash. */
+(function(){
+ var mode='dark';
+ try{var saved=localStorage.getItem('pgen.ui.themeMode');if(saved==='light'||saved==='dark')mode=saved;}catch(e){}
+ document.documentElement.setAttribute('data-theme',mode);
+})();
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0f;--card:#14141f;--border:#2a2a3a;--accent:#5b7fff;--accent2:#7c5bff;
---text:#e0e0e8;--text2:#888898;--green:#4caf50;--red:#f44;--orange:#ff9800;--dv:#b388ff}
+:root,[data-theme="dark"]{color-scheme:dark;--bg:#0a0a0f;--card:#14141f;--border:#2a2a3a;--accent:#5b7fff;--accent2:#7c5bff;
+--text:#e0e0e8;--text2:#888898;--green:#4caf50;--red:#f44;--orange:#ff9800;--dv:#b388ff;
+--surface-page:#0a0a0f;--surface-header:#101019;--surface-sidebar:#0d0d15;--surface-card:#14141f;--surface-drawer:#101019;--surface-modal:#14141f;--surface-popover:#181824;--surface-inset:#0d0d15;--surface-field:#080a11;
+--text-primary:#e0e0e8;--text-secondary:#888898;--text-muted:#686878;--text-inverse:#fff;--text-disabled:#666675;
+--divider:#2a2a3a;--focus-ring:#fff;--shadow:rgba(0,0,0,.42);--overlay:rgba(0,0,0,.82);--selected-bg:rgba(91,127,255,.16);--hover-bg:rgba(255,255,255,.055);
+--chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;
+--scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
+--status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff}
+[data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
+--text:#18202b;--text2:#586576;--green:#217a36;--red:#c62828;--orange:#a55300;--dv:#7044bd;
+--surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
+--text-primary:#18202b;--text-secondary:#586576;--text-muted:#6b7685;--text-inverse:#fff;--text-disabled:#8a94a2;
+--divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
+--chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;
+--scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
+--status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
@@ -10574,6 +10596,37 @@ body.apply-settings-active.layout-desktop .desktop-sidebar,
 body.lg-connect-active.layout-desktop .desktop-sidebar,
 body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 @media(max-width:1023px){.layout-switch-btn[data-layout-mode="desktop"]{opacity:.45}}
+/* Theme bridge for legacy inline presentation styles. Measured patch, gamut,
+   warning and brand colours intentionally remain authored values. */
+[data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
+[data-theme="light"] [style*="background:#0d0d15"],[data-theme="light"] [style*="background: #0d0d15"]{background:var(--surface-inset)!important}
+[data-theme="light"] [style*="background:#080a11"],[data-theme="light"] [style*="background: #080a11"]{background:var(--surface-field)!important}
+[data-theme="light"] [style*="color:#eee"],[data-theme="light"] [style*="color: #eee"]{color:var(--text-primary)!important}
+[data-theme="light"] [style*="color:#888"],[data-theme="light"] [style*="color: #888"]{color:var(--text-secondary)!important}
+[data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
+body.layout-desktop .desktop-sidebar{background:var(--surface-sidebar)}
+body.layout-desktop .desktop-utility-toggle{background:var(--surface-popover);box-shadow:-4px 0 14px var(--shadow)}
+body.layout-desktop .desktop-utility-toggle:hover,.desktop-utility-close:hover,.desktop-nav-btn:hover,.layout-switch-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
+body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box-shadow:-12px 0 32px var(--shadow)}
+.desktop-utility-data,.layout-switch{background:var(--surface-inset)}
+.desktop-utility-scroll{scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
+.layout-switch-btn[aria-pressed="true"],.desktop-nav-btn[aria-current="page"]{color:var(--text-inverse)}
+.layout-switch-btn:focus-visible,.desktop-nav-btn:focus-visible,body.layout-desktop .desktop-utility-toggle:focus-visible,.ui-choice:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.ui-settings-group{min-width:0}
+.ui-settings-group h3{margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
+.ui-choice-list{display:grid;gap:8px}
+.ui-choice{display:grid;grid-template-columns:20px minmax(0,1fr);gap:3px 9px;width:100%;padding:11px 12px;text-align:left;background:var(--surface-inset);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;cursor:pointer}
+.ui-choice:hover:not(:disabled){border-color:var(--accent);background:var(--hover-bg)}
+.ui-choice[aria-pressed="true"]{border-color:var(--accent);background:var(--selected-bg);box-shadow:inset 3px 0 0 var(--accent)}
+.ui-choice[aria-pressed="true"]::before{content:'\2713';grid-row:1 / span 2;color:var(--accent);font-weight:800}
+.ui-choice:not([aria-pressed="true"])::before{content:'';grid-row:1 / span 2;width:12px;height:12px;margin-top:2px;border:1px solid var(--text-muted);border-radius:50%}
+.ui-choice:disabled{cursor:not-allowed;opacity:.52}
+.ui-choice-title{font-size:.78rem;font-weight:700}
+.ui-choice-description{font-size:.7rem;line-height:1.4;color:var(--text-secondary)}
+.ui-choice-note{display:none;margin-top:8px;color:var(--status-warning);font-size:.7rem;line-height:1.4}
+.ui-choice-note.is-visible{display:block}
+@media(max-width:700px){.ui-settings-sections{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -10637,6 +10690,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">HDMI-CEC</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="diagnostics" onclick="pgSelectDesktopWorkspace('diagnostics')">HDMI Infoframes</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" onclick="pgSelectDesktopWorkspace('ui-settings')">UI Settings</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
  </nav>
 </aside>
@@ -10644,6 +10698,28 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 <div class="dashboard">
 
  <h1 class="desktop-workspace-title" id="desktopWorkspaceTitle" tabindex="-1">Output</h1>
+
+ <!-- Browser-local interface preferences; never sent to the device config. -->
+ <section class="card" id="uiSettingsCard" data-collapse-key="uiSettings" data-desktop-workspace="ui-settings" data-desktop-order="10">
+  <h2><span class="drag-handle">&#8942;&#8942;</span>UI Settings</h2>
+  <div class="ui-settings-sections">
+   <div class="ui-settings-group">
+    <h3>Interface Layout</h3>
+    <div class="ui-choice-list" aria-label="Interface layout">
+     <button type="button" class="ui-choice layout-switch-btn" data-layout-mode="tablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')"><span class="ui-choice-title">Tablet</span><span class="ui-choice-description">Card-based layout designed for touch and narrower screens.</span></button>
+     <button type="button" class="ui-choice layout-switch-btn" data-layout-mode="desktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')"><span class="ui-choice-title">Desktop</span><span class="ui-choice-description">Full-width workspace with left navigation and optional information sidebar.</span></button>
+    </div>
+    <p class="ui-choice-note" id="desktopLayoutUnavailable" role="status">Desktop requires a browser width of at least 1024 pixels.</p>
+   </div>
+   <div class="ui-settings-group">
+    <h3>Appearance</h3>
+    <div class="ui-choice-list" aria-label="Appearance">
+     <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')"><span class="ui-choice-title">Dark</span><span class="ui-choice-description">Low-light interface optimized for calibration environments.</span></button>
+     <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')"><span class="ui-choice-title">Light</span><span class="ui-choice-description">High-contrast light interface for bright rooms and general administration.</span></button>
+    </div>
+   </div>
+  </div>
+ </section>
 
  <!-- Display Settings -->
  <div class="card" id="displaySettingsCard" data-desktop-workspace="output" data-desktop-order="10">
@@ -14978,12 +15054,14 @@ async function resolveDisconnect(){
 // layer over the existing dashboard DOM: controls, pollers, canvases and
 // workflow state stay alive when their workspace is not currently visible.
 const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
+const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration',
  'display-control':'LG Display',connectivity:'Connectivity',
- integrations:'HDMI-CEC',diagnostics:'HDMI Infoframes',system:'System'
+ integrations:'HDMI-CEC',diagnostics:'HDMI Infoframes','ui-settings':'UI Settings',system:'System'
 };
+let pgThemeMode='dark';
 let pgLayoutPreference='tablet';
 let pgLayoutEffective='tablet';
 let pgDesktopWorkspace='output';
@@ -15012,6 +15090,49 @@ function pgUpdateLayoutControls(){
     :'Use the full-width desktop workspace';
   }
  });
+ const note=document.getElementById('desktopLayoutUnavailable');
+ if(note) note.classList.toggle('is-visible',!pgWideEnoughForDesktop());
+}
+function pgReadThemeMode(){
+ try{
+  const saved=localStorage.getItem(PG_THEME_STORAGE_KEY);
+  return saved==='light'||saved==='dark'?saved:'dark';
+ }catch(e){ return 'dark'; }
+}
+function pgThemeColor(token,fallback){
+ try{
+  const value=getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  return value||fallback;
+ }catch(e){ return fallback; }
+}
+function pgUpdateThemeControls(){
+ document.querySelectorAll('.theme-switch-btn[data-theme-mode]').forEach(btn=>{
+  btn.setAttribute('aria-pressed',btn.getAttribute('data-theme-mode')===pgThemeMode?'true':'false');
+ });
+}
+function pgRedrawChartsForTheme(){
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  meterLastChartSignature='';
+  meterLastChartCount=0;
+  try{
+   if(typeof meterReadings!=='undefined'&&meterReadings&&meterReadings.length&&typeof drawAllCharts==='function') drawAllCharts(meterReadings);
+   else if(typeof meterSeriesSteps!=='undefined'&&meterSeriesSteps&&meterSeriesSteps.length&&typeof drawAllChartsPreset==='function') drawAllChartsPreset(meterSeriesSteps);
+  }catch(e){}
+  try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+ }));
+}
+function pgApplyThemeMode(mode,options){
+ pgThemeMode=mode==='light'?'light':'dark';
+ document.documentElement.setAttribute('data-theme',pgThemeMode);
+ pgUpdateThemeControls();
+ if(!(options&&options.initial)){
+  document.dispatchEvent(new CustomEvent('pgen:themechange',{detail:{theme:pgThemeMode}}));
+  pgRedrawChartsForTheme();
+ }
+}
+function pgSetThemeMode(mode){
+ pgApplyThemeMode(mode);
+ try{ localStorage.setItem(PG_THEME_STORAGE_KEY,pgThemeMode); }catch(e){}
 }
 function pgPanelBelongsToActiveWorkspace(panel){
  if(!panel||!panel.getAttribute) return false;
@@ -15030,6 +15151,7 @@ function pgSyncDesktopPanels(){
 function pgRefreshVisibleWorkspace(){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+  if(typeof pgRedrawChartsForTheme==='function') pgRedrawChartsForTheme();
   if(pgDesktopWorkspace==='calibration'&&typeof meterRefreshActiveSeriesCharts==='function'){
    try{ meterRefreshActiveSeriesCharts(); }catch(e){}
   }
@@ -15086,6 +15208,7 @@ function pgUpdateHeaderOffset(){
  document.documentElement.style.setProperty('--pg-header-height',Math.ceil(header.getBoundingClientRect().height)+'px');
 }
 function pgLayoutInit(){
+ pgApplyThemeMode(pgReadThemeMode(),{initial:true});
  pgLayoutPreference=pgReadLayoutPreference();
  pgLayoutEffective='tablet';
  pgDesktopWorkspace='output';
@@ -22875,7 +22998,7 @@ function drawDeltaBarsVertical(canvasId,spec){
  ctx.setTransform(dpr,0,0,dpr,0,0);
  ctx.imageSmoothingEnabled=false;
  const W=rect.width,H=rect.height;
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,W,H);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,W,H);
  if(!spec||!spec.entries||!spec.entries.length){
   ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
   ctx.fillText('--',W/2,H/2);
@@ -27180,7 +27303,7 @@ function meterLutCubeDraw(){
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
  const dpr=window.devicePixelRatio||1;
  ctx.setTransform(dpr,0,0,dpr,0,0);
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
  // wireframe
  const corners=[[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]].map(c=>lutCubeProject(c[0],c[1],c[2],layout));
@@ -37975,12 +38098,12 @@ function meterDrawChartYZoomHelp(ctx,pad){
  ctx.save();
  ctx.beginPath();
  ctx.arc(rect.cx,rect.cy,rect.radius,0,Math.PI*2);
- ctx.fillStyle='rgba(28,31,43,0.96)';
+ ctx.fillStyle=pgThemeColor('--chart-tooltip','rgba(28,31,43,0.96)');
  ctx.fill();
  ctx.lineWidth=1;
- ctx.strokeStyle='rgba(136,144,168,0.85)';
+ ctx.strokeStyle=pgThemeColor('--chart-axis','rgba(136,144,168,0.85)');
  ctx.stroke();
- ctx.fillStyle='#cfd6e6';
+ ctx.fillStyle=pgThemeColor('--text-primary','#cfd6e6');
  ctx.font='bold 10px sans-serif';
  ctx.textAlign='center';
  ctx.textBaseline='middle';
@@ -37999,10 +38122,10 @@ function drawChartGrid(ctx,opts){
  const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
  const xIn=opts.xInset||0, dw=w-2*xIn;
  // Background
- ctx.fillStyle='#0d0d15';
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
  ctx.fillRect(0,0,ctx.w,ctx.h);
  // Grid
- ctx.strokeStyle='#1d1d29';
+ ctx.strokeStyle=pgThemeColor('--chart-grid','#1d1d29');
  ctx.lineWidth=1;
  const xSteps=opts.xSteps||10, ySteps=opts.ySteps||5;
  for(let i=0;i<=xSteps;i++){
@@ -38014,11 +38137,11 @@ function drawChartGrid(ctx,opts){
   ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+w,y);ctx.stroke();
  }
  // Axes
- ctx.strokeStyle='#3a3a4a';
+ ctx.strokeStyle=pgThemeColor('--chart-axis','#3a3a4a');
  ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
  // X labels. When opts.rotateX is set, draw them angled so long names
  // (e.g. "Magenta 100%") don't overlap on dense series.
- ctx.fillStyle='#888898';ctx.font='11px sans-serif';
+ ctx.fillStyle=pgThemeColor('--chart-label','#888898');ctx.font='11px sans-serif';
  if(opts.rotateX){
   for(let i=0;i<=xSteps;i++){
    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
@@ -39479,7 +39602,7 @@ function meterDrawCubeViewNow(){
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
  const dpr=window.devicePixelRatio||1;
  ctx.setTransform(dpr,0,0,dpr,0,0);
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
  const markerScale=Math.max(0.35,Math.min(3,_cube3d.scale));
  // wireframe
@@ -39633,7 +39756,7 @@ function drawCIEChart3D(readings,opts){
  const markerScale=Math.max(0.35,Math.min(3,_cie3d.scale||1));
  const prims=[]; // {z, draw:fn}
  // Background
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  // Floor grid
  for(let gx=0;gx<=CIE3D_XMAX+1e-9;gx+=0.1){
   const a=cie3dProject(gx,CIE3D_YMIN,0,layout);
@@ -40067,7 +40190,7 @@ function drawCIEChart(readings){
  const toX=g.toX,toY=g.toY;
  const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
  // Background
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  // Clip plot so locus/points outside the zoomed window stay off-canvas.
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
@@ -40293,7 +40416,7 @@ function drawCIETargetInset(ctx,readings,geom){
  const ly=pad.t+40;
  const iy=ly+labelH+2;
  // Caption box sized exactly to the measured text.
- ctx.fillStyle='#0d0d15';
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
  ctx.fillRect(lx,ly,lw,labelH);
  ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
  ctx.strokeRect(lx+0.5,ly+0.5,lw-1,labelH-1);
@@ -40301,7 +40424,7 @@ function drawCIETargetInset(ctx,readings,geom){
  ctx.font=fontPx+'px sans-serif';
  ctx.fillText(labelText,lx+lw/2,ly+labelH/2);
  // Zoom frame
- ctx.fillStyle='#0d0d15';
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
  ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1.1;
  ctx.beginPath();ctx.rect(ix,iy,insetSize,insetSize);ctx.fill();ctx.stroke();
  // Clip to inset for zoom content
@@ -40400,7 +40523,7 @@ function drawCIEChartPreset(steps){
  const toX=g.toX,toY=g.toY;
  const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
  const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
- ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
  try{
@@ -41830,7 +41953,7 @@ function ccssPreviewClear(message){
  if(!canvas) return;
  const ctx=setupCanvasHiDPI(canvas);
  if(!ctx) return;
- ctx.fillStyle='#0d0d15';
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
  ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.fillStyle='#80889a';
  ctx.font='14px sans-serif';
