@@ -10626,6 +10626,11 @@ body.layout-desktop #meterCard.meter-two-point-active .meter-thumbs-nav{display:
 body.layout-desktop #chartsGreyscaleTwoPointWrap{width:min(680px,100%);margin-left:auto;margin-right:auto}
 body.layout-desktop #chartsGreyscaleTwoPointWrap>div:first-child{grid-template-columns:repeat(2,minmax(0,1fr))!important}
 body.layout-desktop .diag-pattern-layout{grid-template-columns:minmax(0,1fr)}
+body.layout-desktop .diag-custom-picker>select{grid-column:1 / -1}
+body.layout-desktop .diag-custom-picker>button:nth-of-type(1){grid-column:2}
+body.layout-desktop .diag-custom-picker>button:nth-of-type(2){grid-column:3}
+body.layout-desktop .diag-custom-picker>button:nth-of-type(3){grid-column:4}
+body.layout-desktop .card[data-desktop-workspace="connectivity"] .info-grid{grid-template-columns:repeat(auto-fit,minmax(145px,220px));justify-content:start}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}
