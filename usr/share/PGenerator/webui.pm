@@ -28230,7 +28230,7 @@ function meterCustomSeriesEditorRemoveRow(index){
  meterRenderCustomSeriesEditor();
 }
 
-function meterSaveCustomSeriesEditor(){
+async function meterSaveCustomSeriesEditor(){
  const editor=meterCustomSeriesEditor;
  if(!editor) return;
  meterCustomSeriesDirty=true;
@@ -28257,10 +28257,16 @@ function meterSaveCustomSeriesEditor(){
  const seriesType=(series.category==='color')?'colors':'greyscale';
  const seriesId=series.id;
  meterCustomSeriesEditorUnsaved=false;
+ const saved=await saveMeterSettings();
+ if(!saved||saved.status!=='ok'){
+  meterCustomSeriesEditorUnsaved=true;
+  toast('Custom series could not be saved to the Pi',true);
+  return;
+ }
  meterCloseCustomSeriesEditor();
- saveMeterSettings();
  meterRenderCustomSeriesButtons();
- meterSelectSeries(seriesType,seriesId);
+ await meterSelectSeries(seriesType,seriesId,{force:true});
+ meterRenderCustomSeriesButtons();
  toast('Custom series saved');
 }
 
@@ -28581,7 +28587,7 @@ function meterImportAddSeries(name,mode,patches,range){
  st.next_id+=1; st.series.push(series);
  return {series:series,truncated:src.length>kept.length,sourceCount:src.length,keptCount:kept.length};
 }
-function meterImportWizardCommit(){
+async function meterImportWizardCommit(){
  const st=meterImportWizardState; if(!st){ toast('Choose a file first',true); return; }
  let created=0;
  let truncNotes=[];
@@ -28611,7 +28617,11 @@ function meterImportWizardCommit(){
  }
  meterCustomSeriesNormalizeState();
  meterCustomSeriesDirty=true;
- saveMeterSettings();
+ const saved=await saveMeterSettings();
+ if(!saved||saved.status!=='ok'){
+  toast('Imported series could not be saved to the Pi; leave this page open and try again',true);
+  return;
+ }
  meterRenderCustomSeriesButtons();
  meterCloseImportWizard();
  const mgr=document.getElementById('meterCustomSeriesManagerModal');
@@ -42958,7 +42968,7 @@ function saveMeterSettings(){
  const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
  request.then(r=>{
-  if(r&&carriedCustomSeries){
+  if(r&&r.status==='ok'&&carriedCustomSeries){
    meterCustomSeriesDirty=false;
    meterCustomSeriesBackupWrite(false);
   }
