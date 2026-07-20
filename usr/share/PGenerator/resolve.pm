@@ -44,8 +44,11 @@ sub resolve_connection_thread (@) {
    $resolve_request_port="";
   }
   &log("Resolve: connecting to $ip:$port");
-  $calibration_client_ip=$ip;
-  $calibration_client_software="Resolve";
+  # NOTE: the "connected" client state is published INSIDE resolve_connect only
+  # after the socket is truly ESTABLISHED -- not here -- so /api/resolve/status
+  # (and the connect modal's poll) do not flip to connected while still dialing
+  # an unreachable IP, which would slam the modal shut before the operator can
+  # Cancel a mistyped address.
   eval { &resolve_connect($ip,$port); };
   &log("Resolve: session error: $@") if($@);
   &log("Resolve: disconnected from $ip:$port");
@@ -141,6 +144,11 @@ sub resolve_connect (@) {
   return;
  }
  &log("Resolve: connected to $ip:$port");
+ # Publish "connected" now that the socket is truly ESTABLISHED (verified via
+ # ->connected above). Until this point status reports disconnected/connecting,
+ # so the WebUI keeps the connect modal (with Cancel) up while dialing.
+ $calibration_client_ip=$ip;
+ $calibration_client_software="Resolve";
  # Arm SO_LINGER so any close path (requested or peer EOF) issues TCP RST.
  # DisplayCAL never reads the socket and only re-arms its wait() popup after
  # a failed sendall; graceful FIN can leave Windows sockets still "connected".

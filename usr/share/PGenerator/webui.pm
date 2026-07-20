@@ -964,6 +964,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/resolve/cancel" && $method eq "POST") {
+    my $result=&webui_resolve_cancel();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/resolve/status") {
     my $connected=($calibration_client_software eq "Resolve") ? "true" : "false";
     my $ip=$calibration_client_ip||"";
@@ -8668,6 +8673,22 @@ sub webui_resolve_disconnect (@) {
  return '{"status":"ok","message":"Disconnect requested"}';
 }
 
+sub webui_resolve_cancel (@) {
+ # Abort a connect that is queued or in progress (operator hit Cancel, e.g. a
+ # wrong IP). Unlike disconnect, this raises the abort flag UNCONDITIONALLY --
+ # during "connecting" the client software is not yet "Resolve", and we still
+ # want a connect that establishes a moment later to tear itself down at once.
+ # An in-flight bounded connect() cannot be interrupted mid-syscall, but: if it
+ # establishes, the read loop honors the flag on its first pass and RST-closes;
+ # if it fails/times out, the connect path clears the flag. Returns immediately
+ # so the button feels instant.
+ eval {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=1;
+ };
+ return '{"status":"ok","message":"Cancel requested"}';
+}
+
 sub webui_pattern_target_max (@) {
  my $bits=int(shift);
  $bits=int($bits_default || 8) if($bits <= 0);
@@ -14926,7 +14947,7 @@ async function resolveConnect(){
 // bounded (~10s) so the single connection thread frees for a corrected retry.
 function resolveConnectCancel(){
  resolveConnectCancelled=true;
- try{ fetchJSON('/api/resolve/disconnect',{method:'POST',_quiet:true}); }catch(e){}
+ try{ fetchJSON('/api/resolve/cancel',{method:'POST',_quiet:true}); }catch(e){}
  meterStopModalHide();
  toast('Connection cancelled');
  loadInfo();
