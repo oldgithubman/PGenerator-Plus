@@ -15217,8 +15217,8 @@ async function checkUpdate(){
 }
 let _updateChecked=false;
 function showUpdateCard(){
- if(document.body.classList.contains('layout-desktop')) pgSelectDesktopWorkspace('system');
  document.getElementById('updateCard').style.display='';
+ if(document.body.classList.contains('layout-desktop')) pgSelectDesktopWorkspace('system');
  document.getElementById('updateCard').scrollIntoView({behavior:'smooth'});
  if(!_updateChecked) checkUpdate();
 }
