@@ -16591,6 +16591,9 @@ function meterSharedSeriesStatusKey(status){
  if(type==='colors') points=(points>=900)?points:30;
  else if(type==='saturations') points=24;
  else if(type==='greyscale'){
+  // User-defined greyscale series use their id as points, just like custom
+  // colour series. Do not collapse a cached 40-patch custom series to 21pt.
+  if(points>=1001) return type+'-'+points;
   const total=Number(status.total_steps||0)||0;
   const stepCount=steps?steps.length:0;
   if(meterSeriesSnapshotHasLgAutoCal26Markers(status)) points=26;
@@ -22570,9 +22573,11 @@ function meterRecoverSeries(s){
 	 const normalizePoints=(seriesType,total,steps)=>{
 	  const count=Number(total||0)||0;
 	  const stepCount=Array.isArray(steps)?steps.length:0;
-	  // Preserve custom/lattice color-series ids (>=900); only stock ColorChecker is 30.
+	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
+	  // ids (>=1001); their patch count is not a built-in point preset.
 	  if(seriesType==='colors') return (points>=900)?points:30;
 	  if(seriesType==='saturations') return 24;
+	  if(seriesType==='greyscale'&&points>=1001) return points;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
 	  if(basis>0&&basis<=2) return 2;
