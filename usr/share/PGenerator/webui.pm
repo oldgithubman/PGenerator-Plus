@@ -10575,7 +10575,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 .desktop-nav-btn:hover{background:rgba(255,255,255,.055);color:var(--text)}
 .desktop-nav-btn[aria-current="page"]{background:rgba(91,127,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
 .desktop-workspace-title{display:none}
-body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px);--desktop-eotf-chart-height:clamp(300px,40vh,420px)}
+body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px);--desktop-eotf-chart-height:clamp(360px,46vh,480px)}
 body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start;transition:width .22s ease}
 body.layout-desktop.desktop-utility-open .desktop-shell{width:calc(100% - var(--desktop-utility-width))}
 body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
@@ -10601,7 +10601,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceScroller{height:100%
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:100%!important;min-height:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:grid;grid-template-rows:subgrid;width:180px;min-width:0;gap:10px}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:100%!important;min-height:220px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:calc(100% + 28px)!important;min-height:248px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
@@ -10612,7 +10612,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{grid-row:1;width:100%!important;height:100%!important;min-height:220px!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:18px;min-width:0}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:38px;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
