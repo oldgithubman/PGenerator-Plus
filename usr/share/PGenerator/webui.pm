@@ -10594,6 +10594,9 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:conte
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
 body.layout-desktop #chartsGreyscaleFullWrap #meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap #meterDeltaEBlock{grid-column:2;grid-row:2;margin-bottom:0!important;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap #chartRGB{height:100%!important;min-height:220px}
+body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,
+body.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:452px!important;min-height:452px!important;flex:0 0 452px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
@@ -22936,7 +22939,7 @@ function meterFindReadingForStep(step){
  return null;
 }
 
-// Populates the muted "→ target" suffixes in the live Patch Reading box.
+// Populates explicit target labels in the live Patch Reading box.
 // Accepts a measured reading OR an unread canonical series step (targets
 // show as soon as a patch is selected, before it is read). Pass null to
 // clear. CCT target only renders for near-neutral (greyscale) patches,
@@ -22961,10 +22964,10 @@ function meterUpdateLiveReadingTargets(src){
   }catch(e){}
   if(tXY&&isGrey) tCct=meterCctFromXy(tXY.x,tXY.y);
  }
- set('meterLumTgt', tY!=null?('→ '+tY.toFixed(2)):'');
- set('meterCCTTgt', tCct!=null?('→ '+Math.round(tCct)+'K'):'');
- set('meterCIExTgt', tXY?('→ '+tXY.x.toFixed(4)):'');
- set('meterCIEyTgt', tXY?('→ '+tXY.y.toFixed(4)):'');
+ set('meterLumTgt', tY!=null?('Target: '+tY.toFixed(2)):'');
+ set('meterCCTTgt', tCct!=null?('Target: '+Math.round(tCct)+'K'):'');
+ set('meterCIExTgt', tXY?('Target: '+tXY.x.toFixed(4)):'');
+ set('meterCIEyTgt', tXY?('Target: '+tXY.y.toFixed(4)):'');
 }
 
 function updateLiveReading(reading){
