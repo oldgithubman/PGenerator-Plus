@@ -69,6 +69,8 @@ assert(source.includes('elsif($path eq "/pgen-logo-light.png")'),'WebUI serves t
 assert(source.includes('[data-theme="light"] .logo > img:first-child{display:none!important}')&&source.includes('[data-theme="light"] .logo .logo-light{display:block}'),'Light mode swaps logos despite the embedded Dark logo inline display style');
 assert(source.includes('[data-theme="light"] .desktop-nav-btn[aria-current="page"]')&&source.includes('.ui-choice-title{color:var(--text-primary)!important}'),'Light selected navigation and setting tiles use dark text');
 assert(source.includes('--chart-annotation:#344255'),'Light chart annotations use a readable dark token');
+assert(source.includes('--chart-eotf-measured:#806600'),'Light EOTF measured-maximum annotation uses a readable dark yellow');
+assert(source.includes("ctx.fillStyle=pgThemeColor('--chart-eotf-measured','#ffeb3b')"),'EOTF measured-maximum annotation uses its theme token while preserving Dark yellow');
 assert(source.includes('--chart-gamut-line:#334b70'),'Light CIE gamut lines use a visible dark stroke');
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');

@@ -9950,7 +9950,7 @@ sub webui_html (@) {
 --surface-page:#0a0a0f;--surface-header:#101019;--surface-sidebar:#0d0d15;--surface-card:#14141f;--surface-drawer:#101019;--surface-modal:#14141f;--surface-popover:#181824;--surface-inset:#0d0d15;--surface-field:#080a11;
 --text-primary:#e0e0e8;--text-secondary:#888898;--text-muted:#686878;--text-inverse:#fff;--text-disabled:#666675;
 --divider:#2a2a3a;--focus-ring:#fff;--shadow:rgba(0,0,0,.42);--overlay:rgba(0,0,0,.82);--selected-bg:rgba(91,127,255,.16);--hover-bg:rgba(255,255,255,.055);
---chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;--chart-annotation:#aaa;--chart-gamut-line:rgba(220,228,245,.9);
+--chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;--chart-annotation:#aaa;--chart-eotf-measured:#ffeb3b;--chart-gamut-line:rgba(220,228,245,.9);
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
 --status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff;--badge-neutral:#888898}
 [data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--panel:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
@@ -9958,7 +9958,7 @@ sub webui_html (@) {
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
 --text-primary:#18202b;--text-secondary:#465466;--text-muted:#596676;--text-inverse:#fff;--text-disabled:#687586;
 --divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
---chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-annotation:#344255;--chart-gamut-line:#334b70;
+--chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-annotation:#344255;--chart-eotf-measured:#806600;--chart-gamut-line:#334b70;
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
 --status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8;--badge-neutral:#d5dce7}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -38652,6 +38652,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
    });
   }
  }
+ ctx.fillStyle=pgThemeColor('--chart-eotf-measured','#ffeb3b');
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
