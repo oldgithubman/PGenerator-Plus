@@ -9950,7 +9950,7 @@ sub webui_html (@) {
 --surface-page:#0a0a0f;--surface-header:#101019;--surface-sidebar:#0d0d15;--surface-card:#14141f;--surface-drawer:#101019;--surface-modal:#14141f;--surface-popover:#181824;--surface-inset:#0d0d15;--surface-field:#080a11;
 --text-primary:#e0e0e8;--text-secondary:#888898;--text-muted:#686878;--text-inverse:#fff;--text-disabled:#666675;
 --divider:#2a2a3a;--focus-ring:#fff;--shadow:rgba(0,0,0,.42);--overlay:rgba(0,0,0,.82);--selected-bg:rgba(91,127,255,.16);--hover-bg:rgba(255,255,255,.055);
---chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;--chart-annotation:#aaa;--chart-eotf-measured:#ffeb3b;--chart-gamut-line:rgba(220,228,245,.9);
+--chart-bg:#0d0d15;--chart-grid:#1d1d29;--chart-axis:#3a3a4a;--chart-label:#888898;--chart-tooltip:#181824;--chart-empty:#686878;--chart-annotation:#aaa;--chart-eotf-measured:#ffeb3b;--chart-gamut-line:rgba(220,228,245,.9);--meter-bar-track:#10131d;--meter-bar-zero:rgba(255,255,255,.28);
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
 --status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff;--badge-neutral:#888898}
 [data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--panel:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
@@ -9958,7 +9958,7 @@ sub webui_html (@) {
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
 --text-primary:#18202b;--text-secondary:#465466;--text-muted:#596676;--text-inverse:#fff;--text-disabled:#687586;
 --divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
---chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-annotation:#344255;--chart-eotf-measured:#806600;--chart-gamut-line:#334b70;
+--chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-annotation:#344255;--chart-eotf-measured:#806600;--chart-gamut-line:#334b70;--meter-bar-track:#f1f3f7;--meter-bar-zero:rgba(70,84,102,.28);
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
 --status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8;--badge-neutral:#d5dce7}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -23179,7 +23179,7 @@ function drawDeltaBarsVertical(canvasId,spec){
  const padTop=18,padBot=24,padL=6,padR=6;
  const plotH=H-padTop-padBot;
  const plotW=W-padL-padR;
- const labelColor='#d7e1f3';
+ const labelColor=pgThemeColor('--chart-label','#d7e1f3');
  // Shared autoscale across all entries so the center-line is visually consistent.
  const niceDeltaHalfRange=(value)=>{
   if(!(value>0)) return 1;
@@ -23231,14 +23231,30 @@ function drawDeltaBarsVertical(canvasId,spec){
  function valToY(v){return padTop+(hi-v)/(hi-lo)*plotH;}
  const cy=valToY(0);
  const cyPx=Math.round(cy)+0.5;
- // Center (target) line
- ctx.strokeStyle=labelColor;ctx.lineWidth=1.4;
- ctx.beginPath();ctx.moveTo(padL,cyPx);ctx.lineTo(W-padR,cyPx);ctx.stroke();
  // Bars
  const slot=plotW/spec.entries.length;
- const barW=Math.min(28,slot*0.74);
+ const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor';
+ const trackW=Math.max(20,Math.min(38,slot*0.72));
+ const barW=themedColorBars?Math.max(10,Math.min(24,trackW-10)):Math.min(28,slot*0.74);
+ const roundedRect=(x,y,w,h,r)=>{
+  const rr=Math.max(0,Math.min(r,w/2,h/2));
+  ctx.beginPath();ctx.moveTo(x+rr,y);ctx.lineTo(x+w-rr,y);ctx.quadraticCurveTo(x+w,y,x+w,y+rr);
+  ctx.lineTo(x+w,y+h-rr);ctx.quadraticCurveTo(x+w,y+h,x+w-rr,y+h);ctx.lineTo(x+rr,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-rr);ctx.lineTo(x,y+rr);ctx.quadraticCurveTo(x,y,x+rr,y);ctx.closePath();
+ };
+ if(!themedColorBars){
+  ctx.strokeStyle=labelColor;ctx.lineWidth=1.4;
+  ctx.beginPath();ctx.moveTo(padL,cyPx);ctx.lineTo(W-padR,cyPx);ctx.stroke();
+ }
  spec.entries.forEach((e,i)=>{
   const cx=padL+slot*i+slot/2;
+  if(themedColorBars){
+   const trackLeft=Math.round(cx-trackW/2);
+   ctx.fillStyle=pgThemeColor('--meter-bar-track','#10131d');
+   roundedRect(trackLeft,padTop,trackW,plotH,6);ctx.fill();
+   ctx.fillStyle=pgThemeColor('--meter-bar-zero','rgba(255,255,255,.28)');
+   ctx.fillRect(trackLeft+6,Math.round(cy),trackW-12,1);
+  }
   if(e.v==null){
    ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
    ctx.fillText('--',Math.round(cx),cyPx+4);
@@ -23252,10 +23268,11 @@ function drawDeltaBarsVertical(canvasId,spec){
   const top=Math.round(Math.min(cy,yV));
   const width=Math.max(Math.round(barW),1);
   const height=Math.max(Math.round(Math.abs(yV-cy)),1);
-  ctx.fillStyle=e.color;ctx.globalAlpha=0.88;
-  ctx.fillRect(left,top,width,height);
-  ctx.globalAlpha=1;
-  ctx.beginPath();ctx.arc(Math.round(cx),yVPx,3,0,Math.PI*2);ctx.fillStyle=e.color;ctx.fill();
+  ctx.save();
+  ctx.fillStyle=e.color;ctx.globalAlpha=0.9;
+  if(themedColorBars){ctx.shadowColor=e.color;ctx.shadowBlur=8;roundedRect(left,top,width,height,3);ctx.fill();}
+  else {ctx.fillRect(left,top,width,height);ctx.beginPath();ctx.arc(Math.round(cx),yVPx,3,0,Math.PI*2);ctx.fill();}
+  ctx.restore();
   // Channel label below
   ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';
   ctx.fillText(e.label,Math.round(cx),H-padBot+15);
