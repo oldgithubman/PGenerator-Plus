@@ -11246,7 +11246,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
      <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
     </div>
-    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs (3D LUT AutoCal output)</div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs</div>
     <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
    </div>
   </div>
@@ -26444,7 +26444,7 @@ async function meterLoadSolvedLutList(){
  try{
   const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
   const luts=(r&&Array.isArray(r.luts))?r.luts:[];
-  if(!luts.length){ panel.textContent='No solved LUTs yet — run a 3D LUT AutoCal to create one.'; return; }
+  if(!luts.length){ panel.textContent='No solved LUTs yet — Build 3D LUT or run 3D LUT AutoCal to create one.'; return; }
   const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   panel.innerHTML=luts.map(l=>{
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
@@ -26874,18 +26874,12 @@ async function meterLutSolvePoll(){
   toast('3D LUT solved: '+how);
   try{
    const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
-   const pref=meterLutSolvePendingDownload||'';
    meterLutSolvePendingDownload='';
    meterBuild3dLutPending=null;
    if(nm){
-    // Always show the completion modal first. Browsers block automatic
-    // downloads after long async work (no user gesture), so the modal is the
-    // reliable path to Save — preferred format button is focused/highlighted.
-    meterLutSolveDonePrompt(nm,how,s,{preferredFormat:pref});
-    if(pref==='cube'||pref==='3dl'){
-     // Best-effort auto-save; if the browser blocks it, the modal buttons work.
-     setTimeout(function(){ try{ meterLutSolveDownload(pref); }catch(e){} },300);
-    }
+    // Completion modal is where the operator picks .cube vs .3dl (browsers
+    // also block auto-download after long async measure/solve work).
+    meterLutSolveDonePrompt(nm,how,s);
    } else {
     toast('3D LUT solved but no export file was reported',true);
    }
@@ -26906,38 +26900,25 @@ async function meterLutSolvePoll(){
 // pops the download/format chooser (both formats stay available; View in 3D
 // opens LUT Tools' cube viewer on the fresh solve).
 let meterLutSolveDoneName=null;
-function meterLutSolveDonePrompt(name,how,state,opts){
+function meterLutSolveDonePrompt(name,how,state){
  meterLutSolveDoneName=String(name||'');
- const pref=(opts&&opts.preferredFormat)?String(opts.preferredFormat):'';
  const summary=document.getElementById('lutSolveDoneSummary');
  if(summary){
   const esc=(t)=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const sz=(state&&state.cube_lut_size)||33;
-  const fmtNote=(pref==='3dl')?'.3dl':((pref==='cube')?'.cube':'a format');
   summary.innerHTML='<div style="font-weight:600;color:var(--text)">'+esc(meterLutSolveDoneName)+'</div>'
    +'<div>'+esc(sz)+'&sup3; &middot; '+esc(how||'')+'</div>'
-   +'<div style="margin-top:6px">'+(pref?('Click <strong>Download '+esc(fmtNote)+'</strong> to save the file (your browser may block automatic downloads after a long measurement).'):'Choose a download format — the LUT also stays in LUT Tools.')+'</div>';
+   +'<div style="margin-top:6px">Choose a download format — the LUT also stays under Solved LUTs in LUT Tools.</div>';
  }
  const cubeBtn=document.getElementById('lutSolveDoneDownloadCubeBtn');
  const d3Btn=document.getElementById('lutSolveDoneDownload3dlBtn');
- if(cubeBtn){
-  cubeBtn.className=(pref==='3dl')?'btn btn-sm btn-secondary':'btn btn-sm btn-primary';
-  cubeBtn.textContent=(pref==='cube')?'Download .cube (chosen format)':'Download .cube';
- }
- if(d3Btn){
-  d3Btn.className=(pref==='3dl')?'btn btn-sm btn-primary':'btn btn-sm btn-secondary';
-  d3Btn.textContent=(pref==='3dl')?'Download .3dl (chosen format)':'Download .3dl';
- }
+ if(cubeBtn){ cubeBtn.className='btn btn-sm btn-primary'; cubeBtn.textContent='Download .cube'; }
+ if(d3Btn){ d3Btn.className='btn btn-sm btn-primary'; d3Btn.textContent='Download .3dl'; }
  const modal=document.getElementById('lutSolveDoneModal');
  if(modal){
   modal.style.display='flex';
   try{ uiSyncBodyScrollLock(); }catch(e){}
-  setTimeout(function(){
-   try{
-    const focusBtn=(pref==='3dl')?d3Btn:cubeBtn;
-    if(focusBtn) focusBtn.focus();
-   }catch(e){}
-  },50);
+  setTimeout(function(){ try{ if(cubeBtn) cubeBtn.focus(); }catch(e){} },50);
  }
 }
 
@@ -35241,8 +35222,8 @@ function meterClearSeriesRunUiState(){
 }
 
 // 3D LUT tab volume series (lattice / hybrid / skeleton): primary action is
-// Build 3D LUT (format modal -> measure -> solve -> download). Other series
-// keep Read Series.
+// Build 3D LUT (confirm -> measure -> solve -> pick download format). Other
+// series keep Read Series.
 function meterSeriesIs3dLutBuild(){
  return !!(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries());
 }
@@ -35254,11 +35235,12 @@ function meterReadSeriesPrimaryAction(){
  return meterRunSeries();
 }
 
-// Pending Build 3D LUT options chosen in the pre-measure modal.
+// Pending Build 3D LUT options from the pre-measure confirm (not format —
+// format is chosen only after the solve on the completion modal).
 let meterBuild3dLutPending=null;
 
-// Build 3D LUT: pick export format (+ greyscale policy), measure the series,
-// solve, then download the chosen format.
+// Build 3D LUT: confirm greyscale policy, measure the series, solve, then
+// offer .cube / .3dl download on the completion modal.
 async function meterBuild3dLutSeries(){
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
@@ -35268,23 +35250,14 @@ async function meterBuild3dLutSeries(){
  const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
  const ok=await meterShowChoiceModal({
   title:'Build 3D LUT',
-  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the TV — the LUT is exported for host apps (Resolve, madVR, etc.).',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the TV — when the solve finishes you can download .cube or .3dl for host apps (Resolve, madVR, etc.).',
   acceptLabel:'Start measurement',
   cancelLabel:'Cancel',
-  radios:[{
-   id:'lut_format',
-   label:'Output format',
-   options:[
-    {value:'cube',label:'.cube — Resolve, madVR, LUT boxes',checked:true},
-    {value:'3dl',label:'.3dl — Autodesk Lustre / Flame'}
-   ]
-  }],
   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
  });
  if(!ok) return false;
- const fmt=(ok&&typeof ok==='object'&&ok.lut_format)?String(ok.lut_format):'cube';
  const includeGrey=!(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale'))||!!ok.include_greyscale;
- meterBuild3dLutPending={format:(fmt==='3dl'?'3dl':'cube'),includeGreyscale:includeGrey};
+ meterBuild3dLutPending={includeGreyscale:includeGrey};
  const started=await meterRunSeries();
  if(!started) meterBuild3dLutPending=null;
  return started;
@@ -35629,7 +35602,6 @@ async function meterPollSeries(){
        meterGenerateLutFromLattice({
         auto:true,
         includeGreyscale:!!pending.includeGreyscale,
-        downloadFormat:pending.format||'cube',
         fromBuildFlow:true,
         series:pending.series,
         readings:pending.readings
