@@ -34,10 +34,33 @@ sub json_bool {
 
 sub ramp_levels { return (0,2,5,8,12,16,20,30,40,50,60,70,80,88,94,98,100); }
 
+# Multi-level WRGB skeleton levels (percent). Used by method=skeleton/hybrid when
+# the client does not send an expanded lattice_patches list.
+sub skeleton_levels {
+ return (0,5,10,20,30,40,50,60,70,80,90,100);
+}
+
+# Volume-profile methods measure more than the 5-point matrix corners and feed
+# residual construction (lattice / skeleton / hybrid).
+sub is_volume_profile_method {
+ my ($method)=@_;
+ $method=lc($method||"");
+ return ($method eq "lattice" || $method eq "skeleton" || $method eq "hybrid") ? 1 : 0;
+}
+# Methods that carry multi-level primary ramps and therefore solve via the
+# measured-response INVERSE (build_measured_forward_model + fm_invert) instead
+# of the matrix-baseline + residual grid. Lattice stays on the residual path.
+sub forward_model_method {
+ my ($method)=@_;
+ $method=lc($method||"");
+ return ($method eq "skeleton" || $method eq "hybrid") ? 1 : 0;
+}
+
 sub describe_and_exit {
  print $json->encode({
   status => "ok",
   default_method => "matrix",
+  methods => ["matrix","ramp","lattice","skeleton","hybrid","imported"],
   lut_size => 17,
   cube_lut_size => 17,
   payload_lut_size => 33,
@@ -45,11 +68,14 @@ sub describe_and_exit {
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
+  cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   signal_modes => ["sdr","hdr10"],
-  hdr10_methods => ["matrix"],
+  # Calman HDR only supports matrix 3D LUT; imported is upload-only.
+  hdr10_methods => ["matrix","imported"],
   target_gamuts => ["bt709","p3d65","p3dci","bt2020"],
   target_gammas => ["bt1886","2.2","2.4","srgb","st2084"],
   ramp_levels => [ramp_levels()],
+  skeleton_levels => [skeleton_levels()],
   ramp_profile_patch_count => 65,
   ramp_drift => "start/end WRGB anchors with time-interpolated 3x3 correction",
   model => "per-luminance-level additive XYZ contributions",
@@ -419,6 +445,107 @@ sub build_ramp_steps {
   push @steps,patch_step($kind,100,"drift_end",$config);
  }
  return @steps;
+}
+
+# Lattice profiling (method=lattice): the client expands the chosen lattice
+# series (meterLatticeExpandPatches — corners W,R,G,B,K lead) and posts the
+# nodes as percent triplets in lattice_patches. Wire codes are computed HERE
+# from this run's range/bit-depth (same rule as patch_step) so the profile
+# always matches the live link, exactly like the matrix path. Corner nodes
+# get their matrix kinds (white/red/green/blue/black) so model_from_readings'
+# corner extraction works unchanged; interior nodes are kind "node" — the
+# matrix baseline ignores them and build_residual_grid consumes them, the
+# same split run_solve_only uses for the offline lattice solve.
+# Shared percent-triplet -> profile step builder for lattice / skeleton / hybrid.
+# Pure primaries at 100% and black/white are tagged for matrix_from_readings;
+# all other nodes are kind "node" and feed residual construction.
+sub _volume_steps_from_percent_patches {
+ my ($config,$patches)=@_;
+ return () if(ref($patches) ne "ARRAY" || !@{$patches});
+ my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+ my $max_bpc=$config->{"max_bpc"}||"";
+ my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
+ my @steps;
+ my %seen;
+ foreach my $p (@{$patches}) {
+  next if(ref($p) ne "HASH");
+  my ($pr,$pg,$pb);
+  if(defined($p->{"name"}) && $p->{"name"} =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$}) {
+   ($pr,$pg,$pb)=($1,$2,$3);
+  } elsif(defined($p->{"r_pct"}) && defined($p->{"g_pct"}) && defined($p->{"b_pct"})) {
+   ($pr,$pg,$pb)=($p->{"r_pct"},$p->{"g_pct"},$p->{"b_pct"});
+  } else {
+   next;
+  }
+  ($pr,$pg,$pb)=map { clamp($_+0,0,100) } ($pr,$pg,$pb);
+  my $name=format_percent($pr)."/".format_percent($pg)."/".format_percent($pb);
+  next if($seen{$name}++);
+  last if(@steps >= 2000);
+  my $kind="node"; my $level=($pr+$pg+$pb)/3;
+  if($pr>=99.9 && $pg>=99.9 && $pb>=99.9) { $kind="white"; $level=100; }
+  elsif($pr<=0.1 && $pg<=0.1 && $pb<=0.1) { $kind="black"; $level=0; }
+  elsif($pr>=99.9 && $pg<=0.1 && $pb<=0.1) { $kind="red"; $level=100; }
+  elsif($pg>=99.9 && $pr<=0.1 && $pb<=0.1) { $kind="green"; $level=100; }
+  elsif($pb>=99.9 && $pr<=0.1 && $pg<=0.1) { $kind="blue"; $level=100; }
+  push @steps,{
+   kind => $kind,
+   level => $level+0,
+   phase => "profile",
+   name => $name,
+   ire => int($level+0.5),
+   stimulus => $level+0,
+   signal_r_pct => $pr+0,
+   signal_g_pct => $pg+0,
+   signal_b_pct => $pb+0,
+   r => patch_code_for_percent($pr,$signal_range,$max_bpc),
+   g => patch_code_for_percent($pg,$signal_range,$max_bpc),
+   b => patch_code_for_percent($pb,$signal_range,$max_bpc),
+   input_max => $input_max,
+   pattern_signal_range => "$signal_range",
+   signal_range => "$signal_range",
+  };
+ }
+ return @steps;
+}
+
+sub build_lattice_steps {
+ my ($config)=@_;
+ return _volume_steps_from_percent_patches($config,$config->{"lattice_patches"});
+}
+
+# Multi-level WRGB skeleton (edges only). Prefer client-expanded lattice_patches;
+# otherwise expand skeleton_levels server-side.
+sub build_skeleton_steps {
+ my ($config)=@_;
+ my $patches=$config->{"lattice_patches"};
+ if(ref($patches) eq "ARRAY" && @{$patches}) {
+  return _volume_steps_from_percent_patches($config,$patches);
+ }
+ my @levels=skeleton_levels();
+ if(ref($config->{"skeleton_levels"}) eq "ARRAY" && @{$config->{"skeleton_levels"}}) {
+  @levels=map { clamp($_+0,0,100) } @{$config->{"skeleton_levels"}};
+ }
+ my @patches;
+ push @patches,{ name=>"0/0/0", r_pct=>0, g_pct=>0, b_pct=>0 };
+ foreach my $L (@levels) {
+  next if($L <= 0);
+  push @patches,{ name=>format_percent($L)."/".format_percent($L)."/".format_percent($L), r_pct=>$L, g_pct=>$L, b_pct=>$L };
+  push @patches,{ name=>format_percent($L)."/0/0", r_pct=>$L, g_pct=>0, b_pct=>0 };
+  push @patches,{ name=>"0/".format_percent($L)."/0", r_pct=>0, g_pct=>$L, b_pct=>0 };
+  push @patches,{ name=>"0/0/".format_percent($L), r_pct=>0, g_pct=>0, b_pct=>$L };
+ }
+ return _volume_steps_from_percent_patches($config,\@patches);
+}
+
+# Hybrid = skeleton edges + lattice interiors (client usually merges already).
+sub build_hybrid_steps {
+ my ($config)=@_;
+ my $patches=$config->{"lattice_patches"};
+ if(ref($patches) eq "ARRAY" && @{$patches}) {
+  return _volume_steps_from_percent_patches($config,$patches);
+ }
+ # Fallback: skeleton only if no client patches.
+ return build_skeleton_steps($config);
 }
 
 sub reading_xyz {
@@ -880,14 +1007,127 @@ sub apply_drift_correction {
  return vec_add($black,$corrected);
 }
 
+# Multi-anchor WRGB drift (volume profiles: lattice / skeleton / hybrid).
+# Anchors are black-subtracted primary columns {time, red, green, blue, white}
+# taken periodically during profiling. Each profile XYZ is mapped back to the
+# first-anchor epoch via the first-anchor matrix times inv(interpolated matrix
+# at the sample's read time). Mirrors the ramp start/end path, with multiple
+# mid-run re-anchors so long cube profiles stay referenced to t0.
+sub volume_drift_primary_hash {
+ my ($anchor)=@_;
+ return undef if(ref($anchor) ne "HASH");
+ return {
+  red => $anchor->{"red"}||[0,0,0],
+  green => $anchor->{"green"}||[0,0,0],
+  blue => $anchor->{"blue"}||[0,0,0],
+ };
+}
+
+sub volume_drift_bracketing {
+ my ($anchors,$read_time)=@_;
+ return (undef,undef,0) if(ref($anchors) ne "ARRAY" || !@{$anchors});
+ my @a=sort { ($a->{"time"}||0) <=> ($b->{"time"}||0) } @{$anchors};
+ return ($a[0],$a[0],0) if(@a == 1);
+ return ($a[0],$a[0],0) if($read_time <= ($a[0]{"time"}||0));
+ return ($a[$#a],$a[$#a],0) if($read_time >= ($a[$#a]{"time"}||0));
+ for(my $i=0;$i<@a-1;$i++) {
+  my $t0=$a[$i]{"time"}||0;
+  my $t1=$a[$i+1]{"time"}||0;
+  next if($read_time > $t1);
+  my $span=$t1-$t0;
+  my $f=($span > 1e-9) ? (($read_time-$t0)/$span) : 0;
+  $f=0 if($f < 0); $f=1 if($f > 1);
+  return ($a[$i],$a[$i+1],$f);
+ }
+ return ($a[$#a],$a[$#a],0);
+}
+
+sub apply_volume_drift_correction {
+ my ($xyz,$black,$read_time,$anchors)=@_;
+ return $xyz if(ref($xyz) ne "ARRAY");
+ return $xyz if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my $ref=volume_drift_primary_hash($anchors->[0]);
+ my ($a,$b,$f)=volume_drift_bracketing($anchors,$read_time);
+ return $xyz if(!$ref || !$a || !$b);
+ my $current=drift_matrix_at(volume_drift_primary_hash($a),volume_drift_primary_hash($b),$f);
+ my $start=drift_matrix_at($ref,$ref,0);
+ my $inv_current=matrix_inverse($current);
+ return $xyz if(!$inv_current || !$start);
+ my $relative=vec_sub($xyz,$black);
+ my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ return vec_add($black,$corrected);
+}
+
+sub reading_set_xyz {
+ my ($reading,$xyz)=@_;
+ return if(ref($reading) ne "HASH" || ref($xyz) ne "ARRAY");
+ $reading->{"X"}=$xyz->[0]+0;
+ $reading->{"Y"}=$xyz->[1]+0;
+ $reading->{"Z"}=$xyz->[2]+0;
+ $reading->{"luminance"}=$xyz->[1]+0 if(exists $reading->{"luminance"} || defined($reading->{"Y"}));
+}
+
+# Capture one WRGB 100% drift anchor (black-subtracted primaries).
+sub capture_volume_drift_anchor {
+ my ($config,$state,$black,$label)=@_;
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my %raw;
+ foreach my $kind (qw(white red green blue)) {
+  die "cancelled\n" if(cancelled());
+  my $step=patch_step($kind,100,"drift_anchor",$config);
+  $state->{"phase"}="drift_anchor";
+  $state->{"current_name"}=($label||"Drift anchor")." ".uc(substr($kind,0,1));
+  $state->{"message"}="WRGB drift re-anchor - reading ".$kind;
+  write_state($state);
+  my ($reading,$error)=read_step($config,$step,$state);
+  die "Drift anchor $kind failed: $error\n" if($error);
+  my $xyz=reading_xyz($reading);
+  die "Drift anchor $kind returned no XYZ\n" if(!$xyz);
+  $raw{$kind}=$xyz;
+ }
+ my $t=time();
+ return {
+  time => $t,
+  white => $raw{"white"},
+  red => vec_sub($raw{"red"},$black),
+  green => vec_sub($raw{"green"},$black),
+  blue => vec_sub($raw{"blue"},$black),
+  white_y => ($raw{"white"}[1]||0)+0,
+ };
+}
+
+sub apply_volume_drift_to_profile_readings {
+ my ($profile_readings,$black,$anchors)=@_;
+ return { corrected=>0, anchors=>0 } if(ref($profile_readings) ne "ARRAY");
+ return { corrected=>0, anchors=>scalar(@{$anchors||[]}) } if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my $n=0;
+ foreach my $entry (@{$profile_readings}) {
+  next if(ref($entry) ne "HASH");
+  my $xyz=reading_xyz($entry->{"reading"});
+  next if(!$xyz);
+  my $t=$entry->{"read_time"}||time();
+  my $c=apply_volume_drift_correction($xyz,$black,$t,$anchors);
+  reading_set_xyz($entry->{"reading"},$c);
+  $entry->{"drift_corrected"}=1;
+  $n++;
+ }
+ return { corrected=>$n, anchors=>scalar(@{$anchors}) };
+}
+
 sub model_from_readings {
  my ($method,$readings,$config)=@_;
  my $signal_mode=$config->{"signal_mode"}||"sdr";
  my $signal_gamma=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
- # Solve/encode the cube in the DPG calibration domain (HDR: ~2.2), not the
- # PQ signal EOTF -- see dpg_calibration_gamma(). signal_gamma (st2084 for HDR)
- # is retained only for reporting and the post-cal series reads.
- my $target_gamma=dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
+ # LG AutoCal solves (matrix/ramp destined for TV upload) run in the LG
+ # cal-mode domain: gamma ~2.2 (dpg_calibration_gamma) with the BT.2020
+ # container forced below -- the TV linearizes to 2.2 in cal mode and the
+ # uploaded identity 3x3 makes the cube's inputs BT.2020. The GENERIC lattice
+ # solve (solve_only, any display, export-only) honours the operator's Target
+ # Gamma and Target Colorspace selections verbatim instead.
+ my $solve_only=(ref($config) eq "HASH" && $config->{"solve_only"}) ? 1 : 0;
+ my $target_gamma=$solve_only ? $signal_gamma : dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
  my $target_gamut=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
  # The LG BT2020_3D_LUT operates on the BT.2020-decoded signal: we upload an
  # IDENTITY 3x3 gamut matrix (lg_bt2020_identity_3x3_payload in pgenerator-lg),
@@ -896,7 +1136,7 @@ sub model_from_readings {
  # P3-in-BT.2020 content (~72% of BT.2020) down into P3 -> ~Rec.709 sized
  # (undersaturated, per the reference relay capture). P3 is the panel's achievable gamut and the
  # series SCORING target -- NOT the cube's solve domain.
- $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10");
+ $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10" && !$solve_only);
  my %by;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
@@ -1061,23 +1301,37 @@ sub model_from_readings {
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
   # Chromatic LUMINANCE compensation in the gamut-matrix cube path
-  # (gamut_matrix_output). OPT-IN ONLY (lg_autocal_3dlut_chroma_luma_comp=1):
-  # the mid-saturation-weighted variant measured WORSE on the C1 panel
-  # (2026-07-03 A/B) despite matching the chart targets offline -- do not
-  # enable by default until the interior model is validated on-panel.
-  wrgb_chroma_luma_comp => (($chromatic_white_y < $white_y*0.98)
-   && ref($config) eq "HASH" && ($config->{"lg_autocal_3dlut_chroma_luma_comp"}||0)+0) ? 1 : 0,
+  # (gamut_matrix_output). Default OFF for matrix (2026-07-19 HDR matrix
+  # regression: mid-sat CC/sat Y ~0.61x). Default ON for hybrid/skeleton
+  # WRGB when addY << white (same mid-sat envelope). Override with
+  # lg_autocal_3dlut_chroma_luma_comp=0/1. Hybrid also has a separate
+  # inverse-toward-matrix blend (wrgb_mid_sat_matrix_blend).
+  wrgb_chroma_luma_comp => wrgb_chroma_luma_comp_enabled(
+   $config,$chromatic_white_y,$white_y,
+   (ref($config) eq "HASH" ? ($config->{"method"}||$method) : $method)
+  ),
   wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
    && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
    ? ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) : 0.8,
+  # Hybrid mid-sat oversat damp: blend measured-inverse toward the white-
+  # preserving matrix where W-subpixel engagement peaks (sat ~ 2/3). Default
+  # ON for hybrid/skeleton; strength 0.55 is conservative (matrix never
+  # oversat; full inverse alone did on C2 hybrid5). Use config method (volume
+  # paths call model_from_readings with "matrix" for corner contrib only).
+  wrgb_mid_sat_matrix_blend => wrgb_mid_sat_matrix_blend_enabled($config,(ref($config) eq "HASH" ? ($config->{"method"}||$method) : $method)),
+  wrgb_mid_sat_matrix_blend_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_mid_sat_blend_strength"})
+   && ($config->{"lg_autocal_3dlut_mid_sat_blend_strength"}+0) > 0)
+   ? ($config->{"lg_autocal_3dlut_mid_sat_blend_strength"}+0) : 0.55,
   gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
+  # Neutral identity: LG AutoCal / dual-LUT keeps greys for 1D DPG. Export /
+  # solve_only for Resolve includes greys in the cube unless the operator
+  # opts out (include_greyscale=0 / neutral_axis_identity=1).
+  neutral_axis_identity => neutral_axis_identity_enabled($config),
   neutral_neighborhood_identity_enabled => json_bool($neutral_neighborhood_identity),
-  neutral_axis_source => $neutral_neighborhood_identity
-   ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
-   : "exact diagonal identity after current 1D greyscale path",
+  neutral_axis_source => neutral_axis_source_label($config,$neutral_neighborhood_identity),
  };
 }
 
@@ -1184,7 +1438,250 @@ sub gamut_matrix_output {
  return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
 }
 
-sub generate_lut_cube {
+# ---- Measured-response forward model + inverse (skeleton / hybrid) ----
+# The residual-on-matrix path cannot USE the multi-level primary ramps the
+# skeleton measures: the white-preserving matrix assumes each primary follows
+# the target gamma (R@25% == 0.25^g * R@100%), but a real panel deviates
+# (measured Blue@25% was ~19% off target-gamma luminance on the C2). So hybrid
+# scored like matrix. Instead, build a forward model DIRECTLY from the
+# measurements -- per-channel primary XYZ interpolated over the measured drive
+# levels (no gamma assumption) + the measured volume non-additivity -- and
+# INVERT it per LUT node to the target. Neutral axis stays identity (DPG owns
+# greyscale). Needs multi-level mono ramps, so it engages for skeleton/hybrid.
+
+sub _fm_ramp_interp {
+ my ($arr,$f)=@_;                 # arr: [ [level,xyz], ... ] sorted by level
+ my $n=scalar(@{$arr});
+ return [0,0,0] if(!$n);
+ $f=0 if($f < 0); $f=1 if($f > 1);
+ return $arr->[0][1] if($f <= $arr->[0][0]);
+ for(my $i=0;$i<$n-1;$i++) {
+  my ($l0,$x0)=@{$arr->[$i]}; my ($l1,$x1)=@{$arr->[$i+1]};
+  if($f <= $l1) {
+   my $t=($l1 > $l0) ? ($f-$l0)/($l1-$l0) : 0;
+   return [ map { $x0->[$_]*(1-$t)+$x1->[$_]*$t } (0..2) ];
+  }
+ }
+ return $arr->[$n-1][1];
+}
+sub fm_additive {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $R=_fm_ramp_interp($fm->{"ramp"}[0],$dr);
+ my $G=_fm_ramp_interp($fm->{"ramp"}[1],$dg);
+ my $B=_fm_ramp_interp($fm->{"ramp"}[2],$db);
+ my $bl=$fm->{"black"};
+ return [ map { $R->[$_]+$G->[$_]+$B->[$_]-2*($bl->[$_]||0) } (0..2) ];
+}
+sub _fm_vol_axis {
+ my ($vlv,$v)=@_;                 # -> (i0,t) over sorted vol levels
+ my $n=scalar(@{$vlv});
+ $v=0 if($v < 0); $v=1 if($v > 1);
+ return (0,0) if($n < 2 || $v <= $vlv->[0]);
+ for(my $i=0;$i<$n-1;$i++) {
+  if($v <= $vlv->[$i+1]) {
+   my $sp=$vlv->[$i+1]-$vlv->[$i];
+   return ($i, ($sp > 0) ? ($v-$vlv->[$i])/$sp : 0);
+  }
+ }
+ return ($n-2,1);
+}
+# Non-additivity correction at an arbitrary drive. Sparse grid trilinear used
+# to DROP missing cell corners without renormalising, which under-reported
+# volume non-additivity almost everywhere off the measured lattice and made
+# the inverse invent bogus chroma (CIE +x / 25% sat blow-ups). Inverse-distance
+# weighting over the actual measured non-additive samples uses every volume
+# read and degrades gracefully off-grid.
+sub fm_nonadd_corr {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $pts=$fm->{"nonadd_samples"};
+ return [0,0,0] if(ref($pts) ne "ARRAY" || !@{$pts});
+ my ($sw,@acc)=(0,0,0,0);
+ foreach my $p (@{$pts}) {
+  my $f=$p->{"f"}; my $d=$p->{"d"};
+  next if(ref($f) ne "ARRAY" || ref($d) ne "ARRAY");
+  my $d2=0;
+  for my $ch (0..2) {
+   my $df=($f->[$ch]||0)-($ch==0?$dr:($ch==1?$dg:$db));
+   $d2+=$df*$df;
+  }
+  if($d2 < 1e-12) { return [ $d->[0], $d->[1], $d->[2] ]; }
+  # Power-2 IDW; soft radius keeps far skeleton greys from dominating a local mix.
+  my $w=1.0/($d2*$d2 + 1e-8);
+  $sw+=$w;
+  for my $ch (0..2) { $acc[$ch]+=$w*($d->[$ch]||0); }
+ }
+ return [0,0,0] if($sw <= 0);
+ return [ $acc[0]/$sw, $acc[1]/$sw, $acc[2]/$sw ];
+}
+sub fm_forward {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $add=fm_additive($fm,$dr,$dg,$db);
+ my $corr=fm_nonadd_corr($fm,$dr,$dg,$db);
+ return [ $add->[0]+$corr->[0], $add->[1]+$corr->[1], $add->[2]+$corr->[2] ];
+}
+sub build_measured_forward_model {
+ my ($model,$nodes,$config)=@_;
+ return undef if(ref($nodes) ne "ARRAY" || !@{$nodes});
+ my $black=$model->{"black"}||[0,0,0];
+ my $mono_thr=0.08;
+ my @ramp_h=({},{},{});           # ch -> { level(frac) => xyz }
+ foreach my $n (@{$nodes}) {
+  my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
+  my ($hot,$dom)=(0,-1);
+  for my $ch (0..2) { if($f[$ch] > $mono_thr) { $hot++; $dom=$ch; } }
+  $ramp_h[$dom]{sprintf("%.4f",$f[$dom])}=$xyz if($hot==1);
+ }
+ my @ramp;
+ for my $ch (0..2) {
+  $ramp_h[$ch]{"0.0000"}=$black unless(exists $ramp_h[$ch]{"0.0000"});
+  return undef if(scalar(keys %{$ramp_h[$ch]}) < 4);   # need a real ramp
+  my @lv=sort { $a <=> $b } map { $_+0 } keys %{$ramp_h[$ch]};
+  $ramp[$ch]=[ map { [ $_, $ramp_h[$ch]{sprintf("%.4f",$_)} ] } @lv ];
+ }
+ my $fm={ black=>$black, ramp=>\@ramp, nonadd_samples=>[], ramp_levels=>scalar(@{$ramp[0]}) };
+ # Volume non-additivity samples: measured - additive at every profiled node.
+ # Pure mono ramps are already in the additive model (nonadd ~0); still store
+ # mixed / grey / secondary nodes so volume reads actually shape the inverse.
+ my ($na_sum,$na_n)=(0,0);
+ foreach my $n (@{$nodes}) {
+  my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
+  my $add=fm_additive($fm,@f);
+  my $d=vec_sub($xyz,$add);
+  my $mag2=($d->[0]**2+$d->[1]**2+$d->[2]**2);
+  # Skip pure mono (already in ramps) unless residual is material (noise).
+  my ($hot)=(0);
+  for my $ch (0..2) { $hot++ if($f[$ch] > $mono_thr); }
+  next if($hot <= 1 && $mag2 < 0.05);
+  push @{$fm->{"nonadd_samples"}},{ f=>[$f[0],$f[1],$f[2]], d=>$d };
+  $na_sum+=$mag2; $na_n++;
+ }
+ $fm->{"nonadd_rms"}=$na_n ? sqrt($na_sum/$na_n) : 0;
+ $fm->{"vol_axis_levels"}=$na_n;
+ $fm->{"nonadd_count"}=$na_n;
+ return $fm;
+}
+# Invert the measured forward model to hit $target, seeded from the matrix
+# baseline drive. Levenberg-Marquardt + keep-best: never worse (under the
+# model) than the matrix seed. Returns per-channel drive percent (0..100).
+sub _fm_err {
+ my ($fm,$target,$d)=@_;
+ my $f=fm_forward($fm,$d->[0],$d->[1],$d->[2]);
+ my $e=vec_sub($target,$f);
+ return ($e, sqrt($e->[0]**2+$e->[1]**2+$e->[2]**2));
+}
+sub fm_invert {
+ my ($fm,$model,$target,$seed_pct)=@_;
+ my @best=map { my $v=($seed_pct->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
+ my $h=0.015;
+ my ($best_err,$best_e)=_fm_err($fm,$target,\@best);
+ my $lambda=1e-2;
+ # More iterations than the original 10: multi-level ramps are smooth but the
+ # non-add IDW field is not perfectly quadratic; LM needs room to settle.
+ for(my $iter=0;$iter<18;$iter++) {
+  last if($best_e < 2e-4);
+  my @cols;
+  for my $ch (0..2) {
+   my @dp=@best; my @dm=@best;
+   $dp[$ch]=$best[$ch]+$h; $dp[$ch]=1 if($dp[$ch] > 1);
+   $dm[$ch]=$best[$ch]-$h; $dm[$ch]=0 if($dm[$ch] < 0);
+   my $span=$dp[$ch]-$dm[$ch]; $span=$h if($span <= 0);
+   my $fp=fm_forward($fm,$dp[0],$dp[1],$dp[2]);
+   my $fn=fm_forward($fm,$dm[0],$dm[1],$dm[2]);
+   $cols[$ch]=[ ($fp->[0]-$fn->[0])/$span, ($fp->[1]-$fn->[1])/$span, ($fp->[2]-$fn->[2])/$span ];
+  }
+  my @JtJ; my @Jte=(0,0,0);
+  for my $a (0..2) {
+   for my $bcol (0..2) {
+    my $s=0; for my $row (0..2) { $s+=$cols[$a][$row]*$cols[$bcol][$row]; }
+    $JtJ[$a][$bcol]=$s;
+   }
+   my $s=0; for my $row (0..2) { $s+=$cols[$a][$row]*$best_err->[$row]; }
+   $Jte[$a]=$s;
+  }
+  my $improved=0;
+  for(my $try=0;$try<6;$try++) {
+   my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
+   my $inv=matrix_inverse($M);
+   if($inv) {
+    my $step=matrix_mul_vec($inv,\@Jte);
+    # Cap single-step size so a singular Jacobian cannot leap to a desat corner.
+    my $sn=sqrt(($step->[0]||0)**2+($step->[1]||0)**2+($step->[2]||0)**2);
+    if($sn > 0.25) { my $s=0.25/$sn; $step=[ map { $_*$s } @{$step} ]; }
+    my @trial=map { my $v=$best[$_]+$step->[$_]; $v<0?0:($v>1?1:$v) } (0..2);
+    my ($te,$tn)=_fm_err($fm,$target,\@trial);
+    if($tn < $best_e) {
+     @best=@trial; $best_err=$te; $best_e=$tn;
+     $lambda*=0.5; $lambda=1e-6 if($lambda < 1e-6); $improved=1; last;
+    }
+   }
+   $lambda*=4;
+  }
+  last if(!$improved);
+ }
+ return [ $best[0]*100, $best[1]*100, $best[2]*100 ];
+}
+
+# Target for the measured-response inverse. MUST match post-check /
+# residual targets (target_xyz_for_node): neutrals use white_y / white_axis,
+# chromatic nodes use chromatic_white_y (WRGB additive ceiling). Chasing a
+# different white than verification is how hybrid "won" offline on the wrong
+# target and lost on-panel sat sweeps.
+sub fm_target_for_node {
+ my ($model,$ri,$gi,$bi,$size)=@_;
+ return target_xyz_for_node($model,$ri,$gi,$bi,$size);
+}
+sub node_output_pct {
+ my ($model,$r,$g,$b,$size)=@_;
+ my $neutral=neutral_identity_output($model,$r,$g,$b,$size);
+ return $neutral if($neutral);
+ my $fm=$model->{"forward_model"};
+ if(ref($fm) eq "HASH") {
+  my $target=fm_target_for_node($model,$r,$g,$b,$size);
+  my $seed=$model->{"gamut_drive_matrix"}
+   ? gamut_matrix_output($model,$r,$g,$b,$size)
+   : solve_output_rgb($model,$target,$r,$g,$b,$size);
+  my $inv=fm_invert($fm,$model,$target,$seed);
+  my $den=$size-1; $den=1 if($den < 1);
+  my @f=($r/$den,$g/$den,$b/$den);
+  my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
+  my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
+  my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+  # Near-grey: soft-blend matrix seed -> inverse (DPG greys / low-chroma).
+  if($sat < 0.12) {
+   my $w=($sat <= 0.03) ? 0 : (($sat-0.03)/(0.12-0.03));
+   return [ map { $seed->[$_]*(1-$w)+$inv->[$_]*$w } (0..2) ];
+  }
+  # Mid-sat WRGB damp: pure inverse oversaturates mid-sats on WOLED (W
+  # subpixel + hard BT.709 targets). Blend toward white-preserving matrix
+  # with the same sat envelope as luma-comp (peak at sat~2/3, 0 at pure
+  # primary). Matrix does not oversat; hybrid still owns multi-level axes.
+  if($model->{"wrgb_mid_sat_matrix_blend"}) {
+   my $env=$sat*$sat*(1-$sat)*6.75;
+   $env=1 if($env > 1); $env=0 if($env < 0);
+   my $strength=$model->{"wrgb_mid_sat_matrix_blend_strength"};
+   $strength=0.55 if(!defined($strength) || $strength+0 <= 0);
+   $strength=$strength+0; $strength=1.0 if($strength > 1.0);
+   my $w=$env*$strength;
+   if($w > 0) {
+    return [ map { $inv->[$_]*(1-$w)+$seed->[$_]*$w } (0..2) ];
+   }
+  }
+  return $inv;
+ }
+ my $out;
+ if($model->{"gamut_drive_matrix"}) {
+  $out=gamut_matrix_output($model,$r,$g,$b,$size);
+ } else {
+  my $target=target_xyz_for_node($model,$r,$g,$b,$size);
+  $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
+ }
+ $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if($model->{"residual_grid"});
+ return $out;
+}
+
+sub _generate_lut_cube_serial {
  my ($model,$size)=@_;
  $size ||= 17;
  my @nodes;
@@ -1192,16 +1689,7 @@ sub generate_lut_cube {
  for(my $r=0;$r<$size;$r++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
-    my $out;
-    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
-    } elsif($model->{"gamut_drive_matrix"}) {
-     $out=gamut_matrix_output($model,$r,$g,$b,$size);
-    } else {
-     my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-     $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
-    }
+    my $out=node_output_pct($model,$r,$g,$b,$size);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
@@ -1211,44 +1699,40 @@ sub generate_lut_cube {
  return (\@u16,\@nodes);
 }
 
+
 sub neutral_identity_output {
  my ($model,$r,$g,$b,$size)=@_;
+ # Export / complete-cube mode: greys are solved like chroma (Resolve, host
+ # apps with no separate 1D). LG AutoCal keeps identity for DPG ownership.
+ return undef if(ref($model) eq "HASH" && !$model->{"neutral_axis_identity"});
+ $size=2 if(!defined($size) || $size < 2);
+ my $den=$size-1;
+ my $min=$r; $min=$g if($g < $min); $min=$b if($b < $min);
+ my $max=$r; $max=$g if($g > $max); $max=$b if($b > $max);
+ my $span=$max-$min;
+ # Exact diagonal identity when neutral_axis_identity is on (DPG greys).
+ # Legacy LG generations also guard a 1-step neighborhood.
  my $adjacent=(ref($model) eq "HASH" && $model->{"neutral_neighborhood_identity_enabled"}) ? 1 : 0;
  if(!$adjacent) {
   return undef if(!($r==$g && $g==$b));
  } else {
- my $min=$r;
- $min=$g if($g < $min);
- $min=$b if($b < $min);
- my $max=$r;
- $max=$g if($g > $max);
- $max=$b if($b > $max);
- return undef if(($max-$min) > 1);
+  return undef if($span > 1);
  }
  return [
-  100*$r/($size-1),
-  100*$g/($size-1),
-  100*$b/($size-1),
+  100*$r/$den,
+  100*$g/$den,
+  100*$b/$den,
  ];
 }
 
-sub generate_lut_lg_payload {
+sub _generate_lut_lg_payload_serial {
  my ($model,$size)=@_;
  $size ||= 33;
  my @u16;
  for(my $b=0;$b<$size;$b++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
-    my $out;
-    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
-    } elsif($model->{"gamut_drive_matrix"}) {
-     $out=gamut_matrix_output($model,$r,$g,$b,$size);
-    } else {
-     my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-     $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
-    }
+    my $out=node_output_pct($model,$r,$g,$b,$size);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
    }
@@ -1257,19 +1741,666 @@ sub generate_lut_lg_payload {
  return \@u16;
 }
 
+
+
+# Parallel generate only — each node uses the same node_output_pct as serial, so
+# results are bit-identical to single-threaded. Accuracy path (IDW / invert) is
+# unchanged; workers only partition independent outer-axis slabs.
+sub _lut_gen_workers {
+ my ($size)=@_;
+ $size=2 if(!defined($size) || $size < 2);
+ my $n=1;
+ if(open(my $fh,'<',"/proc/cpuinfo")) {
+  $n=()= map { 1 } grep { /^processor\s*:/ } <$fh>;
+  close($fh);
+ }
+ $n=1 if($n < 1);
+ $n=4 if($n > 4);
+ return 1 if($size < 9);
+ return $n;
+}
+sub _lut_node_u16 {
+ my ($model,$r,$g,$b,$size)=@_;
+ my $out=node_output_pct($model,$r,$g,$b,$size);
+ return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+}
+
+sub generate_lut_cube {
+ my ($model,$size)=@_;
+ $size ||= 17;
+ my $workers=_lut_gen_workers($size);
+ return _generate_lut_cube_serial($model,$size) if($workers <= 1);
+ my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut generate: mkdir $tmpdir failed ($!), serial cube");
+  return _generate_lut_cube_serial($model,$size);
+ }
+ my $per=int(($size+$workers-1)/$workers);
+ my @pids;
+ for(my $w=0;$w<$workers;$w++) {
+  my $r0=$w*$per; my $r1=$r0+$per; $r1=$size if($r1 > $size);
+  next if($r0 >= $size);
+  my $pid=fork();
+  if(!defined $pid) { log_line("lut generate: fork failed on cube worker $w"); last; }
+  if($pid == 0) {
+   my @u16;
+   for(my $r=$r0;$r<$r1;$r++) {
+    for(my $g=0;$g<$size;$g++) {
+     for(my $b=0;$b<$size;$b++) {
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+     }
+    }
+   }
+   if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+   exit 0;
+  }
+  push @pids,[$w,$pid];
+ }
+ my $ok=1;
+ foreach my $job (@pids) {
+  my $cpid=waitpid($job->[1],0);
+  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
+ }
+ my @u16;
+ if($ok) {
+  for(my $w=0;$w<$workers;$w++) {
+   my $path="$tmpdir/w$w.raw";
+   next unless(-f $path);
+   if(open(my $fh,'<',$path)) {
+    binmode($fh); local $/; my $blob=<$fh>; close($fh);
+    push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
+   }
+   unlink($path);
+  }
+ }
+ rmdir($tmpdir);
+ if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  log_line("lut generate: parallel cube failed (ok=$ok n=".scalar(@u16)."), serial fallback");
+  return _generate_lut_cube_serial($model,$size);
+ }
+ log_line("lut generate: cube ${size}^3 via $workers workers");
+ # Preview corners only — payload/export do not depend on these nodes.
+ my @nodes;
+ for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
+  my ($r,$g,$b)=@{$pt};
+  my $out=node_output_pct($model,$r,$g,$b,$size);
+  my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+  push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
+ }
+ return (\@u16,\@nodes);
+}
+
+sub generate_lut_lg_payload {
+ my ($model,$size)=@_;
+ $size ||= 33;
+ my $workers=_lut_gen_workers($size);
+ return _generate_lut_lg_payload_serial($model,$size) if($workers <= 1);
+ my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut generate: mkdir $tmpdir failed ($!), serial payload");
+  return _generate_lut_lg_payload_serial($model,$size);
+ }
+ my $per=int(($size+$workers-1)/$workers);
+ my @pids;
+ for(my $w=0;$w<$workers;$w++) {
+  my $b0=$w*$per; my $b1=$b0+$per; $b1=$size if($b1 > $size);
+  next if($b0 >= $size);
+  my $pid=fork();
+  if(!defined $pid) { log_line("lut generate: fork failed on payload worker $w"); last; }
+  if($pid == 0) {
+   my @u16;
+   for(my $b=$b0;$b<$b1;$b++) {
+    for(my $g=0;$g<$size;$g++) {
+     for(my $r=0;$r<$size;$r++) {
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+     }
+    }
+   }
+   if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+   exit 0;
+  }
+  push @pids,[$w,$pid];
+ }
+ my $ok=1;
+ foreach my $job (@pids) {
+  my $cpid=waitpid($job->[1],0);
+  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
+ }
+ my @u16;
+ if($ok) {
+  for(my $w=0;$w<$workers;$w++) {
+   my $path="$tmpdir/w$w.raw";
+   next unless(-f $path);
+   if(open(my $fh,'<',$path)) {
+    binmode($fh); local $/; my $blob=<$fh>; close($fh);
+    push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
+   }
+   unlink($path);
+  }
+ }
+ rmdir($tmpdir);
+ if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  log_line("lut generate: parallel payload failed (ok=$ok n=".scalar(@u16)."), serial fallback");
+  return _generate_lut_lg_payload_serial($model,$size);
+ }
+ log_line("lut generate: payload ${size}^3 via $workers workers");
+ return \@u16;
+}
+
+# ---- Lattice-cube solve (generic measure -> solve -> export path) ----
+# Baseline: white-preserving gamut matrix from W/R/G/B/K + neutral identity.
+# Residual v2 (target-relative): under unity LUT, each measured node s yields
+# XYZ_m = panel(s). We want panel(drive) = XYZ_target(s). Convert
+# (XYZ_t - XYZ_m) through peak_inverse and local EOTF slope into a signal-
+# domain drive delta, stored on the lattice and applied on top of the matrix
+# baseline at generate time (drive-space trilinear). This replaces the old
+# residual that compared meas to a peak-only additive prediction -- a
+# different model from the matrix baseline, so volume profiles collapsed to
+# matrix-like results.
+
+sub _trl_slope {
+ # Numerical d(relative luminance)/d(signal) of the target curve at a signal
+ # fraction; floored so near-black residuals cannot explode into huge
+ # signal-domain moves (they are noise-dominated anyway).
+ my ($f,$gamma,$white_y,$black_y)=@_;
+ my $h=0.01;
+ my $lo=$f-$h; $lo=0 if($lo < 0);
+ my $hi=$f+$h; $hi=1 if($hi > 1);
+ my $span=$hi-$lo;
+ return 0.05 if($span <= 0);
+ my $slope=(target_relative_luminance($hi,$gamma,$white_y,$black_y)
+           -target_relative_luminance($lo,$gamma,$white_y,$black_y))/$span;
+ return ($slope > 0.05) ? $slope : 0.05;
+}
+
+# Continuous-percent form of the matrix baseline drive (same domain as
+# gamut_matrix_output / neutral identity). Residuals are absolute drive
+# deltas applied ON TOP of this baseline at generate time, so they must be
+# computed relative to this baseline (not to the unity-LUT input signal).
+sub baseline_drive_pct {
+ my ($model,$fr,$fg,$fb)=@_;
+ $fr=clamp($fr,0,1); $fg=clamp($fg,0,1); $fb=clamp($fb,0,1);
+ if(abs($fr-$fg) < 1e-6 && abs($fg-$fb) < 1e-6) {
+  return [ $fr*100, $fg*100, $fb*100 ];
+ }
+ my $M=$model->{"gamut_drive_matrix"};
+ if(ref($M) eq "ARRAY") {
+  my $gamma=$model->{"target_gamma"};
+  my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
+  # Match gamut_matrix_output linearisation (power / srgb / pq via target_gamma_linear).
+  my $lin=[
+   target_gamma_linear($fr,$gamma),
+   target_gamma_linear($fg,$gamma),
+   target_gamma_linear($fb,$gamma),
+  ];
+  my $out=matrix_mul_vec($M,$lin);
+  return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
+ }
+ return [ $fr*100, $fg*100, $fb*100 ];
+}
+
+# Saturation weight for residual / near-grey protection.
+# sat = (max-min)/max of input channels. Near greys stay matrix/identity so
+# residual trilinear leakage cannot destroy greyscale or push +x CIE.
+sub residual_sat_weight {
+ my ($sat)=@_;
+ $sat=0 if(!defined($sat) || $sat < 0);
+ return 0 if($sat <= 0.05);
+ return 1 if($sat >= 0.22);
+ return ($sat-0.05)/(0.22-0.05);
+}
+sub residual_node_sat {
+ my ($fr,$fg,$fb)=@_;
+ my $mx=$fr; $mx=$fg if($fg > $mx); $mx=$fb if($fb > $mx);
+ my $mn=$fr; $mn=$fg if($fg < $mn); $mn=$fb if($fb < $mn);
+ return ($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+}
+
+sub build_residual_grid {
+ my ($model,$nodes,$config)=@_;
+ return (undef,{reason=>"no interior nodes"}) if(ref($nodes) ne "ARRAY" || !@{$nodes});
+ # Method-aware defaults. Caps are drive-fraction deltas ON TOP of the matrix
+ # baseline (baseline-relative v3). Sparse hybrid/skeleton used to use 0.30
+ # with unity-relative residuals that then stacked on M(s) and overshot; with
+ # baseline-relative math a milder cap is correct.
+ my $method_l=lc((ref($config) eq "HASH" ? ($config->{"method"}||$model->{"method"}||"") : "")||"");
+ my $sparse_volume=($method_l eq "hybrid" || $method_l eq "skeleton") ? 1 : 0;
+ my $has_fm=(ref($model->{"forward_model"}) eq "HASH") ? 1 : 0;
+ my $default_cap=$has_fm ? 0.15 : ($sparse_volume ? 0.18 : 0.12);
+ my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0)
+  ? $config->{"solve_residual_cap"}+0 : $default_cap;
+ my $gamma=$model->{"target_gamma"};
+ my $white_y=$model->{"white_y"}||100;
+ my $black_y=$model->{"black_y"}||0;
+ my $black=$model->{"black"}||[0,0,0];
+ my $peak_inverse=$model->{"peak_inverse"};
+ return (undef,{reason=>"no peak inverse"}) if(ref($peak_inverse) ne "ARRAY");
+ my %fs;
+ foreach my $n (@{$nodes}) { $fs{sprintf("%.4f",$n->{"fr"})}=1; $fs{sprintf("%.4f",$n->{"fg"})}=1; $fs{sprintf("%.4f",$n->{"fb"})}=1; }
+ my @fracs=sort { $a <=> $b } map { $_+0 } keys %fs;
+ return (undef,{reason=>"lattice too small (".scalar(@fracs)." axis levels)"}) if(scalar(@fracs) < 3);
+ my %fidx; for(my $i=0;$i<@fracs;$i++){ $fidx{sprintf("%.4f",$fracs[$i])}=$i; }
+ my $noise_floor=(ref($config) eq "HASH" && defined($config->{"solve_residual_noise_floor"}) && ($config->{"solve_residual_noise_floor"}+0) >= 0)
+  ? $config->{"solve_residual_noise_floor"}+0 : 0.0;
+ # Neighbour smooth weight toward mean (0..1). Only average against OTHER
+ # residual-bearing nodes -- never against zero-anchored corners/neutrals
+ # (that was diluting every hybrid face centre toward matrix-like zero).
+ # Sparse volume default 0.05; dense lattice 0.20.
+ my $default_smooth=$sparse_volume ? 0.05 : 0.20;
+ my $smooth=(ref($config) eq "HASH" && defined($config->{"solve_residual_smooth"}) && ($config->{"solve_residual_smooth"}+0) >= 0)
+  ? ($config->{"solve_residual_smooth"}+0) : $default_smooth;
+ $smooth=1 if($smooth > 1);
+ # Soft dark floor: skip only near-black noise, but keep mid-dark primaries
+ # that sat-sweep scores care about (was hard Y<0.5 nits -> lost low ramps).
+ my $min_y=(ref($config) eq "HASH" && defined($config->{"solve_residual_min_y"}) && ($config->{"solve_residual_min_y"}+0) >= 0)
+  ? $config->{"solve_residual_min_y"}+0 : 0.15;
+ my %corr; my %raw;
+ my ($used,$skipped,$capped,$shrunk,$fm_nodes)=(0,0,0,0,0);
+ my ($rms_sum,$rms_n,$max_abs,$applied_sum,$applied_n)=(0,0,0,0,0);
+ my ($err_y_sum,$err_y_n)=(0,0);
+ foreach my $n (@{$nodes}) {
+  my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
+  # Exact neutrals stay zero -- 1D greyscale / DPG owns the grey ramp.
+  my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
+  if($is_neutral) { $corr{$key}=[0,0,0]; next; }
+  # Limited-range pure primary: ~ (0.92, 0.06, 0.06). Count channels above
+  # legal pedestal so monochromatic ramps are detected even with pedestal.
+  my $mono_thr=0.08;
+  my $n_hot=0;
+  $n_hot++ if($fr > $mono_thr);
+  $n_hot++ if($fg > $mono_thr);
+  $n_hot++ if($fb > $mono_thr);
+  my $is_mono=($n_hot <= 1); # black or pure R/G/B ramp (incl. legal pedestal)
+  my $dom_ch=-1;
+  if($is_mono && $n_hot == 1) {
+   $dom_ch=0 if($fr >= $fg && $fr >= $fb);
+   $dom_ch=1 if($fg > $fr && $fg >= $fb);
+   $dom_ch=2 if($fb > $fr && $fb > $fg);
+  }
+  if($n_hot == 0) { $corr{$key}=[0,0,0]; next; } # black
+  my $xyz_m=$n->{"xyz"};
+  if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < $min_y) { $skipped++; next; }
+  my $sat=residual_node_sat($fr,$fg,$fb);
+  my $sat_w=residual_sat_weight($sat);
+  # Near-greys: force zero residual so pure greyscale and low-sat neutrals
+  # stay on the white-preserving matrix / identity (greyscale ownership).
+  if($sat_w <= 0) { $corr{$key}=[0,0,0]; next; }
+  # Target appearance for this continuous signal (same rules as post-check).
+  my $cw=$model->{"chromatic_white_y"} || $white_y;
+  my $xyz_t;
+  if(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001 && ref($model->{"white_axis"}) eq "HASH") {
+   $xyz_t=interpolate_vec_by_level($model->{"white_axis"},$fr*100);
+  } else {
+   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,$model->{"target_gamut"});
+  }
+  if(ref($xyz_t) ne "ARRAY") { $skipped++; next; }
+  my $delta=vec_sub($xyz_t,$xyz_m);
+  $err_y_sum += ($delta->[1]||0)*($delta->[1]||0); $err_y_n++;
+  my $seed=baseline_drive_pct($model,$fr,$fg,$fb);
+  my @f=($fr,$fg,$fb);
+  my @ideal_pct;
+  # Preferred: invert the measured multi-level forward model to the target,
+  # seeded at the matrix baseline. Residual = ideal - baseline (baseline-
+  # consistent). Fallback: unity-signal peak_inverse residual, then rebased
+  # onto the matrix baseline so generate (M(s)+res) matches the intent.
+  if($has_fm) {
+   my $ideal=fm_invert($model->{"forward_model"},$model,$xyz_t,$seed);
+   @ideal_pct=map { clamp($ideal->[$_],0,100) } (0..2);
+   $fm_nodes++;
+  } else {
+   my $dlin=matrix_mul_vec($peak_inverse,$delta);
+   my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
+   my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
+   for(my $ch=0;$ch<3;$ch++) {
+    my $dsig=0;
+    if(!$is_mono || $ch == $dom_ch) {
+     my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
+     my $slope=_trl_slope($sf,$gamma,$white_y,$black_y);
+     $dsig=$dlin->[$ch]/$slope;
+     if($is_mono && $dom_ch == $ch) {
+      my $peak_y=0;
+      if(ref($model->{"peak_y"}) eq "HASH") {
+       my $pk=$model->{"peak_y"}{($ch==0?"red":($ch==1?"green":"blue"))};
+       $peak_y=$pk+0 if(defined($pk) && $pk+0 > 0);
+      }
+      if($peak_y > 0) {
+       my $dY=($xyz_t->[1]||0)-($xyz_m->[1]||0);
+       $dsig=($dY/$peak_y)/$slope;
+      }
+     }
+    }
+    if($floor > 0) {
+     my $a=abs($dsig);
+     if($a <= $floor) { $dsig=0; $shrunk++; }
+     else { $dsig=($dsig > 0) ? ($dsig-$floor) : ($dsig+$floor); }
+    }
+    # Unity-domain ideal drive, then rebased to matrix baseline below.
+    $ideal_pct[$ch]=clamp($f[$ch]*100 + $dsig*100,0,100);
+   }
+  }
+  # Mono: residual only on the dominant channel (no off-axis desat floods).
+  if($is_mono && $dom_ch >= 0) {
+   for(my $ch=0;$ch<3;$ch++) {
+    $ideal_pct[$ch]=$seed->[$ch] if($ch != $dom_ch);
+   }
+  }
+  my @c;
+  for(my $ch=0;$ch<3;$ch++) {
+   my $dsig=(($ideal_pct[$ch]-$seed->[$ch])/100.0) * $sat_w;
+   my $a=abs($dsig);
+   $rms_sum+=$dsig*$dsig; $rms_n++;
+   $max_abs=$a if($a > $max_abs);
+   if(abs($dsig) > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
+   $applied_sum+=$dsig*$dsig; $applied_n++;
+   push @c,$dsig;
+  }
+  $corr{$key}=\@c;
+  $raw{$key}=1;
+  $used++;
+ }
+ return (undef,{reason=>"no usable interior nodes"}) if(!$used);
+ # Light smoothing ONLY against residual-bearing neighbours. Averaging with
+ # zero-anchored peak corners / neutrals (which always exist in %corr) used
+ # to pull every hybrid edge residual toward zero -- making hybrid score
+ # like matrix despite measuring 63 patches.
+ my %smoothed;
+ foreach my $key (keys %corr) {
+  next if(!$raw{$key});
+  my ($i,$j,$k)=split(/:/,$key);
+  my @sum=(0,0,0); my $cnt=0;
+  foreach my $d ([1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]) {
+   my $nk=($i+$d->[0]).":".($j+$d->[1]).":".($k+$d->[2]);
+   next if(!$raw{$nk});
+   next if(ref($corr{$nk}) ne "ARRAY");
+   for(my $ch=0;$ch<3;$ch++){ $sum[$ch]+=$corr{$nk}[$ch]; }
+   $cnt++;
+  }
+  if($cnt && $smooth > 0) {
+   my $c=$corr{$key};
+   my $keep=1-$smooth;
+   $smoothed{$key}=[ map { $keep*$c->[$_]+$smooth*($sum[$_]/$cnt) } (0..2) ];
+  }
+ }
+ foreach my $key (keys %smoothed) { $corr{$key}=$smoothed{$key}; }
+ # Recompute applied RMS AFTER smooth so the report matches what generates.
+ my ($post_sum,$post_n,$post_max)=(0,0,0);
+ foreach my $key (keys %raw) {
+  my $c=$corr{$key}; next if(ref($c) ne "ARRAY");
+  for(my $ch=0;$ch<3;$ch++){
+   my $v=$c->[$ch]||0;
+   $post_sum+=$v*$v; $post_n++;
+   my $a=abs($v); $post_max=$a if($a > $post_max);
+  }
+ }
+ my $report={
+  residual_definition => $has_fm ? "measured_inverse_baseline_v3" : "target_relative_baseline_v3",
+  nodes_used => $used,
+  nodes_skipped_dark => $skipped,
+  channels_capped => $capped,
+  channels_shrunk_to_zero => $shrunk,
+  residual_cap => $cap,
+  residual_noise_floor => $noise_floor,
+  residual_smooth => $smooth,
+  residual_min_y => $min_y,
+  residual_signal_rms => $rms_n ? sqrt($rms_sum/$rms_n) : 0,
+  residual_signal_max => $max_abs,
+  residual_applied_rms => $post_n ? sqrt($post_sum/$post_n) : ($applied_n ? sqrt($applied_sum/$applied_n) : 0),
+  residual_applied_max => $post_max,
+  residual_target_err_y_rms => $err_y_n ? sqrt($err_y_sum/$err_y_n) : 0,
+  residual_fm_nodes => $fm_nodes,
+  residual_baseline => "matrix",
+  residual_sat_taper => 1,
+  axis_levels => scalar(@fracs),
+  residual_profile => $sparse_volume ? "sparse_volume" : "dense",
+ };
+ return ({ fracs=>\@fracs, corr=>\%corr },$report);
+}
+
+sub apply_residual_correction {
+ my ($model,$out,$r,$g,$b,$size)=@_;
+ my $grid=$model->{"residual_grid"};
+ return $out if(ref($grid) ne "HASH");
+ my $fracs=$grid->{"fracs"};
+ my $corr=$grid->{"corr"};
+ my $n=scalar(@{$fracs});
+ return $out if($n < 2 || $size < 2);
+ # Residuals are baseline-relative drive deltas (ideal - matrix_baseline) and
+ # are looked up at LUT INPUT coords so secondaries hit the measured nodes
+ # after the gamut matrix remaps drives. A second saturation taper at apply
+ # time kills trilinear leakage of pure-primary residuals onto near-greys
+ # (which was destroying greyscale / pushing CIE +x between measured nodes).
+ my $den=$size-1; $den=1 if($den < 1);
+ my @f=(
+  clamp(($r+0)/$den,0,1),
+  clamp(($g+0)/$den,0,1),
+  clamp(($b+0)/$den,0,1),
+ );
+ my (@lo,@t);
+ for(my $ch=0;$ch<3;$ch++) {
+  my $f=$f[$ch];
+  my $c=0;
+  $c++ while($c < $n-2 && $fracs->[$c+1] <= $f);
+  my $span=$fracs->[$c+1]-$fracs->[$c];
+  my $t=($span > 0) ? (($f-$fracs->[$c])/$span) : 0;
+  $t=0 if($t < 0); $t=1 if($t > 1);
+  push @lo,$c; push @t,$t;
+ }
+ my @add=(0,0,0);
+ foreach my $di (0,1) { foreach my $dj (0,1) { foreach my $dk (0,1) {
+  my $w=($di ? $t[0] : 1-$t[0])*($dj ? $t[1] : 1-$t[1])*($dk ? $t[2] : 1-$t[2]);
+  next if($w <= 0);
+  my $c=$corr->{($lo[0]+$di).":".($lo[1]+$dj).":".($lo[2]+$dk)};
+  next if(ref($c) ne "ARRAY");
+  for(my $ch=0;$ch<3;$ch++){ $add[$ch]+=$w*$c->[$ch]; }
+ }}}
+ # Inline sat taper (no helper calls) so regression tests that extract this
+ # sub alone still parse, and near-greys cannot inherit primary residuals.
+ my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
+ my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
+ my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+ my $sat_w=($sat <= 0.05) ? 0 : (($sat >= 0.22) ? 1 : (($sat-0.05)/(0.22-0.05)));
+ return $out if($sat_w <= 0);
+ return [ map { $out->[$_]+100*$add[$_]*$sat_w } (0..2) ];
+}
+
+sub run_solve_only {
+ my ($config)=@_;
+ my $state={ status=>"running", solve_only=>json_true(), method=>"cube",
+  current_name=>"Solving 3D LUT from lattice readings", message=>"Building model",
+  started_at=>int(time()*1000) };
+ write_state($state);
+ my $lattice=$config->{"lattice_readings"};
+ $lattice=[] if(ref($lattice) ne "ARRAY");
+ my %corner_kind=( "1,1,1"=>"white", "1,0,0"=>"red", "0,1,0"=>"green", "0,0,1"=>"blue", "0,0,0"=>"black" );
+ my %corners; my @nodes;
+ foreach my $rd (@{$lattice}) {
+  next if(ref($rd) ne "HASH");
+  my $name=$rd->{"name"}||"";
+  next unless($name =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
+  my ($fr,$fg,$fb)=($1/100,$2/100,$3/100);
+  my $xyz=reading_xyz($rd);
+  next if(!$xyz && $fr+$fg+$fb > 0.001);
+  $xyz ||= [0,0,0];
+  my $ck=join(",",map { $_ >= 0.999 ? 1 : ($_ <= 0.001 ? 0 : "x") } ($fr,$fg,$fb));
+  $corners{$corner_kind{$ck}}=$xyz if(exists $corner_kind{$ck});
+  push @nodes,{ fr=>$fr, fg=>$fg, fb=>$fb, xyz=>$xyz };
+ }
+ foreach my $need (qw(white red green blue)) {
+  if(!$corners{$need}) {
+   $state->{"status"}="error";
+   $state->{"message"}="Lattice readings are missing the 100% $need corner - measure the full lattice first";
+   write_state($state);
+   exit 1;
+  }
+ }
+ my @profile;
+ foreach my $kind (qw(white red green blue)) {
+  push @profile,{ step=>{kind=>$kind,level=>100,phase=>"profile"}, reading=>{X=>$corners{$kind}[0],Y=>$corners{$kind}[1],Z=>$corners{$kind}[2]}, read_time=>time() };
+ }
+ my $blackc=$corners{"black"}||[0,0,0];
+ push @profile,{ step=>{kind=>"black",level=>0,phase=>"profile"}, reading=>{X=>$blackc->[0],Y=>$blackc->[1],Z=>$blackc->[2]}, read_time=>time() };
+ my $model=model_from_readings("matrix",\@profile,$config);
+ my $solve_report={ mode=>"matrix_only" };
+ if(!$config->{"solve_matrix_only"}) {
+  # Hybrid/skeleton: measured multi-level forward model STAYS on the generate
+  # path (node_output_pct -> fm_invert). That is the whole point of the extra
+  # reads -- matrix is only the Newton seed / near-grey blend, not the answer.
+  # Lattice (no multi-level ramps) keeps baseline-relative residual on matrix.
+  my $fm=(forward_model_method($config->{"method"}) && !$config->{"solve_disable_forward_model"})
+   ? build_measured_forward_model($model,\@nodes,$config) : undef;
+  if(ref($fm) eq "HASH") {
+   $model->{"forward_model"}=$fm;
+   $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+    forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+    forward_nonadd_count=>$fm->{"nonadd_count"}, nodes_used=>scalar(@nodes) };
+  } else {
+   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+   if($grid) {
+    $model->{"residual_grid"}=$grid;
+    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+   } else {
+    $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   }
+  }
+ }
+ $state->{"message"}="Generating LUT";
+ $state->{"current_name"}="Generating 3D LUT";
+ write_state($state);
+ # Match AutoCal: 17^3 export cube + 33^3 LG payload. Calling 33 for both
+ # roughly doubles generate time with no upload benefit.
+ my $cube_size=int($config->{"solve_cube_size"}||17);
+ $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
+ my $payload_u16=generate_lut_lg_payload($model,33);
+ $model->{"method"}="cube";
+ my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
+ $state->{"status"}="complete";
+ $state->{"message"}="3D LUT solved";
+ $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." lattice readings";
+ $state->{"export"}=$export;
+ $state->{"solve_report"}=$solve_report;
+ $state->{"cube_lut_size"}=$cube_size;
+ $state->{"payload_lut_size"}=33;
+ $state->{"lattice_nodes"}=scalar(@nodes);
+ $state->{"signal_mode"}=$model->{"signal_mode"};
+ $state->{"target_gamut"}=$model->{"target_gamut"};
+ $state->{"target_gamma"}=$model->{"signal_gamma"}||$model->{"target_gamma"};
+ $state->{"neutral_axis_identity"}=json_bool($model->{"neutral_axis_identity"});
+ $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
+ $state->{"wrgb_mid_sat_matrix_blend"}=json_bool($model->{"wrgb_mid_sat_matrix_blend"});
+ $state->{"wrgb_chroma_luma_comp"}=json_bool($model->{"wrgb_chroma_luma_comp"});
+ write_state($state);
+ log_line("solve_only complete: nodes=".scalar(@nodes)." cube=$cube_size mode=".($solve_report->{"mode"}||"")." greys=".($model->{"neutral_axis_identity"}?"identity":"included")." mid_sat_blend=".($model->{"wrgb_mid_sat_matrix_blend"}?1:0));
+ return 1;
+}
+
+# ---- Imported-.cube upload path (method=imported) ----
+# No profiling, no solve: parse an operator-supplied .cube (saved on the Pi
+# by /api/3d-lut/import), trilinearly resample it to the LG 33-point payload
+# and a 17-point export cube, then run the standard probe/upload flow.
+
+sub parse_cube_file {
+ my ($path)=@_;
+ open(my $fh,'<',$path) or die "Unable to read imported .cube: $!\n";
+ my $size=0; my @vals;
+ while(my $line=<$fh>) {
+  next if($line=~/^\s*(?:#|TITLE|DOMAIN_MIN|DOMAIN_MAX|LUT_1D)/);
+  if($line=~/^\s*LUT_3D_SIZE\s+(\d+)/) { $size=$1+0; next; }
+  push @vals,[$1+0,$2+0,$3+0] if($line=~/^\s*([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s*$/);
+ }
+ close($fh);
+ die "Imported .cube missing LUT_3D_SIZE\n" if($size < 2 || $size > 129);
+ die "Imported .cube has ".scalar(@vals)." nodes, expected ".($size**3)."\n" if(scalar(@vals) != $size**3);
+ # Standard .cube node order: R fastest, B slowest.
+ return { size=>$size, values=>\@vals };
+}
+
+sub imported_cube_sample {
+ my ($cube,$fr,$fg,$fb)=@_;
+ my $n=$cube->{"size"};
+ my $vals=$cube->{"values"};
+ my $axis=sub {
+  my ($f)=@_;
+  my $x=clamp($f,0,1)*($n-1);
+  my $i0=int($x);
+  $i0=$n-2 if($i0 >= $n-1);
+  return ($i0,$x-$i0);
+ };
+ my ($r0,$tr)=$axis->($fr);
+ my ($g0,$tg)=$axis->($fg);
+ my ($b0,$tb)=$axis->($fb);
+ my @out=(0,0,0);
+ foreach my $db (0,1) { foreach my $dg (0,1) { foreach my $dr (0,1) {
+  my $w=($dr ? $tr : 1-$tr)*($dg ? $tg : 1-$tg)*($db ? $tb : 1-$tb);
+  next if($w <= 0);
+  my $v=$vals->[($r0+$dr)+($g0+$dg)*$n+($b0+$db)*$n*$n];
+  for my $c (0..2) { $out[$c]+=$w*$v->[$c]; }
+ }}}
+ return \@out;
+}
+
+sub build_imported_lut {
+ my ($config,$state)=@_;
+ my $path=$config->{"imported_cube_path"}||"";
+ die "Imported .cube path missing\n" if($path eq "");
+ die "Imported .cube not found: $path\n" if(!-f $path);
+ $state->{"current_name"}="Loading imported 3D LUT";
+ $state->{"message"}="Parsing ".$path;
+ write_state($state);
+ my $cube=parse_cube_file($path);
+ my $model={
+  method => "imported",
+  signal_mode => $config->{"signal_mode"}||"sdr",
+  target_gamut => $config->{"target_gamut"}||"bt709",
+  target_gamma => $config->{"target_gamma"}||"",
+  signal_gamma => $config->{"target_gamma"}||"",
+  neutral_axis_source => "imported",
+  imported_cube_path => $path,
+  imported_cube_size => $cube->{"size"},
+ };
+ # Export cube (17^3): R-SLOWEST fill to match generate_lut_cube — cube_text
+ # emits through a transposed walk and assumes that memory order.
+ my @cube_u16;
+ my $csize=17;
+ for(my $r=0;$r<$csize;$r++) { for(my $g=0;$g<$csize;$g++) { for(my $b=0;$b<$csize;$b++) {
+  my $v=imported_cube_sample($cube,$r/($csize-1),$g/($csize-1),$b/($csize-1));
+  push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
+ }}}
+ # LG payload (33^3): R-FASTEST fill to match generate_lut_lg_payload.
+ my @payload_u16;
+ my $psize=33;
+ for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
+  my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
+  push @payload_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
+ }}}
+ log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize payload=$psize");
+ return ($model,\@cube_u16,\@payload_u16);
+}
+
 sub cube_text {
  my ($u16,$size,$title)=@_;
  my $text="TITLE \"".$title."\"\n";
  $text.="LUT_3D_SIZE $size\n";
  $text.="DOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n";
- for(my $i=0;$i<@{$u16};$i+=3) {
-  $text.=sprintf("%.9f %.9f %.9f\n",$u16->[$i]/4095,$u16->[$i+1]/4095,$u16->[$i+2]/4095);
+ # Standard .cube node order is RED fastest / BLUE slowest. generate_lut_cube
+ # fills @$u16 red-slowest (r outer loop), so emit through a transposed index
+ # walk — a straight dump hands external tools an R<->B swapped lattice
+ # (neutral axis looks fine, chromatic corrections land on the wrong axes).
+ for(my $b=0;$b<$size;$b++) {
+  for(my $g=0;$g<$size;$g++) {
+   for(my $r=0;$r<$size;$r++) {
+    my $i=(($r*$size+$g)*$size+$b)*3;
+    $text.=sprintf("%.9f %.9f %.9f\n",$u16->[$i]/4095,$u16->[$i+1]/4095,$u16->[$i+2]/4095);
+   }
+  }
  }
  return $text;
 }
 
 sub export_lut {
- my ($cube_u16,$payload_u16,$model,$config)=@_;
+ my ($cube_u16,$payload_u16,$model,$config,$cube_size)=@_;
+ $cube_size=17 if(!defined($cube_size) || $cube_size !~ /^\d+$/ || $cube_size < 2);
  my $dir=$config->{"lut_dir"}||"/var/lib/PGenerator/lg/luts";
  my $stamp=strftime("%Y%m%d_%H%M%S",localtime());
  my $method=sanitize_name($model->{"method"}||"ramp");
@@ -1281,7 +2412,7 @@ sub export_lut {
  my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
  my $binary=pack("v*",@{$payload_u16});
  write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
- write_file("$base.cube",cube_text($cube_u16,17,$title),0) or die "Unable to write cube export\n";
+ write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
  write_file("$base.json",$json->encode({
   status => "ok",
   method => $method,
@@ -1290,13 +2421,14 @@ sub export_lut {
   target_gamut => $gamut,
   target_gamma => $gamma,
   title => $title,
-  lut_size => 17,
-  cube_lut_size => 17,
+  lut_size => $cube_size,
+  cube_lut_size => $cube_size,
   payload_lut_size => 33,
   payload_bits => 12,
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
+  cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   neutral_axis_source => $model->{"neutral_axis_source"},
   neutral_axis_protection => $model->{"neutral_neighborhood_identity_enabled"}
    ? "exact diagonal and adjacent neutral-neighborhood identity"
@@ -1423,6 +2555,48 @@ sub _patch_insert_resolve {
  return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
 }
 
+# Blank the panel after profiling finishes and before the (often multi-minute)
+# cube generate. Without this the last measured patch — frequently pure blue
+# on lattice/hybrid orderings — sits on-screen for the whole solve and risks
+# burn-in on WOLED. Prefer the idle "stop" pattern; fall back to an explicit
+# full-field black patch if stop fails (e.g. mid-session guard quirks).
+sub blank_display_for_solve {
+ my ($config,$state)=@_;
+ return if(ref($config) ne "HASH");
+ return if($config->{"fixture_mode"});
+ my $stop_result=api_json("POST","/api/pattern",{ name=>"stop" },10);
+ my $mode="stop";
+ my $ok=(ref($stop_result) eq "HASH" && ($stop_result->{"status"}||"") ne "error") ? 1 : 0;
+ if(!$ok) {
+  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
+  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+  my $payload={
+   name => "patch",
+   r => 0, g => 0, b => 0,
+   size => 100,
+   input_max => 255,
+   signal_mode => $config->{"signal_mode"}||"sdr",
+   max_luma => $config->{"max_luma"}||1000,
+   # Meter session may still hold the post-read stop guard; allow black through.
+   allow_after_stop => json_true(),
+  };
+  $payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
+  $payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+  my $black_result=api_json("POST","/api/pattern",$payload,10);
+  $mode="black";
+  $ok=(ref($black_result) eq "HASH" && ($black_result->{"status"}||"") ne "error") ? 1 : 0;
+ }
+ if(ref($state) eq "HASH") {
+  $state->{"solve_pattern_blank"}={
+   mode => $mode,
+   ok => $ok ? json_true() : json_false(),
+  };
+  write_state($state);
+ }
+ log_line("3D LUT solve pattern blank: $mode ".($ok ? "ok" : "failed"));
+ return $ok;
+}
+
 sub apply_pattern_insert_before_read {
  my ($config,$step)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
@@ -1498,6 +2672,12 @@ sub read_step_once {
  my $request_id=read_request_id($step);
  my $payload={
   display_type => $config->{"display_type"}||"lcd",
+  # Forward the operator's CCSS override to the per-step payload so the
+  # WebUI's meter session keeps the custom CCSS active through every patch.
+  # The display_type token is now a tech key (post-split); the override
+  # token is independently resolved on the server side via
+  # resolve_ccss_override().
+  ccss_override => $config->{"ccss_override"}||"",
   patch_r => int($step->{"r"}||0),
   patch_g => int($step->{"g"}||0),
   patch_b => int($step->{"b"}||0),
@@ -1594,7 +2774,15 @@ sub fixture_reading_for_step {
  my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  my $xyz;
- if($kind eq "black") { $xyz=$black; }
+ if($kind eq "node") {
+  # Lattice interior node: ideal additive display in the target gamut —
+  # per-channel gamma-decoded drives. Makes the lattice-profiled solve's
+  # residual grid ~zero in fixture mode (identity gate, like solve_only's).
+  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
+  $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
+   $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
+ }
+ elsif($kind eq "black") { $xyz=$black; }
  elsif($kind eq "white") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,$gamma,$gamma,$range_y)); }
  elsif($kind eq "red") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,0,0,$range_y)); }
  elsif($kind eq "green") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,$gamma,0,$range_y)); }
@@ -1740,6 +2928,67 @@ sub neutral_neighborhood_identity_enabled {
  return 1 if($config->{"neutral_neighborhood_identity_enabled"});
  my $generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : $config->{"preflight_lg_generation"};
  return lg_generation_legacy_neutral_guard_enabled($generation);
+}
+
+# Whether exact-neutral cube nodes stay identity (1D greyscale owns them).
+# Policies:
+#  * include_greyscale=1 / neutral_axis_identity=0  → solve greys into the cube
+#    (Resolve / madVR / host apps; default for solve_only export).
+#  * include_greyscale=0 / neutral_axis_identity=1 → force identity greys
+#    (LG AutoCal dual-LUT; default for live LG profile+upload).
+# Explicit keys win; else solve_only includes greys, everything else keeps
+# identity for DPG compatibility.
+sub neutral_axis_identity_enabled {
+ my ($config)=@_;
+ return 1 if(ref($config) ne "HASH");
+ if(defined($config->{"include_greyscale"})) {
+  return ($config->{"include_greyscale"}+0) ? 0 : 1;
+ }
+ if(defined($config->{"neutral_axis_identity"})) {
+  return ($config->{"neutral_axis_identity"}+0) ? 1 : 0;
+ }
+ # Export / offline solve: complete cube for host software.
+ return 0 if($config->{"solve_only"});
+ # LG AutoCal (standalone or full workflow): 1D DPG owns greys.
+ return 1;
+}
+
+sub neutral_axis_source_label {
+ my ($config,$adjacent)=@_;
+ if(!neutral_axis_identity_enabled($config)) {
+  return "greyscale included in 3D cube (export / complete-LUT mode)";
+ }
+ return $adjacent
+  ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
+  : "exact diagonal identity after current 1D greyscale path";
+}
+
+sub wrgb_chroma_luma_comp_enabled {
+ my ($config,$cw,$wy,$method)=@_;
+ return 0 if(!($wy > 0 && $cw > 0 && $cw < $wy*0.98));
+ if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})) {
+  return ($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0) ? 1 : 0;
+ }
+ $method=lc($method||"");
+ # Prefer config method when volume paths call model_from_readings("matrix")
+ # only to harvest corner contrib.
+ if(ref($config) eq "HASH" && defined($config->{"method"}) && $config->{"method"} ne "") {
+  $method=lc($config->{"method"});
+ }
+ # Matrix: default OFF (HDR Full AutoCal matrix regressed with default ON).
+ # Hybrid/skeleton: default ON when WRGB gap is present (mid-sat overshoot).
+ return 1 if($method eq "hybrid" || $method eq "skeleton");
+ return 0;
+}
+
+sub wrgb_mid_sat_matrix_blend_enabled {
+ my ($config,$method)=@_;
+ $method=lc($method||"");
+ return 0 if(!($method eq "hybrid" || $method eq "skeleton"));
+ if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_mid_sat_blend"})) {
+  return ($config->{"lg_autocal_3dlut_mid_sat_blend"}+0) ? 1 : 0;
+ }
+ return 1; # default ON for hybrid/skeleton
 }
 
 sub reset_3d_lut_to_unity_before_profile {
@@ -2945,9 +4194,26 @@ if(ref($config) eq "HASH") {
 }
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
-$method="matrix" unless($method eq "matrix" || $method eq "ramp");
+$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice"
+ || $method eq "skeleton" || $method eq "hybrid" || $method eq "imported");
+# Volume profiling needs the client-expanded node list (except skeleton, which
+# can expand server-side). Without patches, fall back to 5-point matrix.
+# solve_only re-solves from lattice_readings and must KEEP method=hybrid so
+# residual defaults stay sparse-volume strength (do not demote to matrix).
+if(!$config->{"solve_only"}
+ && ($method eq "lattice" || $method eq "hybrid")
+ && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}})) {
+ $method="matrix";
+}
 my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_signal_mode"},$config->{"ui_signal_mode"},$config->{"signal_mode"});
 $config->{"signal_mode"}=$signal_mode;
+# HDR10: Calman matrix-only. Demote volume/ramp profiles (imported upload OK).
+# Also demote solve_only hybrid/lattice so standalone HDR solves stay matrix.
+if($signal_mode eq "hdr10" && $method ne "matrix" && $method ne "imported") {
+ log_line("HDR10 forces method=matrix (was $method)");
+ $method="matrix";
+ $config->{"solve_matrix_only"}=1 if($config->{"solve_only"});
+}
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
 # Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
@@ -2973,8 +4239,30 @@ sub _normalize_signal_range_field {
  $config->{"transport_signal_range"}=$eff;
  log_line("LG 3D LUT AutoCal quant range: signal_range=$eff (1=Limited 2=Full) method=$method signal_mode=".($config->{"signal_mode"}||""));
 }
-my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
+# Solve-only mode (generic measure -> solve -> export path): no meter, no TV,
+# no upload -- build the model from POSTed lattice readings, generate + export
+# the LUT, write the state file and exit. Uses its own state/stop paths so it
+# can never collide with a real AutoCal run's UI state.
+if($config->{"solve_only"}) {
+ eval { run_solve_only($config); };
+ if($@) {
+  my $err=$@; $err =~ s/\s+$//;
+  write_state({ status=>"error", solve_only=>json_true(), message=>"LUT solve failed: $err" });
+  exit 1;
+ }
+ exit 0;
+}
+
+my @steps=($method eq "matrix") ? build_matrix_steps($config)
+ : ($method eq "lattice") ? build_lattice_steps($config)
+ : ($method eq "skeleton") ? build_skeleton_steps($config)
+ : ($method eq "hybrid") ? build_hybrid_steps($config)
+ : ($method eq "imported") ? ()
+ : build_ramp_steps($config);
 my $started_at=int(time()*1000);
+my $profile_patch_count=($method eq "ramp") ? 65
+ : (is_volume_profile_method($method) ? scalar(@steps)
+ : ($method eq "imported" ? 0 : 5));
 
 my $state={
  status => "running",
@@ -2983,7 +4271,7 @@ my $state={
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
- profile_patch_count => ($method eq "ramp" ? 65 : 5),
+ profile_patch_count => $profile_patch_count,
  current_name => "Preparing LG 3D LUT Auto Cal...",
  message => "Starting",
  readings => [],
@@ -3004,7 +4292,8 @@ my $upload_requested=upload_requested($config);
 
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
- die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
+ die "LG 3D LUT Auto Cal HDR10 is matrix-only (Calman parity)\n"
+  if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "imported");
  # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
  # tone-map commit (operator-approved reorder, 2026-07-03). Running it
  # here (before profiling) made the trim converge against a mid-workflow
@@ -3013,11 +4302,59 @@ eval {
  # The order test (base DPG -> 3D cal -> shadow after -> re-commit)
  # verified within +-2% luminance and dxy <= 0.0016 at 15-35% on the C1.
  # Profiling now always sees the greyscale stage's converged base DPG.
- my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
+ # Imported upload skips the pre-profile unity reset: there is no profiling
+ # to protect and the upload itself replaces whatever cube is loaded.
+ my $unity_reset=($method eq "imported") ? undef : reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
+ # Volume multi-anchor WRGB drift: re-sample W/R/G/B periodically and map every
+ # profile XYZ back to the first-anchor epoch before residual/matrix solve.
+ my $volume_drift_on=is_volume_profile_method($method) && !$config->{"fixture_mode"}
+  && !($config->{"volume_drift_disable"}+0);
+ my $drift_interval_s=(defined($config->{"drift_interval_s"}) && ($config->{"drift_interval_s"}+0) > 0)
+  ? ($config->{"drift_interval_s"}+0) : 180;
+ my $drift_interval_patches=(defined($config->{"drift_interval_patches"}) && ($config->{"drift_interval_patches"}+0) > 0)
+  ? int($config->{"drift_interval_patches"}+0) : 40;
+ my @volume_drift_anchors;
+ my $last_anchor_t=0;
+ my $last_anchor_i=-9999;
+ my $volume_black=[0,0,0];
+
+ my $take_volume_anchor=sub {
+  my ($label,$step_index)=@_;
+  return unless($volume_drift_on);
+  eval {
+   my $a=capture_volume_drift_anchor($config,$state,$volume_black,$label);
+   push @volume_drift_anchors,$a;
+   $last_anchor_t=$a->{"time"}||time();
+   $last_anchor_i=defined($step_index) ? $step_index : $last_anchor_i;
+   log_line(sprintf("volume drift anchor #%d %s white_y=%.3f",
+    scalar(@volume_drift_anchors),$label||"",$a->{"white_y"}||0));
+  };
+  if($@) {
+   my $err=$@; $err=~s/\s+$//;
+   log_line("volume drift anchor failed ($label): $err");
+   die "$err\n" if($err =~ /cancelled/i);
+  }
+ };
+
+ # Seed black from a pure black profile step if present (for primary subtract).
+ foreach my $s (@steps) {
+  if(($s->{"kind"}||"") eq "black") {
+   # will refresh after first black read in the loop
+   last;
+  }
+ }
+
+ if($volume_drift_on && @steps) {
+  $take_volume_anchor->("start",-1);
+ }
+
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
   my $step=$steps[$i];
+  # The unity reset set phase=unity_reset; without this the UI's summary
+  # line keeps saying "unity reset" for the entire profiling read.
+  $state->{"phase"}="profile";
   $state->{"current_step"}=$i+1;
   $state->{"current_name"}=$step->{"name"};
   my $profile_total=scalar(@steps);
@@ -3030,20 +4367,141 @@ eval {
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
   push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
+  # Refresh black reference once we measure a black patch.
+  if(($step->{"kind"}||"") eq "black") {
+   my $bx=reading_xyz($reading);
+   $volume_black=$bx if($bx);
+  }
   write_state($state);
+
+  if($volume_drift_on) {
+   my $need=0;
+   $need=1 if((time()-$last_anchor_t) >= $drift_interval_s);
+   $need=1 if(($i-$last_anchor_i) >= $drift_interval_patches);
+   $take_volume_anchor->("mid",$i) if($need && $i < $#steps);
+  }
  }
 
  die "cancelled\n" if(cancelled());
+
+ if($volume_drift_on) {
+  $take_volume_anchor->("end",scalar(@steps));
+  # Prefer black from measured black step for subtract; fall back to first anchor white floor.
+  if(($volume_black->[0]+$volume_black->[1]+$volume_black->[2]) <= 0) {
+   foreach my $e (@profile_readings) {
+    next unless(ref($e->{"step"}) eq "HASH" && ($e->{"step"}{"kind"}||"") eq "black");
+    my $bx=reading_xyz($e->{"reading"});
+    if($bx){ $volume_black=$bx; last; }
+   }
+  }
+  # Re-black-subtract primaries if first anchors used [0,0,0] before black was known.
+  # Anchors store already-subtracted columns; if black was zero initially, leave as-is
+  # (black is usually ~0 on OLED). Apply correction to all profile XYZ.
+  my $rep=apply_volume_drift_to_profile_readings(\@profile_readings,$volume_black,\@volume_drift_anchors);
+  my $a0=$volume_drift_anchors[0];
+  my $aN=$volume_drift_anchors[$#volume_drift_anchors];
+  my $sy=($a0 && $a0->{"white_y"}) ? $a0->{"white_y"} : 0;
+  my $ey=($aN && $aN->{"white_y"}) ? $aN->{"white_y"} : 0;
+  my $drift_summary={
+   enabled => ($rep->{"corrected"} > 0 && $rep->{"anchors"} >= 2) ? 1 : 0,
+   anchors => $rep->{"anchors"}+0,
+   readings_corrected => $rep->{"corrected"}+0,
+   interval_s => $drift_interval_s,
+   interval_patches => $drift_interval_patches,
+   start_y => $sy,
+   end_y => $ey,
+   dy_pct => ($sy > 0) ? (($ey-$sy)/$sy*100) : 0,
+   elapsed_s => (($aN->{"time"}||0)-($a0->{"time"}||0)),
+  };
+  $state->{"lattice_drift"}=$drift_summary;
+  $state->{"volume_drift"}=$drift_summary;
+  log_line(sprintf(
+   "volume drift: anchors=%d corrected=%d white_y %.3f->%.3f (%.2f%%) over %ds (every %ds / %d patches)",
+   $rep->{"anchors"}||0,$rep->{"corrected"}||0,$sy,$ey,$drift_summary->{"dy_pct"}||0,
+   $drift_summary->{"elapsed_s"}||0,$drift_interval_s,$drift_interval_patches));
+ }
+
+ # Last profile patch is often a saturated primary (e.g. blue). Leave it up
+ # during the multi-minute cube solve and WOLEDs burn. Blank to black/stop
+ # before generate (same idea as greyscale completion pattern cleanup).
+ blank_display_for_solve($config,$state);
+
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
   ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
-  : "Solving matrix 17-point cube plus 33-point LG payload";
+  : (is_volume_profile_method($method))
+   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", 17-point cube plus 33-point LG payload"
+   : ($method eq "imported")
+    ? "Resampling imported .cube to 17-point cube plus 33-point LG payload"
+    : "Solving matrix 17-point cube plus 33-point LG payload";
  write_state($state);
 
- my $model=model_from_readings($method,\@profile_readings,$config);
- my ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
- my $payload_u16=generate_lut_lg_payload($model,33);
+ my ($model,$cube_u16,$payload_u16,$preview_nodes);
+ if($method eq "imported") {
+  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state);
+ } else {
+ # Volume profiling (lattice / skeleton / hybrid) uses the same solve as the
+ # offline lattice path: white-preserving matrix baseline from W/R/G/B/K
+ # corner kinds, then bounded residuals from all percent-named nodes.
+ # model_from_readings("matrix") ignores interior "node" kinds for the 3x3.
+ $model=model_from_readings(is_volume_profile_method($method) ? "matrix" : $method,\@profile_readings,$config);
+ if(is_volume_profile_method($method)) {
+  my @nodes;
+  foreach my $entry (@profile_readings) {
+   next if(ref($entry) ne "HASH");
+   my $nm=(ref($entry->{"step"}) eq "HASH" ? $entry->{"step"}{"name"} : "")||"";
+   next unless($nm =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
+   my $xyz=reading_xyz($entry->{"reading"});
+   next if(!$xyz);
+   push @nodes,{ fr=>$1/100, fg=>$2/100, fb=>$3/100, xyz=>$xyz };
+  }
+  $state->{"lattice_nodes"}=scalar(@nodes);
+  if(!$config->{"solve_matrix_only"}) {
+   # Hybrid/skeleton: keep forward_model for generate (full measured inverse).
+   # Lattice without multi-level ramps: matrix + baseline-relative residual.
+   my $fm=(forward_model_method($method) && !$config->{"solve_disable_forward_model"})
+    ? build_measured_forward_model($model,\@nodes,$config) : undef;
+   if(ref($fm) eq "HASH") {
+    $model->{"forward_model"}=$fm;
+    $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+     forward_nonadd_count=>$fm->{"nonadd_count"} };
+   } else {
+    my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+    if($grid) {
+     $model->{"residual_grid"}=$grid;
+     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+    } else {
+     $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    }
+   }
+  } else {
+   $state->{"lattice_solve"}={ mode=>"matrix_only" };
+  }
+  $model->{"method"}=$method;
+  log_line("$method profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
+  eval {
+   my $dbgdir=$config->{"lut_dir"}||"/var/lib/PGenerator/lg/luts";
+   my $dbg="$dbgdir/lattice_debug_".time().".json";
+   my %dump=(
+    method=>$method, signal_mode=>$config->{"signal_mode"},
+    target_gamut=>$model->{"target_gamut"}, target_gamma=>$model->{"target_gamma"},
+    solve_matrix_only=>($config->{"solve_matrix_only"}?1:0),
+    white_y=>$model->{"white_y"}, black=>$model->{"black"},
+    contrib_100=>{ map { ($_ => $model->{"contrib"}{$_}{100}) } qw(red green blue) },
+    drift=>$state->{"lattice_drift"},
+    residual_report=>$state->{"lattice_solve"},
+    residual_grid=>$model->{"residual_grid"},
+    nodes=>\@nodes,
+   );
+   if(open(my $df,">",$dbg)) { print $df $json->encode(\%dump); close($df); log_line("lattice debug dump: $dbg"); }
+  };
+  log_line("lattice debug dump error: $@") if($@);
+ }
+ ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
+ $payload_u16=generate_lut_lg_payload($model,33);
+ }
  my $export=export_lut($cube_u16,$payload_u16,$model,$config);
  $state->{"export"}=$export;
  $state->{"signal_mode"}=$model->{"signal_mode"};
@@ -3056,8 +4514,11 @@ eval {
  $state->{"wrgb_compensation_active"}=json_bool(($model->{"wrgb_white_ratio"}||1) > 1.0001);
  $state->{"wrgb_comp_source"}=$model->{"wrgb_comp_source"}||"auto";
  $state->{"wrgb_chroma_luma_comp"}=json_bool($model->{"wrgb_chroma_luma_comp"});
+ $state->{"wrgb_mid_sat_matrix_blend"}=json_bool($model->{"wrgb_mid_sat_matrix_blend"});
+ $state->{"wrgb_mid_sat_matrix_blend_strength"}=$model->{"wrgb_mid_sat_matrix_blend_strength"};
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
+ $state->{"neutral_axis_identity"}=json_bool($model->{"neutral_axis_identity"});
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
  $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
  $state->{"cube_lut_size"}=17;

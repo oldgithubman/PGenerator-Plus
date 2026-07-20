@@ -532,6 +532,36 @@ sub resolve_display_type (@) {
  return ($y_flag,$ccss_file);
 }
 
+# Map a CCSS override token (ccss_<file> | custom_<file>) to an absolute path.
+# Empty / whitespace token -> "" (caller falls back to the technology default).
+# Missing / unreadable file -> "" (do NOT silently fall through to a different
+# CCSS — the worker would print a confusing "no such file" error instead).
+# Validated suffix is .ccss; basename only (no traversal). Used in tandem with
+# the panel-technology parse so the meter session can use a real tech key for
+# the spotread -y flag AND a separate CCSS file for the correction matrix.
+sub resolve_ccss_override (@) {
+ my ($token)=@_;
+ $token="" if(!defined($token));
+ $token=~s/^\s+|\s+$//g;
+ return "" if($token eq "");
+ # Accept either "ccss_<file>" / "custom_<file>" / bare "<file>" tokens so
+ # legacy callers that already stripped the prefix keep working.
+ my $fname=$token;
+ $fname=$1 if($token=~/^(?:ccss|custom)_(.+)$/);
+ $fname=~s{\\}{/}g;
+ $fname=~s{^.*\/}{}; # basename only; discard nested path / traversal attempts
+ $fname=~s/[^a-zA-Z0-9._\-()\[\] ]//g;
+ return "" if($fname eq "");
+ return "" if($fname !~ /\.ccss$/i);
+ my $sys="$_ccss_dir/$fname";
+ my $cust="$_custom_ccss_dir/$fname";
+ my $legacy="$_custom_ccss_legacy_dir/$fname";
+ if(-f $sys)    { return $sys; }
+ if(-f $cust)   { &_webui_ccss_repair_file($cust); return (-f $cust) ? $cust : ""; }
+ if(-f $legacy) { &_webui_ccss_repair_file($legacy); return (-f $legacy) ? $legacy : ""; }
+ return "";
+}
+
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
  my $http_port=80;
@@ -596,6 +626,8 @@ sub webui_http (@) {
     # The "WebUI keeps going offline" symptom was this: any navigation
     # with a cache-buster query (e.g. the browser's "?_=12345") would
     # fall through to the 404 handler instead of serving the page.
+    my $request_query="";
+    $request_query=$1 if(defined($path) && $path=~/\?(.*)$/);
     $path=~s/\?.*$// if(defined($path));
     &log("WebUI: $method $path");
 
@@ -1103,6 +1135,42 @@ sub webui_http (@) {
      my $result=&webui_meter_settings_load();
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
+   }
+   elsif($path eq "/api/3d-lut/luts") {
+    my $result=&webui_lg_lut_list(undef);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/delete" && $method eq "POST") {
+    my $result=&webui_lg_lut_delete(undef,$body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/import" && $method eq "POST") {
+    my $result=&webui_3d_lut_import($request_query,$body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/solve" && $method eq "POST") {
+    my $result=&webui_3d_lut_solve($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/solve/status") {
+    my $result=&webui_3d_lut_solve_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/cube") {
+    my ($fname,$content)=&webui_lg_lut_download(undef,$request_query);
+    my $len=length($content);
+    if($fname ne "") {
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $len\r\n$cors\r\n";
+     print $client $content;
+    } else {
+     my $err="{\"status\":\"error\",\"message\":\"LUT file not found\"}";
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
     }
    }
    elsif($path eq "/api/ccss/list") {
@@ -1913,6 +1981,17 @@ sub webui_meter_read (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ # ccss_override: an explicit CCSS token (ccss_<file>/custom_<file>) the
+ # operator picked instead of the technology default. Maps to an absolute path
+ # via resolve_ccss_override(); empty token => fall back to the technology's
+ # $_dtype_info CCSS. Keeps the WRGB/y-flag side driven by display_type while
+ # the correction matrix / -X file can be a custom profile.
+ my $ccss_override_token="";
+ $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
+ if($ccss_override_token ne "") {
+  my $override_path=&resolve_ccss_override($ccss_override_token);
+  $ccss_file=$override_path if($override_path ne "");
+ }
  my $refresh_rate="";
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $measurement_meter_port="";
@@ -2321,6 +2400,181 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
  return undef;
 }
 
+# Custom user-defined series: the client sends the fully-built patch list
+# (codes already in the wire bit depth) as "custom_steps". Rebuild each step
+# from a strict field whitelist so nothing from the request body reaches the
+# steps file verbatim. Downstream stampers (series white/black, signal-mode
+# meta) regex-append to these strings, so the shape must match the derived
+# step strings exactly.
+# Parameter-defined lattice series: expand generator params into measurement
+# steps. MUST stay algorithm-identical to the client's meterLatticeExpandPatches
+# (grid order r-slowest/b-fastest, golden-ratio spread stride, Rec.709-signal
+# threshold, grey ramp 100%-first, percent names, ire from 1). Locked by
+# tests/lattice-server-steps-regression.pl + tests/lattice-expansion-regression.js.
+sub webui_lattice_series_steps_from_body (@) {
+ my ($body,$chroma_min,$chroma_span,$input_max)=@_;
+ return () unless($body=~/"custom_series"\s*:\s*true/i);
+ return () unless($body=~/"lattice_params"\s*:\s*\{([^{}]*)\}/s);
+ my $obj=$1;
+ my %p;
+ foreach my $key (qw(size grey_points threshold_pct)) {
+  $p{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ }
+ my $order=($obj=~/"order"\s*:\s*"grid"/)?"grid":"spread";
+ my $reverse=($obj=~/"reverse"\s*:\s*true/i)?1:0;
+ my $size=defined($p{"size"})?int($p{"size"}):9;
+ $size=3 if($size<3);
+ $size=50 if($size>50);
+ my $grey=defined($p{"grey_points"})?int($p{"grey_points"}):0;
+ $grey=0 if($grey<2);
+ $grey=101 if($grey>101);
+ my $threshold=defined($p{"threshold_pct"})?$p{"threshold_pct"}+0:0;
+ $threshold=0 if($threshold<0);
+ $threshold=50 if($threshold>50);
+ # Node spacing (MUST mirror meterLatticeAxisFracs): 'light' spaces node
+ # values uniformly in decoded light up to peak_nits (PQ encode for HDR
+ # lattices, 2.4 power law for SDR), normalized so corners hit 100% signal.
+ my $spacing=($obj=~/"spacing"\s*:\s*"light"/)?"light":"signal";
+ my $lat_pq=($obj=~/"pq"\s*:\s*true/i)?1:0;
+ my $peak_nits=1000;
+ $peak_nits=$1+0 if($obj=~/"peak_nits"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ $peak_nits=100 if($peak_nits<100);
+ $peak_nits=10000 if($peak_nits>10000);
+ my $pq_encode=sub {
+  my ($L)=@_;
+  my $m1=2610/16384; my $m2=2523/32; my $c1=3424/4096; my $c2=2413/128; my $c3=2392/128;
+  my $y=($L<0?0:$L)/10000;
+  my $pp=$y**$m1;
+  return (($c1+$c2*$pp)/(1+$c3*$pp))**$m2;
+ };
+ my $axis_frac=sub {
+  my ($i,$div)=@_;
+  my $t=$i/$div;
+  return $t if($spacing ne "light");
+  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): pqe(0) is
+  # ~7e-7, not 0, and a non-zero black frac breaks frac-exact corner
+  # detection in the client ordering parity.
+  return 0 if($i==0);
+  return 1 if($i==$div);
+  if($lat_pq) {
+   my $top=$pq_encode->($peak_nits);
+   return $top>0 ? $pq_encode->($t*$peak_nits)/$top : $t;
+  }
+  return $t**(1/2.4);
+ };
+ my @steps;
+ my $ire=1;
+ my $pctf=sub {
+  my($f)=@_;
+  my $v=int($f*1000+0.5)/10;
+  return ($v==int($v))?int($v):$v;
+ };
+ my $push_step=sub {
+  my($name,$fr,$fg,$fb)=@_;
+  my $r=int($chroma_min+$fr*$chroma_span+0.5);
+  my $g=int($chroma_min+$fg*$chroma_span+0.5);
+  my $b=int($chroma_min+$fb*$chroma_span+0.5);
+  push @steps,"{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"".&_webui_json_escape($name)."\",\"input_max\":$input_max}";
+  $ire++;
+ };
+ if($grey>=2) {
+  $push_step->("G 100%",1,1,1);
+  for(my $i=0;$i<$grey;$i++) {
+   my $f=$i/($grey-1);
+   next if($f>=1);
+   $push_step->("G ".$pctf->($f)."%",$f,$f,$f);
+  }
+ }
+ my @nodes;
+ my $div=$size-1;
+ my @axis_fracs=map { $axis_frac->($_,$div) } (0..$size-1);
+ for(my $ri=0;$ri<$size;$ri++) {
+  for(my $gi=0;$gi<$size;$gi++) {
+   for(my $bi=0;$bi<$size;$bi++) {
+    my ($fr,$fg,$fb)=($axis_fracs[$ri],$axis_fracs[$gi],$axis_fracs[$bi]);
+    next if($threshold>0 && (0.2126*$fr+0.7152*$fg+0.0722*$fb)*100 < $threshold);
+    push @nodes,[$fr,$fg,$fb];
+   }
+  }
+ }
+ my @ordered=@nodes;
+ if($order eq "spread" && scalar(@nodes)>1) {
+  my $total=scalar(@nodes);
+  my $stride=int($total*0.618034);
+  $stride=1 if($stride<1);
+  my $a=$stride; my $b2=$total;
+  my $gcd=sub { my($x,$y)=@_; while($y){ my $t=$x%$y; $x=$y; $y=$t; } return $x; };
+  $stride++ while($gcd->($stride,$total)!=1);
+  @ordered=();
+  my $idx=0;
+  for(my $k=0;$k<$total;$k++) { push @ordered,$nodes[$idx]; $idx=($idx+$stride)%$total; }
+ }
+ @ordered=reverse(@ordered) if($reverse);
+ # Reference corners first: W, R, G, B (then K when present) lead the run so
+ # the client's display-referenced chart targets have their measured white
+ # peak + additive per-channel ceilings from the first handful of patches.
+ # MUST stay algorithm-identical to the client's meterLatticeExpandPatches
+ # (parity-locked by the lattice tests).
+ my $corner_rank=sub {
+  my($fr,$fg,$fb)=@_;
+  my $one=sub { $_[0]>=1 }; my $zero=sub { $_[0]<=0 };
+  return 0 if($one->($fr) && $one->($fg) && $one->($fb));
+  return 1 if($one->($fr) && $zero->($fg) && $zero->($fb));
+  return 2 if($zero->($fr) && $one->($fg) && $zero->($fb));
+  return 3 if($zero->($fr) && $zero->($fg) && $one->($fb));
+  return 4 if($zero->($fr) && $zero->($fg) && $zero->($fb));
+  return -1;
+ };
+ my @corner_lead=sort { $corner_rank->(@$a) <=> $corner_rank->(@$b) } grep { $corner_rank->(@$_)>=0 } @ordered;
+ @ordered=(@corner_lead, grep { $corner_rank->(@$_)<0 } @ordered) if(scalar(@corner_lead));
+ foreach my $node (@ordered) {
+  my($fr,$fg,$fb)=@$node;
+  $push_step->($pctf->($fr)."/".$pctf->($fg)."/".$pctf->($fb),$fr,$fg,$fb);
+ }
+ return @steps;
+}
+sub webui_custom_series_steps_from_body (@) {
+ my ($body)=@_;
+ return () unless($body=~/"custom_series"\s*:\s*true/i);
+ return () unless($body=~/"custom_steps"\s*:\s*\[(.*?)\](?=\s*[,}])/s);
+ my $list=$1;
+ my @out;
+ # Match WebUI METER_CUSTOM_SERIES_MAX_PATCHES (large CalMAN/ColourSpace imports).
+ my $max_patches=3000;
+ while($list=~/\{([^{}]*)\}/g) {
+  last if(scalar(@out)>=$max_patches);
+  my $obj=$1;
+  my %num;
+  foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits)) {
+   $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
+  }
+  next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
+  my $input_max=(defined $num{"input_max"} && int($num{"input_max"})==1023) ? 1023 : 255;
+  foreach my $ch (qw(r g b)) {
+   $num{$ch}=int($num{$ch}+0.5);
+   $num{$ch}=0 if($num{$ch}<0);
+   $num{$ch}=$input_max if($num{$ch}>$input_max);
+  }
+  my $name="";
+  $name=$1 if($obj=~/"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+  $name=~s/\\(.)/$1/g;
+  $name=~s/[^A-Za-z0-9 ._%#()+-]//g;
+  $name=substr($name,0,40);
+  $name="Patch ".(scalar(@out)+1) if($name eq "");
+  my $ire=(defined $num{"ire"})?$num{"ire"}+0:0;
+  $ire=0 if($ire<0);
+  $ire=110 if($ire>110);
+  my $step="{\"ire\":$ire,\"r\":$num{r},\"g\":$num{g},\"b\":$num{b},\"name\":\"".&_webui_json_escape($name)."\",\"input_max\":$input_max";
+  $step.=",\"target_x\":".($num{"target_x"}+0) if(defined $num{"target_x"});
+  $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
+  $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
+  $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  $step.="}";
+  push @out,$step;
+ }
+ return @out;
+}
+
 sub webui_meter_series_start (@) {
  my ($body)=@_;
  # A series run owns its own persistent spotread process. Read Once /
@@ -2338,6 +2592,16 @@ sub webui_meter_series_start (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ # ccss_override: same parsing rule as webui_meter_read. The single-read and
+ # series paths now share the same override-token contract so the worker can
+ # always derive y_flag from display_type and the correction matrix from the
+ # (override or technology default) CCSS path.
+ my $ccss_override_token="";
+ $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
+ if($ccss_override_token ne "") {
+  my $override_path=&resolve_ccss_override($ccss_override_token);
+  $ccss_file=$override_path if($override_path ne "");
+ }
  my $delay_ms=1000;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
  my $patch_size=10;
@@ -2710,7 +2974,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
  my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? 255 : 219) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- if($type eq "greyscale") {
+ my @custom_series_steps=&webui_lattice_series_steps_from_body($body,$chroma_min_code,$chroma_span_code,$chroma_input_max);
+ @custom_series_steps=&webui_custom_series_steps_from_body($body) if(!scalar(@custom_series_steps));
+ if($body=~/"custom_series"\s*:\s*true/i && !scalar(@custom_series_steps)) {
+  return "{\"status\":\"error\",\"message\":\"Custom series has no valid patches\"}";
+ }
+ if(scalar(@custom_series_steps)) {
+  @steps=@custom_series_steps;
+ } elsif($type eq "greyscale") {
    my @ire_vals;
    my %step_names;
    if($points==2) {
@@ -3926,7 +4197,7 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
 # the workflow (or standalone greyscale run) is genuinely finished:
 #
 #  * full_workflow / full_autocal_phase / full_autocal_run_id /
-#    full_autocal_post_* / full_autocal_magic_wand /
+#    full_autocal_post_* /
 #    full_autocal_touchup: the greyscale worker stamps these at run
 #    start and never clears them. A fresh browser (no localStorage
 #    completion-token) reads them on its first status poll and the JS's
@@ -3956,9 +4227,8 @@ sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
   "full_autocal_phase",
   "full_autocal_run_id",
   "full_autocal_touchup",
-  "full_autocal_post_commit_polish",
-  "full_autocal_magic_wand",
-  "full_autocal_post_3d_polish",
+   "full_autocal_post_commit_polish",
+   "full_autocal_post_3d_polish",
   "full_autocal_post_series_adjust",
   "full_autocal_post_series_revert",
   "hdr20_1d_tonemap_pending",
@@ -4278,7 +4548,7 @@ sub webui_meter_lg_autocal_status (@) {
 		    }
 		    # NOTE: the full-workflow metadata (full_workflow /
 		    # full_autocal_phase / full_autocal_run_id / full_autocal_post_*
-		    # / full_autocal_magic_wand / full_autocal_touchup) and the
+		    # / full_autocal_touchup) and the
 		    # hdr20_1d_tonemap_* group MUST NOT be stripped here. This
 		    # status endpoint is read by BOTH (a) the active full-workflow
 		    # session -- which uses full_workflow / full_autocal_phase /
@@ -4817,14 +5087,44 @@ sub _webui_meter_settings_boot_id (@) {
  return $boot_id;
 }
 
+# Linear (non-regex) extractor for a JSON string value. The generic key/value
+# regex in webui_meter_settings_save uses a repeated group that hits Perl's
+# "Complex regular subexpression recursion limit (32766) exceeded" on large
+# escaped strings (a multi-series custom_series_json blob has tens of thousands
+# of escaped quotes), silently dropping the value. Scan for the closing quote
+# by hand instead so blobs of any size round-trip. Returns the quoted value
+# (including the surrounding quotes) or undef.
+sub _webui_json_str_value (@) {
+ my ($src,$key)=@_;
+ return undef if(!defined($src) || $src eq "");
+ my $anchor="\"$key\"";
+ my $ki=index($src,$anchor);
+ return undef if($ki < 0);
+ my $ci=index($src,":",$ki+length($anchor));
+ return undef if($ci < 0);
+ my $len=length($src);
+ my $i=$ci+1;
+ $i++ while($i < $len && substr($src,$i,1)=~/\s/);
+ return undef unless($i < $len && substr($src,$i,1) eq '"');
+ my $start=$i; $i++;
+ while($i < $len) {
+  my $c=substr($src,$i,1);
+  if($c eq "\\") { $i+=2; next; }
+  if($c eq '"') { return substr($src,$start,$i-$start+1); }
+  $i++;
+ }
+ return undef;
+}
+
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
+	 display_type ccss_override target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
+    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
+    low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
@@ -4832,7 +5132,7 @@ sub webui_meter_settings_save (@) {
   hdr_bt2390 incl_lum sep_lum color_incl_lum simulate_spectro
  );
  my @parts;
- while($body=~/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
+ while($body=~/"(\w+)"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
   push @parts, "\"$1\":$2" if($allowed{$1});
  }
  my $safe="{".join(",",@parts)."}";
@@ -4843,11 +5143,173 @@ sub webui_meter_settings_save (@) {
   $safe.="," if($safe!~/\{\s*$/);
   $safe.='"delay_explicit":true}';
  }
+ # Sticky JSON-blob keys: a settings POST from a stale client (an older UI
+ # build that predates a key) must not wipe user data a newer build saved.
+ # The rebuild above keeps only keys present in the POST body, so a tab
+ # running old JS silently dropped custom_series_json on every save. If the
+ # incoming body omits one of these keys but the stored settings carry it,
+ # preserve the stored value.
+ # Big JSON-blob keys (custom_series_json, grey_patch_profiles_json) are handled
+ # OUTSIDE the generic regex above (removed from %allowed) because that regex
+ # dies on large escaped strings (Perl 32766 recursion limit) -- the cause of
+ # large/many custom series silently "disappearing". Extract + preserve them by
+ # linear scan, then append to $safe.
+ foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
+  my $posted=_webui_json_str_value($body,$sticky);
+  $posted="" if(!defined($posted));
+  # A stale tab (older JS build) posts the custom-series blob EMPTY without the
+  # dirty marker newer builds send. An empty blob only wins when the session
+  # explicitly touched custom series; otherwise preserve the stored value so an
+  # open old tab can't wipe user data.
+  my $posted_empty_stale=($sticky eq "custom_series_json" && $posted ne "" && index($posted,'\\"series\\":[]')>=0 && $body!~/"custom_series_dirty"\s*:\s*true/) ? 1 : 0;
+  my $value_to_write="";
+  if($posted ne "" && !$posted_empty_stale) {
+   $value_to_write=$posted;
+  } else {
+   foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
+    next unless(-f $path);
+    my $candidate="";
+    if(open(my $fh,"<",$path)) { local $/; $candidate=<$fh>; close($fh); }
+    my $sv=_webui_json_str_value($candidate,$sticky);
+    next unless(defined($sv) && $sv ne "");
+    next if($posted_empty_stale && index($sv,'\\"series\\":[{')<0);
+    $value_to_write=$sv; last;
+   }
+  }
+  next if($value_to_write eq "");
+  $safe=~s/\}\s*$//;
+  $safe.="," if($safe!~/\{\s*$/);
+  $safe.="\"$sticky\":$value_to_write}";
+ }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
  my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
  return '{"status":"ok"}' if($saved_runtime || $saved_persist);
  &log("WebUI: meter settings save failed (runtime=$_meter_settings_runtime persist=$_meter_settings_persist)");
  return '{"status":"error","message":"Failed to save meter settings"}';
+}
+
+# Solved 3D-LUT listing/download for the WebUI (files written by
+# meter_lg_3d_autocal.pl's export_lut). Name whitelist keeps this endpoint
+# from serving anything outside the luts directory.
+# Generic lattice-cube solve (measure -> solve -> export, any display): runs
+# meter_lg_3d_autocal.pl in solve_only mode with its OWN config/state/stop
+# paths -- no meter, no TV, no upload, no collision with a real AutoCal run.
+# The exported .cube/.bin/.json land in the standard solved-LUT dir so LUT
+# Tools lists them immediately.
+my $_lut_solve_config_file="/tmp/lut_solve_config.json";
+my $_lut_solve_state_file="/tmp/lut_solve_state.json";
+my $_lut_solve_stop_file="/tmp/lut_solve_stop.signal";
+sub webui_3d_lut_solve (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Solve payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ return '{"status":"error","message":"lattice_readings required"}' if($body!~/"lattice_readings"\s*:\s*\[/);
+ if(-f $_lut_solve_state_file) {
+  my $age=time()-(stat($_lut_solve_state_file))[9];
+  my $prev="";
+  if(open(my $fh,'<',$_lut_solve_state_file)) { local $/; $prev=<$fh>; close($fh); }
+  return '{"status":"error","message":"A LUT solve is already running"}' if($age < 120 && $prev=~/"status"\s*:\s*"running"/);
+ }
+ my $cfg=$body;
+ $cfg=~s/\}\s*\z/,"solve_only":1}/ unless($cfg=~/"solve_only"/);
+ if(open(my $fh,'>',$_lut_solve_config_file)) { print $fh $cfg; close($fh); }
+ else { return '{"status":"error","message":"Unable to write solve config"}'; }
+ if(open(my $fh,'>',$_lut_solve_state_file)) { print $fh '{"status":"running","solve_only":true,"message":"Starting LUT solve..."}'; close($fh); }
+ unlink($_lut_solve_stop_file);
+ my $log_file="/tmp/lut_solve.log";
+ my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_3d_autocal.pl '$_lut_solve_config_file' '$_lut_solve_state_file' '$_lut_solve_stop_file' </dev/null >'$log_file' 2>&1 &";
+ system($cmd);
+ return '{"status":"started","message":"LUT solve started"}';
+}
+
+sub webui_3d_lut_solve_status (@) {
+ if(open(my $fh,'<',$_lut_solve_state_file)) {
+  local $/;
+  my $json=<$fh>;
+  close($fh);
+  return $json if(defined($json) && $json=~/^\s*\{/);
+ }
+ return '{"status":"idle"}';
+}
+
+# Save an operator-imported .cube on the Pi for the upload-only 3D LUT
+# AutoCal path (worker method=imported). The raw .cube text travels as the
+# POST body — no JSON escaping, these files run to megabytes — and the
+# filename rides the query string under the same strict whitelist as the
+# download route. Validation here is light (LUT_3D_SIZE + node count); the
+# worker re-parses strictly before building the LG payload.
+sub webui_3d_lut_import (@) {
+ my ($query,$body,$dir)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ return '{"status":"error","message":".cube body required"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":".cube missing LUT_3D_SIZE"}' if($body!~/^\s*LUT_3D_SIZE\s+(\d+)\s*$/m);
+ my $size=$1+0;
+ return '{"status":"error","message":"Unsupported LUT_3D_SIZE"}' if($size < 2 || $size > 129);
+ my $rows=0;
+ $rows++ while($body=~/^\s*[-0-9.eE]+\s+[-0-9.eE]+\s+[-0-9.eE]+\s*$/mg);
+ my $want=$size*$size*$size;
+ return "{\"status\":\"error\",\"message\":\".cube node count $rows does not match LUT_3D_SIZE $size ($want)\"}" if($rows != $want);
+ my $name="";
+ $name=$1 if(defined($query) && $query=~/(?:^|&)name=([^&]{1,120})(?:&|$)/);
+ $name=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+ $name=~s/\.cube\s*$//i;
+ $name=~s/[^A-Za-z0-9._-]+/_/g;
+ $name=~s/^[._]+//;
+ $name="lut" if($name eq "");
+ system("mkdir -p $dir 2>/dev/null");
+ my $file="imported_".$name."_".time().".cube";
+ my $path="$dir/$file";
+ if(open(my $fh,'>',$path)) { print $fh $body; close($fh); chmod(0666,$path); }
+ else { return '{"status":"error","message":"Unable to save imported .cube"}'; }
+ return "{\"status\":\"ok\",\"file\":\"".&_webui_json_escape($file)."\",\"path\":\"".&_webui_json_escape($path)."\",\"size\":$size,\"nodes\":$rows}";
+}
+
+sub webui_lg_lut_list (@) {
+ my ($dir)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my @out;
+ if(opendir(my $dh,$dir)) {
+  foreach my $f (sort readdir($dh)) {
+   next unless($f=~/^[A-Za-z0-9._-]+\.cube$/);
+   my @st=stat("$dir/$f");
+   push @out,"{\"name\":\"".&_webui_json_escape($f)."\",\"size\":".(($st[7]||0)+0).",\"mtime\":".(($st[9]||0)+0)."}";
+  }
+  closedir($dh);
+ }
+ return "{\"status\":\"ok\",\"luts\":[".join(",",@out)."]}";
+}
+
+sub webui_lg_lut_download (@) {
+ my ($dir,$query)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my $file="";
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.cube)(?:&|$)/);
+ return ("","") if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$dir/$file";
+ return ("","") unless(-f $path);
+ my $data="";
+ if(open(my $fh,"<",$path)) { local $/; $data=<$fh>; close($fh); }
+ return ($file,$data);
+}
+
+# Delete a solved LUT from the history: the .cube plus its same-basename
+# .bin/.json companions (export_lut always writes the triple together). The
+# display keeps whatever payload was already uploaded — this only prunes the
+# on-disk history. Same strict name whitelist as the download route.
+sub webui_lg_lut_delete (@) {
+ my ($dir,$body)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my $file="";
+ $file=$1 if(defined($body) && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.cube)"/);
+ return '{"status":"error","message":"Invalid LUT file name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ return '{"status":"error","message":"LUT file not found"}' unless(-f "$dir/$file");
+ my $base=$file;
+ $base=~s/\.cube$//;
+ my $removed=0;
+ foreach my $ext (qw(cube bin json)) {
+  my $path="$dir/$base.$ext";
+  $removed++ if(-f $path && unlink($path));
+ }
+ return "{\"status\":\"ok\",\"removed\":$removed}";
 }
 
 sub webui_meter_settings_load (@) {
@@ -6815,6 +7277,14 @@ sub webui_apply_config (@) {
   my $result='{"status":"error","message":"YCbCr 4:2:0 is not supported by the current HDMI driver. Use RGB, YCbCr 4:4:4, or YCbCr 4:2:2."}';
   return wantarray ? ($result,0) : $result;
  }
+ if(($effective_color_format == 1 || $effective_color_format == 2) && $effective_rgb_quant_range == 2) {
+  # YCbCr transports are Limited-range on the wire; Full range is an
+  # RGB-only concept. Coerce (rather than error) so older saved configs
+  # normalize on their next apply. The UI mirrors this by disabling the
+  # Full option whenever a YCbCr colour format is selected.
+  $changes{"rgb_quant_range"}="1";
+  $effective_rgb_quant_range=1;
+ }
  if(($effective_signal_mode eq "hdr10" || $effective_signal_mode eq "hlg") && $effective_rgb_quant_range == 1 && !$dv_on) {
   # Honor max_bpc end-to-end: when the operator sets max_bpc=8 (via the
   # WebUI Bit Depth dropdown or directly in PGenerator.conf), the link
@@ -8163,11 +8633,25 @@ sub webui_resolve_connect (@) {
 }
 
 sub webui_resolve_disconnect (@) {
- # Setting request IP to a special value that the thread recognizes as disconnect
- # Actually, we just kill the TCP connection by setting a flag
- # For now, the simplest approach: write to the shared var to signal disconnect
- $calibration_client_ip="";
- $calibration_client_software="";
+ # Signal the Resolve session loop to abort its timed read and RST-close the
+ # TCP socket. Client IP/software are cleared by resolve_connection_thread
+ # after the socket is shut down so status stays accurate until RST goes out.
+ if($calibration_client_software ne "Resolve") {
+  {
+   lock($resolve_disconnect_request);
+   $resolve_disconnect_request=0;
+  }
+  return '{"status":"ok","message":"Not connected"}';
+ }
+ {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=1;
+ }
+ # Wait until the session thread finishes close so the API reflects RST done.
+ for(my $i=0; $i<20; $i++) {
+  last if($calibration_client_software ne "Resolve");
+  select(undef,undef,undef,0.1);
+ }
  return '{"status":"ok","message":"Disconnect requested"}';
 }
 
@@ -9413,6 +9897,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
 #meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-gutter:stable both-edges}
+.meter-modal-scroll{scrollbar-color:#3a4152 #111723;scrollbar-width:thin}
+.meter-modal-scroll::-webkit-scrollbar{width:10px}
+.meter-modal-scroll::-webkit-scrollbar-track{background:#111723;border-radius:999px}
+.meter-modal-scroll::-webkit-scrollbar-thumb{background:#3a4152;border-radius:999px;border:2px solid #111723}
+.meter-modal-scroll::-webkit-scrollbar-thumb:hover{background:#4a5468}
 #meterThumbsRow{scrollbar-color:#525264 #232330;scrollbar-width:auto}
 .meter-scroll-sync{scrollbar-color:#7287a8 #161a25;scrollbar-width:thin}
 #meterThumbsRow::-webkit-scrollbar{height:14px}
@@ -9483,8 +9972,11 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout{
  width:100%;align-items:stretch;flex-wrap:nowrap!important
 }
+#colorTopLayout.cie-3d-layout #chartCIEBox{
+ flex:1 1 0%!important;min-width:0;max-width:none
+}
 #colorTopLayout.cie-3d-layout #chartCIE{
- flex:1 1 0%!important;width:auto!important;min-width:0;height:480px!important;max-width:none
+ width:100%!important;height:480px!important;max-width:none
 }
 #colorTopLayout.cie-3d-layout #meterRGBColorWrap,
 #colorTopLayout.cie-3d-layout #meterXYYColorWrap{
@@ -9492,6 +9984,25 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 }
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
+}
+/* Expand (2D or 3D): hide side panels, CIE fills the row, taller canvas */
+#colorTopLayout.cie-expanded{
+ width:100%;align-items:stretch;flex-wrap:nowrap!important
+}
+#colorTopLayout.cie-expanded #chartCIEBox{
+ flex:1 1 0%!important;min-width:0;max-width:none
+}
+#colorTopLayout.cie-3d-layout.cie-expanded #meterRGBColorWrap,
+#colorTopLayout.cie-3d-layout.cie-expanded #meterXYYColorWrap,
+#colorTopLayout.cie-3d-layout.cie-expanded #colorReadingDetail,
+#colorTopLayout.cie-expanded #meterRGBColorWrap,
+#colorTopLayout.cie-expanded #meterXYYColorWrap,
+#colorTopLayout.cie-expanded #colorReadingDetail{
+ display:none!important
+}
+#colorTopLayout.cie-3d-layout.cie-expanded #chartCIE,
+#colorTopLayout.cie-expanded #chartCIE{
+ width:100%!important;height:min(78vh,760px)!important;max-width:none
 }
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
@@ -9533,7 +10044,14 @@ body.ui-offline .offline-mask{display:flex}
 .meter-autocal-mask{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 body.meter-autocal-active .dashboard,body.meter-autocal-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 body.meter-autocal-active .meter-autocal-mask{display:flex}
-.meter-autocal-card{width:min(440px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px}
+.meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box}
+/* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
+#meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+#meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row{display:block;width:100%;max-width:100%;min-width:0}
+/* CCSS editor/create must sit above the AutoCal mask (z 9000) and outside
+   the .dashboard filter/opacity stacking context while AutoCal is active. */
+#meterCcssCreateModal,#customCcssEditorModal{z-index:10050!important}
 .meter-autocal-title{font-size:1rem;font-weight:700;margin-bottom:8px;color:var(--text)}
 .meter-autocal-status{font-size:.82rem;color:var(--text2);line-height:1.4;margin-bottom:12px}
 .meter-autocal-progress{height:8px;border-radius:999px;background:#0d0d15;border:1px solid var(--border);overflow:hidden;margin-bottom:12px}
@@ -9580,10 +10098,25 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 #meterCard > h2{align-items:center;gap:10px 12px}
 #meterCard > h2::after{margin-left:auto}
 .meter-card-header-title{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
-.meter-card-header-meter{display:flex;align-items:center;gap:6px;width:min(100%,360px);max-width:360px;margin:0 0 10px}
-.meter-card-header-select{width:100%;max-width:100%;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 30px 6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+.meter-card-header-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin:0 0 10px;width:100%;max-width:100%}
+.meter-card-header-col{display:flex;flex-direction:column;gap:2px;min-width:0}
+.meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
+.meter-card-header-col-display{flex:1 1 180px;max-width:280px}
+.meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
+/* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
+.meter-card-header-select{width:100%;max-width:100%;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 24px 6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
 .meter-card-header-select:focus{border-color:var(--accent)}
-#meterCard.meter-patterns-only .meter-card-header-meter{display:none}
+.meter-card-header-select option,.meter-card-header-select optgroup{background:#0d0d15;color:var(--text)}
+.meter-ccss-profile-row{display:flex;flex-direction:column;gap:3px;width:100%;max-width:100%;min-width:0}
+.meter-ccss-profile-row > select,
+#meterCcssProfile,#meterAutoCalCcssProfile{width:100%;max-width:100%;box-sizing:border-box}
+#meterProfileGearPopover{width:280px}
+#meterProfileGearPopover #meterProfileDisplayField{width:100%;max-width:100%;min-width:0}
+#meterProfileGearPopover #meterProfileDisplayField > label{display:none}
+#meterProfileGearPopover .meter-ccss-profile-row{margin:0}
+#meterProfileGearPopover #meterCcssProfile{font-size:.78rem}
+.meter-autocal-ccss-row{display:block;width:100%;max-width:100%}
+#meterCard.meter-patterns-only .meter-card-header-row{display:none}
 .meter-header-label{display:block;font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:0 0 2px}
 #meterCard.meter-patterns-only .meter-header-label{display:none}
 .card.span2{grid-column:span 2}
@@ -9665,7 +10198,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
-	#meterProfileGearPopover{width:290px;max-height:72vh;overflow-y:auto;left:0;right:auto}
+	#meterProfileGearPopover{width:280px;max-height:72vh;overflow-y:auto;left:0;right:auto}
 	.meter-profile-title{font-size:.78rem;font-weight:600;color:#dfe6f6;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
 	#meterProfileGearPopover .field{margin-bottom:10px;display:flex;flex-direction:column;align-items:stretch;gap:4px}
 	.meter-profile-section{border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;flex-direction:column;gap:8px}
@@ -9708,7 +10241,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSeriesGroupGreyscale,#meterSeriesGroupColor,#meterSeriesGroupAutoCal{min-width:0}
 #meterReadBtnRow{width:100%;justify-content:flex-end;min-width:0}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
-font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
+font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0}
 .btn-sm{padding:5px 10px;font-size:.75rem;border-radius:5px}
 .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
 .btn-primary:hover{opacity:.9;transform:translateY(-1px)}
@@ -9720,6 +10253,9 @@ font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white
 .btn-success:hover{opacity:.9}
 .btn-coffee{background:#ffdd00;color:#111;border:1px solid rgba(0,0,0,.18)}
 .btn-coffee:hover{background:#ffd200;color:#111;transform:translateY(-1px)}
+.btn-custom-series{border:1px dashed var(--accent)}
+.chart-expand-btn{position:absolute;right:6px;bottom:6px;width:24px;height:24px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;background:rgba(20,24,34,.82);border:1px solid var(--border);border-radius:4px;color:var(--text2);cursor:pointer;z-index:4}
+.chart-expand-btn:hover{color:var(--text);border-color:var(--accent)}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;
 padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:translateY(20px);
 transition:all .3s;z-index:999;pointer-events:none}
@@ -9879,6 +10415,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterResetRow,
 #meterCard.meter-patterns-only #meterProgress,
 #meterCard.meter-patterns-only #meterStopBtn{display:none !important}
+/* Empty 3D LUT tab: leftover greyscale/ColorChecker charts must stay dead even
+   if a later JS path tries to re-open #meterCharts (tone-map restore, status poll). */
+#meterCharts[data-3dlut-empty="1"]{display:none !important}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-display,
 #meterCard.meter-patterns-only #meterSettingsGrid .meter-target-white-row,
 #meterCard.meter-patterns-only #meterSettingsGrid .meter-target-black-row,
@@ -10013,7 +10552,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   <div class="field field-display">
     <label>Color Format</label>
-    <select id="color_format">
+    <select id="color_format" onchange="uiEnforceQuantRangeForColorFormat()">
      <option value="0">RGB</option>
      <option value="1">YCbCr 4:4:4</option>
      <option value="2">YCbCr 4:2:2</option>
@@ -10193,15 +10732,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 <!-- Calibration -->
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
-  <label class="meter-header-label">Meter</label>
-  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
-  <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
-   <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
-   <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
-  </div>
-  <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
-  <div class="field field-display">
-    <select id="meterDisplayType">
+  <div class="meter-card-header-row">
+   <div class="meter-card-header-col meter-card-header-col-meter">
+    <label class="meter-header-label">Meter</label>
+    <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+   </div>
+   <div class="meter-card-header-col meter-card-header-col-display">
+    <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation, pattern insertion defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in generic profile; you can override with a custom CCSS." aria-label="Display type help">?</span></label>
+    <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
      <optgroup label="Generic" id="meterDtGeneric">
       <option value="oled_generic">WRGB OLED</option>
       <option value="qdoled">QD-OLED</option>
@@ -10213,10 +10751,20 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <option value="projector_ccss">Projector</option>
       <option value="crt">CRT</option>
       <option value="lcd">None (no correction)</option>
-      <option value="custom_editor">CCSS Editor...</option>
      </optgroup>
-     <optgroup label="Display-specific CCSS" id="meterDtCcss"></optgroup>
     </select>
+   </div>
+  </div>
+  <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
+   <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
+   <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
+  </div>
+  <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
+  <div class="field field-display">
+    <div class="meter-ccss-profile-row field">
+      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
+      <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
+    </div>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
         <div class="custom-ccss-panel-copy">
@@ -10258,6 +10806,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
           <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
+           <button type="button" id="meterXyzMatrixApply" class="btn btn-sm btn-primary" style="display:none" onclick="meterApplyXyzMatrixEdits()">Apply</button>
           </div>
           <div class="meter-matrix-fields" id="meterXyzMatrixFields" style="margin-top:8px">
            <div class="meter-matrix-grid">
@@ -10396,6 +10945,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="3dlut" onclick="meterSetSeriesTab('3dlut')">3D LUT</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
@@ -10406,10 +10956,25 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom greyscale series">Custom Series</button>
+      <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
+      <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
+     </div>
+     <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap;flex:1 1 auto">
+      <!-- 3D LUT profiling series: measured like any colour series (CIE charts
+           only — no target grading; profiling data feeds the LUT solve). The
+           per-lattice quick buttons were replaced by a single Select series…
+           picker that reuses the standalone 3D LUT AutoCal method chooser and
+           its descriptions. The LUT cube visual lives in LUT Tools. -->
+      <button class="btn btn-sm btn-secondary" id="meter3dLutSelectSeriesBtn" onclick="meterOpenLg3dSelectSeriesModal()" title="Choose a 3D LUT profiling series to measure (lattice / skeleton / hybrid) — same method chooser and descriptions as the standalone 3D LUT AutoCal">Select series&hellip;</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
+      <span id="meterCustomSeriesLoaded3dLut" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
+      <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="View, import and download 3D LUTs">LUT Tools</button>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -10446,10 +11011,10 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-danger" id="meterClearChartBtn" onclick="meterClearResults()" style="display:none">Clear Chart Data</button>
     <button class="btn btn-sm btn-secondary" id="meterReadOnce" onclick="meterReadOnce()" style="display:none" disabled>&#9679; Read Once</button>
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
-    <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
+    <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterReadSeriesPrimaryAction()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
-    <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
-     <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
+    <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
+     <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterOpenLg3dAutoCalModal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
     <button class="btn btn-sm btn-primary" id="meterToneMapMeasureUploadBtn" onclick="meterStartToneMapMeasureUpload()" style="display:none" title="Measure 100% white peak and upload the HDR tone map">&#9654; Measure &amp; Upload</button>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
@@ -10543,7 +11108,256 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="meterCustomSeriesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(1120px,96vw);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="min-width:0">
+      <div id="meterCustomSeriesModalTitle" style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
+      <div id="meterCustomSeriesModalModeLabel" style="font-size:.68rem;color:var(--text2)">Current mode</div>
+     </div>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end">
+     <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;flex:1 1 260px;max-width:340px">
+      <span>Series name</span>
+      <input type="text" id="meterCustomSeriesNameInput" maxlength="96" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.74rem;color:var(--text2);display:flex;flex-direction:column;gap:4px" title="The signal range these patch codes are authored for. The series is only offered while the display is outputting this range (Limited = legal/video codes, Full = PC range). Defaults to what you're outputting now.">
+      <span>Range</span>
+      <select id="meterCustomSeriesRangeInput" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="limited">Limited (legal)</option>
+       <option value="full">Full</option>
+      </select>
+     </label>
+    </div>
+    <div id="meterCustomSeriesEditorHint" style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Enter either the 8-bit or 10-bit code — the other converts automatically. For greyscale series a 100% white patch first is recommended (it becomes the white reference).</div>
+    <div style="overflow:auto;margin-bottom:12px">
+     <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
+      <thead><tr id="meterCustomSeriesEditorHead" style="border-bottom:1px solid #2a3140"></tr></thead>
+      <tbody id="meterCustomSeriesEditorBody"></tbody>
+     </table>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0">
+     <button class="btn btn-sm btn-secondary" onclick="meterCustomSeriesEditorAddRow()">+ Add Patch</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+     <div class="btn-row" id="meterCustomSeriesExportRow" style="margin:0">
+      <button class="btn btn-sm btn-danger" id="meterCustomSeriesDeleteBtn" onclick="meterDeleteCustomSeries()" style="display:none">Delete Series</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('calman')" title="Export the patch list as 8-bit RGB triplets (CalMAN import)">Export CalMAN CSV</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as a ColourSpace CSV (10-bit, # Bitdepth/# Range header)">Export ColourSpace CSV</button>
+     </div>
+     <div class="btn-row" style="margin:0">
+      <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesEditor()">Cancel</button>
+      <button class="btn btn-sm btn-primary" onclick="meterSaveCustomSeriesEditor()">Save</button>
+     </div>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterCustomSeriesManagerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(940px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesManager()">Close</button>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0">
+     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
+     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
+     <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterOpenImportWizard()" title="Import patch series from a CalMAN CSV, ColourSpace CSV, or CalMAN CCFX (multiple series)">Import&hellip;</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 8px 0">
+     <div id="meterCustomSeriesManagerScope" style="font-size:.72rem;color:var(--text2)"></div>
+     <label style="font-size:.74rem;color:#ddd;display:inline-flex;gap:5px;align-items:center;cursor:pointer" title="Off: only series that match the display you're driving right now (its signal mode and output range) are shown, because those are the only ones that will render correctly. On: show every custom series across all modes (SDR/HDR/DV) and ranges (Limited/Full).">
+      <input type="checkbox" id="meterCustomSeriesManagerShowAll" onchange="meterCustomSeriesManagerToggleShowAll(this.checked)"> Show all modes &amp; ranges
+     </label>
+    </div>
+    <div style="overflow:auto;margin-bottom:12px">
+     <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
+      <thead>
+       <tr style="border-bottom:1px solid #2a3140">
+        <th style="text-align:left;padding:6px">Name</th>
+        <th style="text-align:left;padding:6px">Category</th>
+        <th style="text-align:left;padding:6px">Mode</th>
+        <th style="text-align:left;padding:6px">Range</th>
+        <th style="text-align:left;padding:6px">Patches</th>
+        <th style="text-align:left;padding:6px"></th>
+       </tr>
+      </thead>
+      <tbody id="meterCustomSeriesManagerBody"></tbody>
+     </table>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterImportWizardModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(940px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">Import Patch Series</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseImportWizard()">Close</button>
+    </div>
+    <div style="font-size:.78rem;color:var(--text2);margin-bottom:8px">Choose the source format, pick the file, then review before importing. CalMAN CCFX files can hold many series — you pick which to import and set each one's name, bit depth and SDR/HDR.</div>
+    <div class="btn-row" style="margin:0 0 10px 0;align-items:center;gap:10px;flex-wrap:wrap">
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="calman_csv" checked onchange="meterImportWizardFormatChanged()"> CalMAN CSV</label>
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="colourspace_csv" onchange="meterImportWizardFormatChanged()"> ColourSpace CSV</label>
+     <label style="font-size:.8rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="radio" name="meterImpFmt" value="calman_ccfx" onchange="meterImportWizardFormatChanged()"> CalMAN CCFX (multiple series)</label>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0;align-items:center;gap:8px;flex-wrap:wrap">
+     <button class="btn btn-sm btn-primary" onclick="meterImportWizardChooseFile()">Choose file&hellip;</button>
+     <input type="file" id="meterImportWizardFile" style="display:none">
+     <span id="meterImportWizardFileName" style="font-size:.76rem;color:var(--text2)"></span>
+    </div>
+    <div id="meterImportWizardBody" style="margin-bottom:12px"></div>
+    <div id="meterImportWizardActions" style="display:none;text-align:right">
+     <button class="btn btn-sm btn-primary" id="meterImportWizardCommitBtn" onclick="meterImportWizardCommit()">Import</button>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterLutToolsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(720px,100%);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+     <div style="font-size:.95rem;font-weight:700;color:#eee">3D LUT Tools</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseLutTools()">Close</button>
+    </div>
+    <div class="btn-row" style="margin:0 0 12px 0">
+     <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()" title="Parse and preview a .cube 3D LUT file (not applied to the display)">Import .cube (preview)</button>
+     <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
+    </div>
+    <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
+    <div id="lutCubeViewWrap" style="display:none;margin-bottom:12px">
+     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">3D LUT Cube &mdash; <span id="lutCubeViewName" style="text-transform:none"></span>
+      <span class="meter-help-tip" title="The LUT's contents in signal RGB space: hollow box = input lattice node, filled dot = where the LUT sends it. Connector length shows how far the LUT moves that node (an identity LUT shows dots centred in their boxes). Drag = rotate, wheel = zoom, double-click = reset camera." aria-label="LUT cube view help">?</span>
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Show the hollow input-node target boxes and their displacement connectors. Off = only the LUT's output positions.">
+       <input type="checkbox" id="lutCubeShowTargets" checked onchange="meterLutCubeDraw()" style="vertical-align:middle"> Targets
+      </label>
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Render every node of the LUT instead of the 9-per-axis subset. Large LUTs (33³/65³) draw tens of thousands of markers — rotation may be slow.">
+       <input type="checkbox" id="lutCubeFullLattice" onchange="meterLutCubeDraw()" style="vertical-align:middle"> Full lattice
+      </label>
+     </div>
+     <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
+    </div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs (3D LUT AutoCal output)</div>
+    <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
+   </div>
+  </div>
+
+  <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10002;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(520px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT solved</div>
+    <div id="lutSolveDoneSummary" style="font-size:.8rem;color:var(--text2);margin-bottom:12px;line-height:1.5"></div>
+    <div class="btn-row" style="margin:0;flex-wrap:wrap;gap:6px">
+     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('cube')" title="Standard .cube (Resolve, madVR, LUT boxes)">Download .cube</button>
+     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('3dl')" title="Autodesk/Kodak .3dl (Lustre, Flame)">Download .3dl</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterLutSolveView3d()" title="Inspect the solved LUT as a 3D cube in LUT Tools">View in 3D</button>
+     <button class="btn btn-sm btn-secondary" onclick="meterLutSolveDoneClose()">Close</button>
+    </div>
+   </div>
+  </div>
+  <div id="meterLg3dStartModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT AutoCal</div>
+    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose how the display is profiled before the 3D LUT is solved and uploaded. Greyscale / 1D should already be calibrated. Regardless of profiling method, the worker always generates and uploads a full 33&sup3; (35,937-node) 12-bit payload for the active picture mode. Patch counts below are the profile measurements only.</div>
+    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
+    <select id="meterLg3dModalProfileSource" onchange="meterLg3dModalProfileSourceChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
+     <option value="matrix">Matrix (5-point) — 5 patches, fastest</option>
+     <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
+     <option value="hybrid3" selected>Hybrid 3&sup3; — 63 patches (recommended)</option>
+     <option value="hybrid5">Hybrid 5&sup3; — 161 patches</option>
+     <option value="hybrid9">Hybrid 9&sup3; — 765 patches</option>
+     <option value="lattice">Lattice series — full N&sup3; volume only</option>
+     <option value="imported">Imported .cube — upload only (0 profile patches)</option>
+    </select>
+    <div id="meterLg3dModalLatticeRow" style="display:none;margin-bottom:10px">
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
+     <select id="meterLg3dModalLatticeSeries" onchange="meterLg3dModalProfileSourceChanged()" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
+    </div>
+    <div id="meterLg3dModalImportedRow" style="display:none;margin-bottom:10px">
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">.cube to upload</label>
+     <select id="meterLg3dModalImportedLut" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
+    </div>
+    <div id="meterLg3dModalExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
+    <div id="meterLg3dModalCount" style="font-size:.75rem;color:var(--text2);margin-bottom:14px">&nbsp;</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterCloseLg3dAutoCalModal()">Cancel</button>
+     <button type="button" class="btn btn-sm btn-primary" id="meterLg3dModalStartBtn" onclick="meterConfirmLg3dAutoCalModal()">&#9654; Start 3D LUT AutoCal</button>
+    </div>
+   </div>
+  </div>
+  <div id="meterLg3dSelectSeriesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">Select 3D LUT Series</div>
+    <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose a profiling series to measure. It uses the same method chooser as the standalone 3D LUT AutoCal; the descriptions below note what each set samples.</div>
+    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
+    <select id="meterLg3dSelSeriesSource" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
+     <option value="matrix">Matrix (5-point) — 5 patches, fastest</option>
+     <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
+     <option value="hybrid3" selected>Hybrid 3&sup3; — 63 patches (recommended)</option>
+     <option value="hybrid5">Hybrid 5&sup3; — 161 patches</option>
+     <option value="hybrid9">Hybrid 9&sup3; — 765 patches</option>
+     <option value="lattice">Lattice series — full N&sup3; volume only</option>
+    </select>
+    <div id="meterLg3dSelSeriesLatticeRow" style="display:none;margin-bottom:10px">
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
+     <select id="meterLg3dSelSeriesLattice" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
+    </div>
+    <div id="meterLg3dSelSeriesExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
+    <div id="meterLg3dSelSeriesCount" style="font-size:.75rem;color:var(--text2);margin-bottom:14px">&nbsp;</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterCloseLg3dSelectSeriesModal()">Cancel</button>
+     <button type="button" class="btn btn-sm btn-primary" id="meterLg3dSelSeriesLoadBtn" onclick="meterConfirmLg3dSelectSeries()">Load series</button>
+    </div>
+   </div>
+  </div>
+  <div id="meterLatticeGenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(560px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+    <div id="meterLatticeGenTitle" style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:10px">Generate Lattice Series</div>
+    <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Creates an N&times;N&times;N RGB cube patch sequence (plus optional greyscale ramp) for the current signal mode. Export it for CalMAN/ColourSpace or measure it here.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Series name</span>
+      <input type="text" id="meterLatticeName" maxlength="48" style="width:180px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Cube size (per axis)</span>
+      <input type="number" id="meterLatticeSize" min="3" max="50" step="1" value="9" oninput="meterLatticeGenSyncReadout()" style="width:90px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Greyscale points (0 = off)</span>
+      <input type="number" id="meterLatticeGrey" min="0" max="101" step="1" value="0" oninput="meterLatticeGenSyncReadout()" style="width:110px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Skip below luminance %</span>
+      <input type="number" id="meterLatticeThreshold" min="0" max="50" step="0.5" value="0" oninput="meterLatticeGenSyncReadout()" style="width:110px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Measurement order</span>
+      <select id="meterLatticeOrder" onchange="meterLatticeGenSyncReadout()" style="width:150px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="spread" selected>Spread (thermal-safe)</option>
+       <option value="grid">Grid order</option>
+      </select>
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Node spacing <span class="meter-help-tip" title="Signal-uniform: classic equal code steps. Light-uniform: node values spaced evenly in decoded LIGHT up to the mastering peak (corners still hit 100% signal). In HDR/PQ, signal-uniform mixes decode to near-primary light ratios and crowd the gamut edge — light-uniform fills the chroma interior with the same patch count." aria-label="Node spacing help">?</span></span>
+      <select id="meterLatticeSpacing" onchange="meterLatticeGenSyncReadout()" style="width:190px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box">
+       <option value="signal" selected>Signal-uniform</option>
+       <option value="light">Light-uniform</option>
+      </select>
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px;align-self:flex-end;padding-bottom:6px">
+      <input type="checkbox" id="meterLatticeReverse" onchange="meterLatticeGenSyncReadout()">
+      Reverse order
+     </label>
+    </div>
+    <div id="meterLatticeCountReadout" style="font-size:.8rem;color:var(--text);margin-bottom:12px">&nbsp;</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseLatticeGenerator()">Cancel</button>
+     <button class="btn btn-sm btn-primary" onclick="meterSaveLatticeGenerator()">Save</button>
+    </div>
+   </div>
+  </div>
+
+  <!-- CCSS create/editor: reparented to document.body on open so they beat the AutoCal mask (same trap as spectro setup when nested under .dashboard). -->
+  <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(520px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div>
@@ -10585,7 +11399,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
@@ -10781,13 +11595,42 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
+      <label id="meterCie3dViewLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
-       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Right-drag = rotate · Left-drag = pan · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
+       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Drag = rotate · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
       </label>
+      <span id="meterCieViewOptRow" style="display:inline-flex;gap:10px;flex-wrap:wrap;margin-left:6px;padding-left:10px;border-left:1px solid var(--border)">
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show target boxes on the chart">
+        <input type="checkbox" id="meterCieOptTargets" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Targets
+       </label>
+       <label id="meterCieOptDropLinesLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="3D view: show the vertical lines connecting each point to the chart floor">
+        <input type="checkbox" id="meterCieOptDropLines" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Drop lines
+       </label>
+       <label id="meterCieOptGamutLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the target colourspace triangle">
+        <input type="checkbox" id="meterCieOptGamut" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Gamut
+       </label>
+       <label id="meterCieOptLocusLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
+        <input type="checkbox" id="meterCieOptLocus" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Locus
+       </label>
+       <label id="meterCieOptLumRingsLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the luminance-error rings and stems (applies when Include luminance error is on)">
+        <input type="checkbox" id="meterCieOptLumRings" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> &Delta;Y rings
+       </label>
+      </span>
+     </div>
+     <div id="meterCubeViewWrap" style="display:none;margin-bottom:10px">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">RGB Cube (signal space)
+       <span class="meter-help-tip" title="Lattice nodes at their signal RGB positions. Hollow = not measured yet, filled = measured. Drag = rotate, wheel = zoom." aria-label="RGB cube view help">?</span>
+      </div>
+      <div id="chartCubeViewBox" style="position:relative;display:inline-block;max-width:100%">
+       <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
+       <button type="button" id="chartCubeExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cube')">&#8600;</button>
+      </div>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
-      <canvas id="chartCIE" width="640" height="600" style="flex:0 0 600px;width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="chartCIEBox" style="position:relative;flex:0 0 600px;max-width:100%">
+       <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
+       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cie')">&#8600;</button>
+      </div>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
@@ -10801,7 +11644,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
      </div>
     </div>
-    <div style="margin-bottom:10px">
+    <div id="meterColorDeltaESection" style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto">
@@ -10821,7 +11664,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        </select>
       </label>
      </div>
-     <canvas id="chartColorDE" width="800" height="180" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     <div id="meterColorDeltaEScroller" class="meter-scroll-sync" style="overflow-x:hidden;border-radius:6px">
+      <canvas id="chartColorDE" width="800" height="180" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     </div>
     </div>
     <div id="colorSeriesAveragesWrap" style="margin-bottom:10px;display:none">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Series Averages</div>
@@ -11135,7 +11980,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">This sets the HDMI output format the calibration will be built on. Pick the one that matches how the display is normally fed.</div>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;(YCbCr 4:4:4, Limited 16-235 video with super-white to 254, 10-bit)</span></label>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Limited 16-235, 10-bit)</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalUseCase" value="keep" checked> Keep current output settings</label>
 	   <div id="meterAutoCalUseCaseHdrNote" style="display:none;font-size:.72rem;color:var(--text2);margin-top:8px">HDR10 note: YCbCr 4:4:4 Limited is the panel's native HDR signalling mode and the recommended choice. RGB modes are supported for PC and console sources. The HDR gamma target is fixed and not part of this wizard.</div>
 	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
@@ -11149,10 +11994,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  </div>
 	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
-	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the meter profile (CCSS) that matches this panel. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from this choice.</div>
-	   <div class="field" style="max-width:420px">
-	    <label>Display Type / Meter Profile</label>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
+	   <div class="field">
+	    <label>Panel technology</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
+	   </div>
+	   <div class="field meter-autocal-ccss-row">
+	     <label>Meter profile (CCSS)</label>
+	     <select id="meterAutoCalCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
@@ -11204,6 +12053,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div id="meterAutoCalResultsSummary" style="font-size:.82rem;color:var(--text);line-height:1.45"></div>
 	   <div id="meterAutoCalResultsDuration" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
 	   <div id="meterAutoCalResultsWorst" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
+	   <div id="meterAutoCalResultsApplyAllNote" style="display:none;margin-top:12px;padding:10px 12px;border:1px solid #3a4a28;border-radius:6px;background:#12180e;font-size:.8rem;color:#d7e8b8;line-height:1.45">
+	    <strong style="color:#e8f5c8">Next step on the TV:</strong> open Advanced picture settings for this picture mode and use <strong>Apply to all inputs</strong> so every HDMI input gets the calibrated settings (SDR and HDR Full Auto Cal alike).
+	   </div>
 	  </div>
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
@@ -11212,6 +12064,19 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	    <input type="checkbox" id="meterFullAutoCalShadowFixEnabled" style="accent-color:var(--accent)">
 	    LG Tone Mapping Shadow Fix
 	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re-apply lift)</span>
+	   </label>
+	   <label id="meterFullAutoCalProfilingRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px;flex-wrap:wrap">
+	    3D LUT profiling
+	    <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
+	     <option value="matrix">Matrix (5 patches)</option>
+	     <option value="skeleton">Skeleton WRGB (45 patches)</option>
+	     <option value="hybrid3" selected>Hybrid 3³ (63 patches)</option>
+	     <option value="hybrid5">Hybrid 5³ (161 patches)</option>
+	     <option value="hybrid9">Hybrid 9³ (765 patches)</option>
+	     <option value="lattice">Lattice series… (N³ only)</option>
+	    </select>
+	    <select id="meterFullAutoCalLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px"></select>
+	    <span style="font-size:.68rem;color:var(--text2)">(Matrix=W/R/G/B/K. Skeleton=multi-level WRGB ramps. Hybrid=skeleton + volume cube, deduped. Lattice=N³ only. All produce a 33³ upload.)</span>
 	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
@@ -11817,6 +12682,7 @@ function applyConfigState(nextConfig){
  setVal('color_format',config.color_format||'0');
  setVal('colorimetry',normalizeColorimetryValue(config.colorimetry,sm));
  setVal('rgb_quant_range',config.rgb_quant_range||'0');
+ try{ uiEnforceQuantRangeForColorFormat(); }catch(e){}
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
  applyMeterTargetGamutDefault(false);
@@ -14234,10 +15100,6 @@ let meterAutoCalCapturedMeasurementLabel='';
 let meterAutoCalCapturedTargetY=0;
 let meterAutoCalLuminanceScaleMax=0;
 let meterAutoCalLevelPreflight=null;
-let meterAutoCalMagicWandActive=false;
-let meterAutoCalMagicWandBaseStatus=null;
-let meterAutoCalMagicWandFullWorkflow=false;
-let meterAutoCalStandaloneMagicWandEnabled=false;
 let meterHdrAutoCalChartContextHeld=false;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
@@ -14651,6 +15513,17 @@ function meterRecoveredStepsDifferInCodes(a,b){
 
 function meterCanonicalRecoveredSteps(type,points,steps,status){
 	 const existing=Array.isArray(steps)?steps:[];
+	 // Lattice series: server-shaped steps carry no chart targets (the server
+	 // expansion computes none). The client expansion is name-identical
+	 // (parity-locked) and stamps target_x/y/Yn — always prefer it so target
+	 // resolution never falls back to the raw absolute stimulus decode.
+	 try{
+	  const latSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+	  if(latSeries&&latSeries.kind==='lattice'){
+	   const freshLat=meterBuildStepsJS(type,points);
+	   if(Array.isArray(freshLat)&&freshLat.length&&(existing.length===0||freshLat.length===existing.length)) return freshLat;
+	  }
+	 }catch(e){}
 	 if(type!=='greyscale'||String(status||'')==='running') return existing;
 	 if(!(meterUseLgGreyscale21(points)||meterUseLgAutoCal26(points))) return existing;
 	 const fresh=meterBuildStepsJS(type,points);
@@ -14662,14 +15535,27 @@ function meterCanonicalRecoveredSteps(type,points,steps,status){
 
 function meterFilterReadingsForCurrentSteps(readings,type){
  const list=Array.isArray(readings)?readings:[];
- if(type!=='greyscale'||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return list;
- return meterFilterReadingsForSteps(list,type,meterSeriesSteps,{dropStaleBlackOnly:true});
+ if(!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return list;
+ // Greyscale and colour/sat: drop leftovers from a previous series (e.g.
+ // ColorChecker dots still plotting after loading a custom grid).
+ if(type==='greyscale') return meterFilterReadingsForSteps(list,type,meterSeriesSteps,{dropStaleBlackOnly:true});
+ if(type==='colors'||type==='saturations') return meterFilterReadingsForSteps(list,type,meterSeriesSteps);
+ return list;
+}
+
+function meterColorReadingMatchesStep(reading,step){
+ if(!reading||!step) return false;
+ const rk=meterStepNameKey(reading), sk=meterStepNameKey(step);
+ if(rk&&sk&&rk===sk) return true;
+ const rn=String(reading.name||''), sn=String(step.name||'');
+ return !!(rn&&sn&&rn===sn);
 }
 
 function meterReadingMatchesStepList(reading,type,steps){
- if(type!=='greyscale') return true;
  if(!Array.isArray(steps)||!steps.length) return true;
- return steps.some(step=>meterGreyscaleReadingMatchesStep(reading,step));
+ if(type==='greyscale') return steps.some(step=>meterGreyscaleReadingMatchesStep(reading,step));
+ if(type==='colors'||type==='saturations') return steps.some(step=>meterColorReadingMatchesStep(reading,step));
+ return true;
 }
 
 function meterReadingIsBlackStep(reading){
@@ -14694,9 +15580,51 @@ function meterReadingsWouldRecoverAsBlackOnly(readings,type,steps){
 
 function meterFilterReadingsForSteps(readings,type,steps,options){
  const list=Array.isArray(readings)?readings:[];
- if(type!=='greyscale'||!Array.isArray(steps)||!steps.length) return list;
- if(options&&options.dropStaleBlackOnly&&meterReadingsWouldRecoverAsBlackOnly(list,type,steps)) return [];
- return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ if(!Array.isArray(steps)||!steps.length) return list;
+ if(type==='greyscale'){
+  if(options&&options.dropStaleBlackOnly&&meterReadingsWouldRecoverAsBlackOnly(list,type,steps)) return [];
+  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ }
+ if(type==='colors'||type==='saturations'){
+  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ }
+ return list;
+}
+
+// True only for a real meter sample. Series steps, target-only placeholders, and
+// synthetic whites must never count — otherwise unread nodes show fabricated
+// "Measured" values (from codes, stale series, or target_Y mistaken for Y).
+function meterReadingIsRealMeasurement(rd){
+ if(!rd||typeof rd!=='object') return false;
+ if(rd._unreadStep||rd._presetStep||rd.synthetic_target) return false;
+ // Instrument path always leaves raw_* (or CIE xy + luminance) from a read.
+ if(rd.raw_Y!=null||rd.raw_luminance!=null||rd.raw_X!=null||rd.raw_Z!=null) return true;
+ if(rd.raw_x!=null&&rd.raw_y!=null) return true;
+ const hasXY=rd.x!=null&&rd.y!=null&&Number(rd.x)>0&&Number(rd.y)>0;
+ const hasLum=(rd.luminance!=null&&Number(rd.luminance)>=0)||(rd.Y!=null&&Number(rd.Y)>=0);
+ // Require both chroma + luminance so a step shell with only codes never passes.
+ if(hasXY&&hasLum) return true;
+ // Absolute XYZ from the meter (not target_X/Y/Z alone).
+ if(rd.X!=null&&rd.Y!=null&&rd.Z!=null&&hasLum&&(rd.x!=null||rd.raw_Y!=null)) return true;
+ return false;
+}
+
+// Detail/live context for an unread colour patch: targets only, no measured fields.
+// Intentionally omits x/y/X/Y/Z/luminance so nothing can treat it as a sample.
+function meterColorUnreadDetailFromStep(step){
+ if(!step) return null;
+ return {
+  name:step.name,ire:step.ire,
+  r:step.r,g:step.g,b:step.b,
+  r_code:(step.r_code!=null?step.r_code:step.r),
+  g_code:(step.g_code!=null?step.g_code:step.g),
+  b_code:(step.b_code!=null?step.b_code:step.b),
+  target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,
+  custom_target_nits:step.custom_target_nits,
+  signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct,
+  series_color:step.series_color,sat_pct:step.sat_pct,
+  _unreadStep:true
+ };
 }
 
 function meterResolveSeriesSnapshotFromCache(key,options){
@@ -14720,12 +15648,19 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  const parsed=meterParseSeriesKey(key)||null;
  const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||'greyscale';
  const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||21;
- const signalMode=meterSeriesSnapshotSignalMode(exact,(opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr'));
- if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode) return null;
+ // The eligibility gate must compare the snapshot's mode against the LIVE
+ // (requested) chart mode — resolving signalMode from the snapshot first and
+ // then comparing the snapshot against it was a tautology (always true), so
+ // e.g. an SDR-cached cube snapshot restored into an HDR10 session and
+ // stamped signal_mode 'sdr' onto the active series, silently collapsing the
+ // whole PQ pipeline (BT.2390 control, PQ target decode, chart law).
+ const requestedMode=String((opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()||'sdr';
+ const signalMode=meterSeriesSnapshotSignalMode(exact,requestedMode);
+ if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,requestedMode)===requestedMode) return null;
  let steps=clone((Array.isArray(opts.steps)&&opts.steps.length)?opts.steps:((exact&&Array.isArray(exact.steps)&&exact.steps.length)?exact.steps:meterBuildStepsJS(type,points)));
  steps=meterCanonicalRecoveredSteps(type,points,steps,(exact&&exact.status)||'complete');
  const requestedLg26=type==='greyscale'&&(Number(points)===26||meterSeriesStepsHaveLgAutoCal26Markers(steps));
- const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
+ const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,requestedMode)===requestedMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
  if(type!=='greyscale'){
   if(!exactEligible) return null;
 	  return {
@@ -14805,6 +15740,11 @@ function meterRestoreLatestPersistedSeries(){
  if(!meterSeriesCacheBootId || meterActiveSeriesKey) return false;
  meterLoadSeriesCache();
  const lastKey=(function(){ try{return localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';}catch(e){return '';} })();
+ // USER custom series (id >= 1001) are never auto-loaded at boot — they load
+ // only through the Custom Series manager's Load button.
+ const parsed=meterParseSeriesKey(lastKey)||{};
+ const userCustom=Number(parsed.points)>=1001&&(typeof meterCustomSeriesById==='function')&&!!meterCustomSeriesById(parsed.points);
+ if(userCustom) return false;
  if(lastKey && meterSeriesSnapshotCanRestore(meterSeriesCache[lastKey])) return meterRestoreSeriesFromCache(lastKey);
  return false;
 }
@@ -14876,7 +15816,9 @@ function meterSharedSeriesStatusKey(status){
   const m=String(status.series_id||'').match(/^(greyscale|colors|saturations)_/);
   if(m) type=m[1];
  }
- if(type==='colors') points=30;
+ // Custom/lattice color series ride on type 'colors' with points>=900 (900-999
+ // built-in cubes, >=1001 user series); only the stock ColorChecker is 30.
+ if(type==='colors') points=(points>=900)?points:30;
  else if(type==='saturations') points=24;
  else if(type==='greyscale'){
   const total=Number(status.total_steps||0)||0;
@@ -14935,9 +15877,74 @@ function meterIdentityXyzCorrectionMatrix(){
  return METER_XYZ_MATRIX_DEFAULT.map(row=>row.slice());
 }
 
-function meterXyzCorrectionEnabled(){
+// Applied snapshot used for analysis; draft edits live in the DOM until Apply.
+window._meterXyzMatrixApplied=null; // {enabled:bool, matrix:[[...],[...],[...]]}
+
+function meterDraftXyzMatrixEnabled(){
  const el=document.getElementById('meterXyzMatrixEnabled');
- return el ? !!el.checked : true;
+ return !!(el&&el.checked);
+}
+
+function meterSnapshotXyzMatrixAppliedFromDom(){
+ const matrix=meterConfiguredXyzCorrectionMatrix().map(row=>row.slice());
+ window._meterXyzMatrixApplied={
+  enabled:meterDraftXyzMatrixEnabled(),
+  matrix:matrix
+ };
+ return window._meterXyzMatrixApplied;
+}
+
+function meterXyzMatrixDraftDirty(){
+ const applied=window._meterXyzMatrixApplied;
+ if(!applied) return true;
+ if(!!applied.enabled!==meterDraftXyzMatrixEnabled()) return true;
+ const draft=meterConfiguredXyzCorrectionMatrix();
+ const tol=1e-6;
+ for(let r=0;r<3;r++){
+  for(let c=0;c<3;c++){
+   const a=Number(applied.matrix&&applied.matrix[r]?applied.matrix[r][c]:NaN);
+   const d=Number(draft[r][c]);
+   if(!Number.isFinite(a)||!Number.isFinite(d)||Math.abs(a-d)>tol) return true;
+  }
+ }
+ return false;
+}
+
+function meterUpdateXyzMatrixApplyButton(){
+ const btn=document.getElementById('meterXyzMatrixApply');
+ if(!btn) return;
+ const dirty=meterXyzMatrixDraftDirty();
+ btn.style.display=dirty?'':'none';
+ // Gear / action-row visibility depend on dirty so Apply stays reachable.
+ try{ meterUpdateXyzMatrixVisibility(); }catch(e){}
+ try{ if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility(); }catch(e){}
+}
+
+function meterApplyXyzMatrixEdits(){
+ meterSnapshotXyzMatrixAppliedFromDom();
+ meterRefreshAfterXyzMatrixChange();
+ saveMeterSettings();
+ meterUpdateXyzMatrixApplyButton();
+}
+
+// Enable/disable applies immediately (refresh + persist). Matrix number cells stay deferred until Apply.
+// Only the enabled flag is written into the applied snapshot; draft matrix cells keep their dirty state.
+function meterApplyXyzMatrixEnableFromDraft(){
+ const enabled=meterDraftXyzMatrixEnabled();
+ if(!window._meterXyzMatrixApplied){
+  meterSnapshotXyzMatrixAppliedFromDom();
+ }else{
+  window._meterXyzMatrixApplied.enabled=enabled;
+ }
+ meterRefreshAfterXyzMatrixChange();
+ saveMeterSettings();
+ meterUpdateXyzMatrixApplyButton();
+ return window._meterXyzMatrixApplied;
+}
+
+function meterXyzCorrectionEnabled(){
+ if(window._meterXyzMatrixApplied) return !!window._meterXyzMatrixApplied.enabled;
+ return meterDraftXyzMatrixEnabled();
 }
 
 function meterStoredXyzMatrixEnabled(settings){
@@ -14949,10 +15956,13 @@ function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
  const field=wrap&&wrap.closest('.meter-matrix-field');
  const actionRow=document.getElementById('meterXyzMatrixActionRow');
- const enabled=meterXyzCorrectionEnabled();
+ // Matrix fields follow the draft enable checkbox; action row also stays open
+ // while dirty so Apply remains reachable after unchecking enable.
+ const enabled=meterDraftXyzMatrixEnabled();
+ const showActions=enabled||meterXyzMatrixDraftDirty();
  if(field) field.classList.toggle('visible',enabled);
  if(wrap) wrap.classList.toggle('visible',enabled);
- if(actionRow) actionRow.classList.toggle('visible',enabled);
+ if(actionRow) actionRow.classList.toggle('visible',showActions);
  ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.disabled=!enabled;
@@ -14994,7 +16004,7 @@ function meterExportXyzMatrix(){
  const payload={
   format:'pgenerator-xyz-correction-matrix',
   version:1,
-  enabled:meterXyzCorrectionEnabled(),
+  enabled:meterDraftXyzMatrixEnabled(),
   matrix:meterConfiguredXyzCorrectionMatrix()
  };
  const filename=meterPromptExportFilename('xyz-matrix','pgenerator-xyz-correction-matrix','json','Enter a file name for the XYZ correction matrix export');
@@ -15037,8 +16047,11 @@ function meterImportXyzMatrix(evt){
   try{
    const imported=meterParseImportedXyzMatrix(reader.result);
    meterSetXyzCorrectionMatrix(imported.matrix, imported.enabled);
+   // Import is intentional: auto-apply draft into the analysis snapshot.
+   meterSnapshotXyzMatrixAppliedFromDom();
    meterRefreshAfterXyzMatrixChange();
    saveMeterSettings();
+   meterUpdateXyzMatrixApplyButton();
    toast('XYZ correction matrix imported');
   }catch(e){
    toast('Invalid XYZ correction matrix file',true);
@@ -15049,6 +16062,8 @@ function meterImportXyzMatrix(evt){
 
 function meterXyzCorrectionMatrix(){
  if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
+ if(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)
+  return window._meterXyzMatrixApplied.matrix.map(row=>row.slice());
  return meterConfiguredXyzCorrectionMatrix();
 }
 
@@ -15312,7 +16327,38 @@ function linRgbToXyz(R,G,B,matrix){
 
 function meterIsLimitedRange(){
  const rangeEl=document.getElementById('rgb_quant_range');
- return !!(rangeEl&&rangeEl.value==='1');
+ const v=String((rangeEl&&rangeEl.value)||'0');
+ if(v==='1') return true;
+ if(v==='2') return false;
+ // Default: YCbCr transports are Limited on the wire (Full range is an
+ // RGB-only concept), so Default resolves to Limited whenever a YCbCr
+ // colour format is selected. RGB Default keeps the historical
+ // full-range interpretation.
+ return !meterOutputIsRgb();
+}
+
+// Quant-range rules for the selected colour format: YCbCr is always
+// Limited on the wire, so the Full option is REMOVED from the dropdown for
+// YCbCr (not merely greyed out) and a Full selection is coerced back to
+// Limited when switching to YCbCr. The Default option label reflects what it
+// resolves to.
+function uiEnforceQuantRangeForColorFormat(){
+ const fmtEl=document.getElementById('color_format');
+ const sel=document.getElementById('rgb_quant_range');
+ if(!fmtEl||!sel) return;
+ const isYcc=fmtEl.value==='1'||fmtEl.value==='2';
+ const fullOpt=sel.querySelector('option[value="2"]');
+ if(fullOpt){
+  fullOpt.hidden=isYcc;
+  fullOpt.disabled=isYcc;
+  fullOpt.style.display=isYcc?'none':'';
+ }
+ const defOpt=sel.querySelector('option[value="0"]');
+ if(defOpt) defOpt.textContent=isYcc?'Default (Limited)':'Default';
+ if(isYcc&&sel.value==='2'){
+  sel.value='1';
+  try{ sel.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+ }
 }
 
 function meterOutputFormatValue(){
@@ -16274,31 +17320,26 @@ function meterGreyscaleReferenceReadings(readings){
 
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
- const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
- const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
- const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
- // SDR26 peak (Limited 109 / Full 100): always prefer the LIVE measured peak
- // reading so EOTF/gamma/luma target curves re-scale as peak Y updates each
- // reduce-to-lowest iter (e.g. Full 100: 198 → 183 nits). Stale first-read
- // stamps must not freeze the curve.
- if(lgAutoCalChartRef){
-  const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
-  if(peakRd&&!peakRd.synthetic_target){
-   const peakY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(peakRd):0;
-   if(peakY>0) return peakRd;
+  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+   const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+  // SDR26 peak (Limited 109 / Full 100): always prefer the LIVE measured peak
+  // reading so EOTF/gamma/luma target curves re-scale as peak Y updates each
+  // reduce-to-lowest iter (e.g. Full 100: 198 → 183 nits). Stale first-read
+  // stamps must not freeze the curve.
+  if(lgAutoCalChartRef){
+   const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
+   if(peakRd&&!peakRd.synthetic_target){
+    const peakY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(peakRd):0;
+    if(peakY>0) return peakRd;
+   }
   }
- }
- // SDR26 1D-DPG Limited: headroom-derived peak from 109 when no live peak row.
- const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
- if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
-  const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
-  if(synthetic) return synthetic;
- }
- const referenceList=(lgAutoCalChartRef&&activeAutoCalReference&&!magicWandPhase)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
- if(lgAutoCalChartRef&&magicWandPhase){
-  const magicWandWhite=meterFindSeriesWhiteReading(list);
-  if(magicWandWhite) return magicWandWhite;
- }
+  // SDR26 1D-DPG Limited: headroom-derived peak from 109 when no live peak row.
+  const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
+  if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
+   const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
+   if(synthetic) return synthetic;
+  }
+  const referenceList=(lgAutoCalChartRef&&activeAutoCalReference)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  const activeAutoCalTargetY=activeAutoCalReference?meterAutoCalGreyscaleTargetWhiteReferenceNits(list):null;
  if(activeAutoCalTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
@@ -16353,7 +17394,7 @@ function meterEffectiveGreyscaleWhiteReference(readings){
 function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
  if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  const phase=String(meterFullAutoCalPhase||'');
- const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish'||phase==='magic-wand';
+ const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish';
  const directAutoCal=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)||(typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling));
  const fullGreyscaleAutoCal=!!((typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)&&fullGreyscalePhase);
  const autoCalPhase=String((typeof meterAutoCalPhase!=='undefined'?meterAutoCalPhase:'')||'');
@@ -16569,6 +17610,119 @@ function meterWrgbStimulusTargetY(reading){
  return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
 }
 
+// Reference mode for lattice/cube chart targets. 'display' (default) judges
+// the panel against what it CAN do -- BT.2390 roll-off toward the measured
+// white peak plus per-channel additive ceilings from the cube's own 100%
+// corners. 'mastering' keeps the raw absolute stimulus decode for
+// mastering-monitor QC. Lattice series only; ColorChecker/sat targets are
+// governed by their own locked rules and never take this path.
+function meterLatticeDisplayReference(){
+ const el=document.getElementById('meterCubeReference');
+ const v=el?String(el.value||'').toLowerCase():'';
+ return v==='mastering'?'mastering':'display';
+}
+
+// Lattice corner readings from the current run. A cube lattice always
+// includes the 100% W/R/G/B corners, so the run carries its own reference
+// data: measured white peak + per-channel linear-RGB luminance ceilings
+// (Y / Yrow, same construction as meterWrgbPrimaryCeilings). Only entries
+// whose corner has actually been measured are present.
+function meterLatticeCornerRefs(){
+ const out={white:0,ceil:{}};
+ const series=(typeof meterActiveLatticeSeries==='function')?meterActiveLatticeSeries():null;
+ if(!series) return out;
+ // Derive the wire range from the READINGS themselves: a lattice run always
+ // spans its wire min..max, and the recorded codes are authoritative for THAT
+ // run. Deriving from the current UI range settings broke corner detection
+ // whenever the operator's range/bit-depth selection no longer matched the
+ // run being charted (recorded full-range 0..1023 vs UI limited 64..940).
+ let wireMin=Infinity,wireMax=-Infinity;
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd) return;
+  [ (rd.r_code!=null)?rd.r_code:rd.r, (rd.g_code!=null)?rd.g_code:rd.g, (rd.b_code!=null)?rd.b_code:rd.b ].forEach(v=>{
+   const n=Number(v);
+   if(!Number.isFinite(n)) return;
+   if(n<wireMin) wireMin=n;
+   if(n>wireMax) wireMax=n;
+  });
+ });
+ if(!(wireMax>wireMin)) return out;
+ const tol=Math.max(2,(wireMax-wireMin)*0.002);
+ const lo=v=>Math.abs(Number(v)-wireMin)<=tol;
+ const hi=v=>Math.abs(Number(v)-wireMax)<=tol;
+ const gamut=meterAnalysisGamut();
+ const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd) return;
+  const r=(rd.r_code!=null)?rd.r_code:rd.r;
+  const g=(rd.g_code!=null)?rd.g_code:rd.g;
+  const b=(rd.b_code!=null)?rd.b_code:rd.b;
+  if(r==null||g==null||b==null) return;
+  const y=meterReadingLuminanceNits(rd);
+  if(!(y>0)) return;
+  if(hi(r)&&hi(g)&&hi(b)){ if(!(out.white>0)) out.white=y; return; }
+  if(hi(r)&&lo(g)&&lo(b)&&Yrow[0]>0){ if(!(out.ceil[0]>0)) out.ceil[0]=y/Yrow[0]; return; }
+  if(lo(r)&&hi(g)&&lo(b)&&Yrow[1]>0){ if(!(out.ceil[1]>0)) out.ceil[1]=y/Yrow[1]; return; }
+  if(lo(r)&&lo(g)&&hi(b)&&Yrow[2]>0){ if(!(out.ceil[2]>0)) out.ceil[2]=y/Yrow[2]; }
+ });
+ return out;
+}
+
+// Display-referenced target Y for a lattice node in HDR PQ. The raw stimulus
+// decode assumes the panel tracks PQ all the way to the encoded value; a real
+// panel BT.2390-rolls toward its peak, and chromatic output is capped by the
+// additive per-channel ceilings (the WRGB W subpixel does not light for
+// colour). 'mastering' mode and non-lattice series return the raw value; a
+// run with no corner data yet also falls back to raw (never guess).
+function meterLatticeDisplayTargetY(rawY,reading){
+ if(!(rawY>0)) return rawY;
+ if(!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())) return rawY;
+ if(meterLatticeDisplayReference()!=='display') return rawY;
+ const refs=meterLatticeCornerRefs();
+ let y=rawY;
+ if(!meterReadingIsGreyscale(reading)){
+  const r=(reading&&reading.r_code!=null)?reading.r_code:(reading?reading.r:null);
+  const g=(reading&&reading.g_code!=null)?reading.g_code:(reading?reading.g:null);
+  const b=(reading&&reading.b_code!=null)?reading.b_code:(reading?reading.b:null);
+  if(r!=null&&g!=null&&b!=null&&(refs.ceil[0]>0||refs.ceil[1]>0||refs.ceil[2]>0)){
+   let dr=meterDecodeColorTargetChannel(r);
+   let dg=meterDecodeColorTargetChannel(g);
+   let db=meterDecodeColorTargetChannel(b);
+   if(refs.ceil[0]>0) dr=Math.min(dr,refs.ceil[0]);
+   if(refs.ceil[1]>0) dg=Math.min(dg,refs.ceil[1]);
+   if(refs.ceil[2]>0) db=Math.min(db,refs.ceil[2]);
+   const gamut=meterAnalysisGamut();
+   const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
+   if(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0) y=Math.min(y,xyz.Y);
+  }
+ }
+ let peak=refs.white;
+ // Mid-run fallback chain: the run's own white reading (worker measures white
+ // for target Y before the lattice), then any measured white in the readings.
+ if(!(peak>0)&&typeof meterWhiteReading!=='undefined'&&meterWhiteReading&&!meterWhiteReading.synthetic_target&&!meterWhiteReading.autocal_reference_only){
+  const wy=meterReadingLuminanceNits(meterWhiteReading);
+  if(wy>0) peak=wy;
+ }
+ if(!(peak>0)&&typeof meterFindMeasuredWhiteReading==='function'){
+  const w=meterFindMeasuredWhiteReading();
+  const wy=w?meterReadingLuminanceNits(w):0;
+  if(wy>0) peak=wy;
+ }
+ if(peak>0){
+  if(meterReadingIsGreyscale(reading)){
+   // Neutral nodes: the panel tracks the signal then clips at ITS peak, and
+   // the measured white IS the reference — a plain cap keeps the white corner
+   // targeting itself (BT.2390 here would re-roll an already-white-clamped
+   // value below the measured peak and charge white a phantom dY).
+   y=Math.min(y,peak);
+  } else {
+   const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():0;
+   if(master>0&&typeof bt2390Tonemap==='function') y=bt2390Tonemap(y,master,peak);
+  }
+ }
+ return y;
+}
+
 function meterBlackReadingY(){
  return meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
 }
@@ -16674,6 +17828,11 @@ function meterTargetSignalToLinear(v){
  }
  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
+ // An st2084 target selection means PQ decode regardless of how the chart
+ // classified the wire — parseFloat('st2084') is NaN and silently fell back
+ // to gamma 2.2, which quietly mis-decoded every target when a stale series
+ // context dropped the chart out of PQ mode.
+ if(sel==='st2084') return meterChartPqDecodeNormalized(c);
  const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
  return Math.pow(c,g);
 }
@@ -17000,10 +18159,19 @@ function meterColorTargetCodeRange(){
  return limited?{min:16,span:219}:{min:0,span:255};
 }
 
-function meterDecodeColorTargetChannel(code){
+function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.min(meterChartPqDecodeNormalized(norm),meterChartHdrPeak());
+ if(meterChartIsPq()&&!meterChartIsDv()){
+  const nits=meterChartPqDecodeNormalized(norm);
+  // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,
+  // but it DISTORTS THE HUE of any mix with a channel above the mastering
+  // peak: 100/75/25 truly encodes ~10:1 R:G linear light (orange), yet with
+  // R clamped 10000->1000 and G (981) untouched the "target" said ~1:1
+  // (yellow) — nowhere near what the signal means or what a panel shows.
+  // Chromaticity consumers pass unclamped:true to keep the encoded ratios.
+  return (opts&&opts.unclamped)?nits:Math.min(nits,meterChartHdrPeak());
+ }
  // SDR/DV: decode with the active target EOTF so the reconstructed target
  // XYZ for r/g/b-code patches matches the chromaticity the display actually
  // produces when tracking that EOTF (previously hardcoded γ=2.2).
@@ -17024,7 +18192,16 @@ function targetColorXYZAbs(r,g,b){
 }
 
 function targetChromaticityXY(r,g,b){
- const xyz=targetColorXYZAbs(r,g,b);
+ // Hue from the UNCLAMPED per-channel decode — the signal's true encoded
+ // ratios (see meterDecodeColorTargetChannel). Luminance targets stay on the
+ // clamped path via targetColorXYZAbs.
+ const gamut=meterAnalysisGamut();
+ const xyz=linRgbToXyz(
+  meterDecodeColorTargetChannel(r,{unclamped:true}),
+  meterDecodeColorTargetChannel(g,{unclamped:true}),
+  meterDecodeColorTargetChannel(b,{unclamped:true}),
+  gamut.rgbToXyz
+ );
  const s=xyz.X+xyz.Y+xyz.Z;
  const wp=meterTargetWhitePoint();
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
@@ -17203,6 +18380,18 @@ function meterTargetXYZForReading(reading){
   tx=wp.x;
   ty=wp.y;
  }
+ // Custom user series: a per-patch user-entered target luminance (cd/m²) is
+ // authoritative — return the target chromaticity at that absolute Y so charts
+ // and dE use exactly what the operator typed, independent of reference-white
+ // drift between step build time and chart time.
+ let customTargetNits=Number(reading.custom_target_nits);
+ if(!(Number.isFinite(customTargetNits)&&customTargetNits>0)&&typeof meterCanonicalSeriesStep==='function'){
+  const customStep=meterCanonicalSeriesStep(reading);
+  if(customStep) customTargetNits=Number(customStep.custom_target_nits);
+ }
+ if(Number.isFinite(customTargetNits)&&customTargetNits>0&&Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0){
+  return {X:customTargetNits*tx/ty,Y:customTargetNits,Z:customTargetNits*(1-tx-ty)/ty};
+ }
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   let refY=meterColorSeriesReferenceNits();
   let _wrgbStimY=null;
@@ -17235,6 +18424,7 @@ function meterTargetXYZForReading(reading){
      const _gw=meterColorSeriesReferenceNits();
      if(_gw>0) _sy=Math.min(_sy,_gw);
     }
+    _sy=meterLatticeDisplayTargetY(_sy,reading);
     _wrgbStimY=_sy;
    }
   }
@@ -19353,12 +20543,16 @@ function bt2390Tonemap(Lsrc, Lmax, Ldisp){
  return Math.min(meterChartPqDecodeNormalized(Eout), Ldisp);
 }
 
-// Show the HDR roll-off control only when the chart path can actually use it
-// (PQ-based HDR/DV targets). Called from the HDR-aware redraw path.
+// Show the HDR roll-off control whenever the chart path can use it: a
+// PQ-classified chart (HDR10/DV series) OR an st2084 Target Gamma selection —
+// an operator who targets PQ must always be able to reach the BT.2390 toggle,
+// even before the series context is classified. Refreshed on every chart
+// context change and draw (including empty preset draws).
 function meterUpdateHdrConfigVisibility(){
  const el=document.getElementById('meterHdrConfig');
  if(!el) return;
- el.style.display = meterChartIsPq() ? '' : 'none';
+ const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'').toLowerCase();
+ el.style.display = (meterChartIsPq()||sel==='st2084') ? '' : 'none';
 }
 
 function meterChartPqEncodeNormalized(nits){
@@ -20265,9 +21459,18 @@ function meterRenderCcssCreateChoices(){
  if(startBtn) startBtn.disabled=!meterCcssCreateCanStart();
 }
 
+// Fixed modals that live under .dashboard get trapped under the AutoCal mask
+// because body.meter-autocal-active dims/filters the whole dashboard (stacking
+// context). Reparent to document.body before show so z-index can win.
+function meterEnsureModalOnBody(modal){
+ if(!modal||!document.body) return modal;
+ if(modal.parentElement!==document.body) document.body.appendChild(modal);
+ return modal;
+}
+
 function meterOpenCcssCreateModal(){
  meterCloseCustomCcssEditor();
- const modal=document.getElementById('meterCcssCreateModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterCcssCreateModal'));
  if(!modal) return;
  const createSel=document.getElementById('meterCcssCreateDisplayType');
  if(createSel){
@@ -20597,7 +21800,8 @@ function meterRecoverSeries(s){
 	 const normalizePoints=(seriesType,total,steps)=>{
 	  const count=Number(total||0)||0;
 	  const stepCount=Array.isArray(steps)?steps.length:0;
-	  if(seriesType==='colors') return 30;
+	  // Preserve custom/lattice color-series ids (>=900); only stock ColorChecker is 30.
+	  if(seriesType==='colors') return (points>=900)?points:30;
 	  if(seriesType==='saturations') return 24;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
@@ -20643,6 +21847,7 @@ function meterRecoverSeries(s){
  meterActiveSeriesDvInterface=String((s.dv_interface||metaStep.dv_interface||metaReading.dv_interface||'')).toLowerCase()||null;
  meterActiveSeriesKey=type+'-'+points;
  meterSharedSeriesId=s.series_id||null;
+ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
    meterCurrentPatchStep=null;
    meterSelectedThumbIre=null;
    _selectedColorReadingName=null;
@@ -20669,7 +21874,7 @@ function meterRecoverSeries(s){
 	 }
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  meterShowSeriesTabForSeries(type,points);
  // Toggle greyscale vs color chart sections
  if(type==='greyscale'){
@@ -20689,6 +21894,7 @@ function meterRecoverSeries(s){
  meterResetSeriesButtons();
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ meterRenderCustomSeriesButtons();
  // Build thumbs and charts
  const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:meterGreyscaleSeriesSteps(steps);
  const completedIres=new Set();
@@ -21015,9 +22221,16 @@ function meterUpdateLiveReadingTargets(src){
 }
 
 function updateLiveReading(reading){
+ // Unread step shells: never invent live measured values from patch codes.
+ if(!reading||reading._unreadStep||reading._presetStep||!meterReadingIsRealMeasurement(reading)){
+  meterClearLiveReading(reading||meterCurrentPatchStep);
+  return;
+ }
  meterNormalizeMeasuredReading(reading);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
-  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
+  // Only pin-override to a REAL sample for the selected name — not a stale
+  // leftover or a different series.
+  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName&&meterReadingIsRealMeasurement(r));
   if(selected) reading=selected;
  }
  const measured=meterReadingXYZ(reading);
@@ -21030,8 +22243,8 @@ function updateLiveReading(reading){
  // is a nonsense number, so suppress it rather than mislead the operator.
  const cctEl=document.getElementById('meterCCT');
  if(cctEl) cctEl.textContent=(reading.cct&&meterReadingIsGreyscale(reading))?reading.cct:'--';
- document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
- document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
+ document.getElementById('meterCIEx').textContent=(measured&&reading.x!=null)?reading.x.toFixed(4):'--';
+ document.getElementById('meterCIEy').textContent=(measured&&reading.y!=null)?reading.y.toFixed(4):'--';
  meterUpdateLiveReadingTargets(reading);
 
  const liveRgb=meterLiveRgbData(reading);
@@ -21508,6 +22721,10 @@ function meterBuildManualReadPayload(step,ctx){
   display_type:opts.dtype,
   refresh_rate:opts.rr||undefined,
   delay_ms:opts.delay,
+  // Mirror the wizard/CCSS override split into the manual-read payload so
+  // step-level manual reads (used by autocal inner loops, chart reads, and
+  // single-step tools) carry the operator's chosen CCSS, not just the tech.
+  ccss_override:(opts&&typeof opts.ccss_override==='string')?opts.ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
   target_gamma:meterAutoCalTargetGammaValue()
  });
@@ -21528,19 +22745,24 @@ function meterBuildManualReadPayload(step,ctx){
  return readPayload;
 }
 
-// Relocate the existing meter controls into the Meter Settings popover
-// at runtime. Done by moving live nodes (appendChild) rather than by
-// editing the static markup: the surrounding card HTML is tightly
-// nested, and moving by id keeps every element id stable so existing
-// getters and /api/meter/settings persistence keep working. Idempotent.
+// Relocate meter-settings popover contents at runtime (CCSS + delay + refresh).
+// Display Type stays beside the meter selector in the card header — it drives
+// OLED/LCD/WRGB calibration paths and is not a spectro-only concept.
+// Idempotent: safe to call more than once.
 function meterRelocateProfileControls(){
  const displayField=document.getElementById('meterProfileDisplayField');
  const slot=document.getElementById('meterProfileRelocSlot');
  if(!displayField||!slot) return;
- const dt=document.getElementById('meterDisplayType');
- if(dt&&dt.parentElement!==displayField) displayField.appendChild(dt);
+ // Keep #meterDisplayType in the header (do not move it into the popover).
+ // Strip any leftover static label left from the pre-relocate layout.
+ Array.from(displayField.children).forEach(function(ch){
+  if(ch&&ch.tagName==='LABEL') ch.remove();
+ });
+ const ccssRow=document.querySelector('.meter-ccss-profile-row');
+ if(ccssRow&&ccssRow.parentElement!==displayField) displayField.appendChild(ccssRow);
+ // Editor panel is opened via CCSS Editor… in the profile dropdown — do not park it in the popover.
  const ccss=document.getElementById('customCcssPanel');
- if(ccss&&ccss.parentElement!==displayField) displayField.appendChild(ccss);
+ if(ccss&&displayField.contains(ccss)) displayField.removeChild(ccss);
  const delay=document.getElementById('meterDelay');
  const delayField=delay?delay.closest('.field'):null;
  if(delayField&&delayField.parentElement!==slot) slot.appendChild(delayField);
@@ -21550,20 +22772,11 @@ function meterRelocateProfileControls(){
  meterUpdateProfileFieldVisibility();
 }
 
-// The "Meter Profile" field (display type + CCSS correction) is a COLORIMETER
-// concept: a spectrophotometer measures the spectrum directly and needs no
-// CCSS/display-type correction (the read paths drop -X/-y for a spectro). Hide
-// the whole field when the selected measurement meter is a spectro so the
-// operator isn't presented with a control that has no effect on their reads.
+// CCSS profile controls are colorimeter-only. Display Type stays visible for
+// all meters (calibration path mapping). Only hide the CCSS block for spectros.
 function meterUpdateProfileFieldVisibility(){
  const field=document.getElementById('meterProfileDisplayField');
  if(!field) return;
- // Resolve the operator's SELECTED meter directly. Do NOT fall back to
- // meterInventory[0] (meterSelectedMeasurementMeter does): that fallback can
- // resolve to a spectro when the selected port's meter isn't yet in the
- // (stale) inventory, leaving a colorimeter's display-type/CCSS field hidden
- // until a page refresh. Only HIDE when we can positively confirm the selected
- // meter is a spectro; an unresolved selection defaults to visible.
  let isSpectro=false;
  try{
   const meter=meterFindByPort(meterSelectedMeasurementPort());
@@ -21609,6 +22822,7 @@ function meterSetLowLightHandler(){
    trigger:Number(trigger.value)||5.0
   }));
  }catch(e){}
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
 }
 function meterRestoreLowLightHandler(){
  const sel=document.getElementById('meterLowLightEnabled');
@@ -21939,11 +23153,10 @@ function meterFullAutoCalStageOrder(){
  const stages=[];
  if(!skipPre) stages.push('precal-report');
  stages.push('first-greyscale','3d-lut');
- if(meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
- if(meterFullAutoCalMagicWandEnabled()) stages.push('magic-wand');
- stages.push('postcal-report','complete');
- return stages;
-}
+  if(meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
+  stages.push('postcal-report','complete');
+  return stages;
+ }
 
 function meterFullAutoCalStageLabel(){
  switch(String(meterFullAutoCalPhase||'')){
@@ -21952,7 +23165,6 @@ function meterFullAutoCalStageLabel(){
 		  case '3d-lut': return '3D LUT';
 		  case 'touchup-greyscale': return 'Greyscale touch-up';
 		  case 'post-3d-polish': return 'Committed polish';
-		  case 'magic-wand': return 'Magic Wand';
 	  case 'postcal-report': return 'Post-Cal measurements';
   case 'complete': return 'Complete';
   default: return 'Greyscale';
@@ -21996,13 +23208,27 @@ function meterFullAutoCalStageWeights(){
  try{
   if(meterFullAutoCalShadowFixEnabled()&&String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'')==='hdr10') shadowReads=95;
  }catch(e){ shadowReads=0; }
+ // Lattice profiling replaces the 5-point matrix profile with the chosen
+ // series' full patch count — weight the 3D phase by the extra reads so the
+ // bar does not crawl through a long lattice at matrix pacing.
+ let latticeReads=0;
+ try{
+  {
+  const fm=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||'');
+  if(fm==='lattice'||fm==='skeleton'||fm==='hybrid'){
+   let series=meterCustomSeriesById(meterFullAutoCalConfig.latticeSeriesId);
+   if(!series&&fm==='skeleton') series=meterCustomSeriesById(920);
+   if(!series&&fm==='hybrid') series=meterCustomSeriesById(923);
+   if(series) latticeReads=Math.max(0,meterLg3dLatticePatchesForStart(series).length-5);
+  }
+ }
+ }catch(e){ latticeReads=0; }
  return {
   'precal-report':reportReads,
   'first-greyscale':80,
   'touchup-greyscale':20,
-  '3d-lut':15+shadowReads,
+  '3d-lut':15+latticeReads+shadowReads,
   'post-3d-polish':20,
-  'magic-wand':15,
   'postcal-report':reportReads,
   'complete':0
  };
@@ -22439,7 +23665,7 @@ async function meterContinuousLoop(){
   const delay=meterDelayMs();
 	  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
   const patternSignalRange=meterMeasurementPatchSignalRange();
-	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
+	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
 	  if(requestedStep){
 	   meterApplyReadStepPayload(readPayload,requestedStep);
 	   readPayload.patch_size=getMeterPatchSize();
@@ -22643,6 +23869,7 @@ async function meterStop(){
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ if(hadSeriesStop) meterBuild3dLutPending=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
  meterActionPending=hadSeriesStop||hadContinuousStop;
@@ -22653,7 +23880,7 @@ async function meterStop(){
   meterStopModalShow(hadSeriesStop?'series':(hadContinuousStop?'continuous':'meter'));
  }
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
- document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+ document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
  // Clear the "currently reading" pulse animation on whichever thumb was last
@@ -22833,17 +24060,29 @@ function meterSelectPatchFromInteraction(step,reading,opts){
 	 if(!step) return;
 	 const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const resolvedStep=meterCanonicalSeriesStep(step)||step;
-	 const resolvedReading=reading||meterFindReadingForStep(resolvedStep);
+	 // Only a real meter sample for THIS step counts as measured. Never treat
+	 // the series step (or a leftover ColorChecker reading) as the measurement.
+	 let resolvedReading=meterFindReadingForStep(resolvedStep);
+	 if(!resolvedReading&&reading&&meterReadingIsRealMeasurement(reading)
+	    &&meterColorReadingMatchesStep(reading,resolvedStep)){
+	  resolvedReading=reading;
+	 }
+	 if(resolvedReading&&!meterReadingIsRealMeasurement(resolvedReading)) resolvedReading=null;
 	 meterCurrentPatchStep=resolvedStep;
  meterLgGreySyncForCurrentStep(false);
  if(isColorSeries){
   const pin=!(opts&&opts.pin===false);
   if(resolvedReading) meterFocusColorReading(resolvedReading,{pin:pin});
-  else if(resolvedStep.name){
-   _selectedColorReadingName=resolvedStep.name||null;
-   _colorDetailPinned=pin&&!!_selectedColorReadingName;
-   colorHighlightThumb(resolvedStep.name);
-   colorHighlightTableRow(resolvedStep.name);
+  else {
+   // Unread node: targets only, measured = --
+   const unread=meterColorUnreadDetailFromStep(resolvedStep);
+   if(unread) showColorReadingDetail(unread,{pin:pin});
+   else if(resolvedStep.name){
+    _selectedColorReadingName=resolvedStep.name||null;
+    _colorDetailPinned=pin&&!!_selectedColorReadingName;
+    colorHighlightThumb(resolvedStep.name);
+    colorHighlightTableRow(resolvedStep.name);
+   }
   }
  } else {
   meterSelectedThumbIre=meterStepNameKey(resolvedStep);
@@ -22912,7 +24151,11 @@ function meterUpdateReadButtons(){
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
- const showClear=hasData&&meterDetected;
+ const on3dLutTab=meterSeriesTab==='3dlut';
+ const has3dLutSeries=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
+ const empty3dLutTab=on3dLutTab&&!has3dLutSeries;
+ // Clear Chart is meaningless on an empty 3D LUT tab (and would expose leftover ColorChecker data).
+ const showClear=hasData&&meterDetected&&!empty3dLutTab;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
@@ -22927,16 +24170,19 @@ function meterUpdateReadButtons(){
  const manualPromptBtn=document.getElementById('meterManualPromptBtn');
  if(clearBtn){
   clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
-  clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal;
+  clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal||empty3dLutTab;
  }
+ // On the 3D LUT tab, only expose Build 3D LUT once a profiling series is selected.
+ const seriesControlsOk=on3dLutTab?has3dLutSeries:showSeries;
  if(readSeriesBtn){
-  readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty||busy;
-  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+  if(!meterSeriesRunning&&!meterActionPending) readSeriesBtn.innerHTML=meterReadSeriesButtonLabel();
+  readSeriesBtn.disabled=!seriesControlsOk||!meterDetected||settingsDirty||busy;
+  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':(on3dLutTab&&!has3dLutSeries?'Select a 3D LUT series first':'');
  }
- if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
- if(continuousBtn) continuousBtn.style.display=show?'':'none';
+ if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive&&!on3dLutTab)?'':'none';
+ if(continuousBtn) continuousBtn.style.display=(show&&!on3dLutTab)?'':'none';
  const toneMapSeriesActive=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
- if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
+ if(readSeriesBtn) readSeriesBtn.style.display=(seriesControlsOk&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
  const autoCalTabActive=meterSeriesTab==='autocal';
  const showAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&!continuousUiActive;
  if(autoCalBtn){
@@ -22979,6 +24225,8 @@ function meterUpdateReadButtons(){
   toneMapBtn.title=!toneMapHdrOk?'HDR tone map requires HDR10 signal mode':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy||window._meterToneMapBusy?'Meter operation already in progress':'Measure 100% white peak and upload the HDR tone map';
  }
  try{ meterUpdateToneMapPanelVisibility(); }catch(e){}
+ // Re-assert empty 3D LUT hide after tone-map restore (which used to re-open ColorChecker).
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
  if(autoCalTarget) autoCalTarget.disabled=busy&&meterAutoCalPhase!=='confirm';
  if(readOnceBtn){
   readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
@@ -23019,9 +24267,18 @@ function meterUpdateCardMode(){
  }
 }
 function meterResetSeriesButtons(){
- document.querySelectorAll('#meterSeriesBtnRow button').forEach(b=>{
-  b.classList.remove('btn-primary');b.classList.add('btn-secondary');
+ // Only clear data-series measurement buttons (Greyscale 21pt, ColorChecker,
+ // Cube 5³, …). AutoCal sub-choice buttons use data-autocal-series; wiping
+ // them every poll made Greyscale / 3D LUT / Tone Map look unselected during
+ // 3D LUT AutoCal reads (and after prepareChartContext).
+ document.querySelectorAll('#meterSeriesBtnRow button[data-series]').forEach(b=>{
+  b.classList.remove('btn-primary');
+  b.classList.add('btn-secondary');
  });
+ // Re-assert the AutoCal sub-choice highlight when that group is active.
+ if(meterSeriesTab==='autocal'){
+  try{ meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice); }catch(e){}
+ }
 }
 
 let meterAutoCalSeriesChoice='greyscale';
@@ -23123,8 +24380,19 @@ function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
 }
 
+function meterSeriesTabForSeries(type,points){
+ // Lattice (3D LUT profiling) series live under the 3D LUT tab; manual custom
+ // colour series stay under Color, custom greyscale under Greyscale.
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+ if(series&&(series.kind==='lattice'||series.kind==='hybrid'||series.kind==='skeleton')) return '3dlut';
+ return meterSeriesTabForType(type);
+}
+
 function meterNormalizeSeriesTab(tab){
- return tab==='autocal'?'autocal':(tab==='color'?'color':'greyscale');
+ // 'cube' is a legacy stored value from the retired 3D Cube tab.
+ if(tab==='autocal') return 'autocal';
+ if(tab==='3dlut'||tab==='cube') return '3dlut';
+ return (tab==='color')?'color':'greyscale';
 }
 
 function meterTwoPointValues(){
@@ -23209,11 +24477,19 @@ function meterUpdateSeriesTabUi(){
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
  if(tab==='autocal'&&!(autoCalSignalAllowed&&autoCalSeriesAvailable)){
-  tab=meterSeriesTabForType(meterActiveSeriesType);
+  tab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
+  meterSeriesTab=tab;
+ }
+ // The 3D LUT series tab is measurement-only (profile a lattice/skeleton/hybrid
+ // with the meter), so it is hidden with no meter attached. Fall back to a
+ // usable tab if it was active when the meter went away.
+ if(tab==='3dlut'&&!meterDetected){
+  tab=(meterSeriesTabForType(meterActiveSeriesType)==='color')?'color':'greyscale';
   meterSeriesTab=tab;
  }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
+ const lutGroup=document.getElementById('meterSeriesGroup3dLut');
  const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
@@ -23221,7 +24497,9 @@ function meterUpdateSeriesTabUi(){
  const autoCal26Active=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterGreyTvControlsActive();
  document.querySelectorAll('#meterSeriesTabRow button[data-series-tab]').forEach(btn=>{
   const tabKey=btn.dataset.seriesTab||'';
-  const visible=tabKey!=='autocal'||(autoCalSignalAllowed&&autoCalSeriesAvailable);
+  let visible=true;
+  if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
+  else if(tabKey==='3dlut') visible=!!meterDetected;
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -23230,18 +24508,25 @@ function meterUpdateSeriesTabUi(){
   btn.classList.toggle('btn-secondary',!active);
  });
  meterUpdateSeriesLabels();
+ meterRenderCustomSeriesButtons();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
+ if(lutGroup) lutGroup.style.display=tab==='3dlut'?'flex':'none';
  if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
  if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
-	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
+	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active&&!meterActiveSeriesIsCustom())?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
+ // Hide leftover greyscale/color charts on the 3D LUT tab until a profiling series is chosen.
+ try{ if(tab==='3dlut'&&typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 }
 
 function meterAutoCalChoiceForSeries(type,points){
  if(type==='greyscale'&&Number(points)===26) return 'greyscale';
- if(type==='colors'&&Number(points)===30) return '3d-lut';
+ // Volume cube series ids (900-999) belong to 3D LUT AutoCal — never ColorChecker (30).
+ if(type==='colors'&&Number(points)>=900&&Number(points)<1000) return '3d-lut';
+ const key=String(meterActiveSeriesKey||'');
+ if(key.indexOf('lg-3d-')===0) return '3d-lut';
  return '';
 }
 
@@ -23255,7 +24540,7 @@ function meterPreserveAutoCalTabForSeries(type,points){
 
 function meterShowSeriesTabForSeries(type,points){
  if(meterPreserveAutoCalTabForSeries(type,points)) return;
- meterSetSeriesTab(meterSeriesTabForType(type),true);
+ meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
 }
 
 function meterShowGreyscaleAutoCalContext(){
@@ -23263,21 +24548,224 @@ function meterShowGreyscaleAutoCalContext(){
  meterSetSeriesTab('greyscale',true);
 }
 
+// True while charts are owned by a 3D LUT AutoCal profile (volume or matrix).
+// Post-check uses lg-3d-post-check and is verification — keep Delta-E there.
+function meterIs3dLutProfileChartContext(){
+ const key=String(meterActiveSeriesKey||'');
+ if(key.indexOf('lg-3d-lattice-profile-')===0) return true;
+ if(key==='lg-3d-matrix-profile') return true;
+ if(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries()) return true;
+ return false;
+}
+
+// Install a clean 3D LUT chart context: no ColorChecker readings, no Delta-E
+// bars, hybrid/lattice/skeleton thumbs (or empty matrix shell). Call when the
+// operator opens the 3D LUT AutoCal sub-tab or starts a run.
+function meterLg3dPrepareChartContext(opts){
+ const o=opts||{};
+ const method=String(o.method||'').toLowerCase();
+ let series=o.series||null;
+ if(!series&&meterLg3dIsVolumeMethod(method)){
+  if(method==='skeleton') series=meterCustomSeriesById(920);
+  else if(method==='hybrid') series=meterCustomSeriesById(923);
+  else series=meterLg3dSelectedLatticeSeries();
+ }
+ if(!series&&!method){
+  // Tab open / default preview: last modal source or Hybrid 3³.
+  const src=(typeof meterLg3dProfileSourceValue==='function')?meterLg3dProfileSourceValue():'hybrid3';
+  const resolved=(typeof meterLg3dResolveProfilingChoice==='function')?meterLg3dResolveProfilingChoice(src,null):null;
+  series=(resolved&&resolved.series)||meterCustomSeriesById(923);
+ }
+ meterSeriesTab='autocal';
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ try{ meterUpdateSeriesTabUi(); }catch(e){}
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ meterSharedSeriesId=null;
+ if(o.clearReadings!==false){
+  meterReadings=[];
+  meterWhiteReading=null;
+ }
+ meterActiveSeriesType='colors';
+ let steps=[];
+ if(series&&series.id!=null){
+  meterActiveSeriesPoints=series.id;
+  meterActiveSeriesKey='lg-3d-lattice-profile-'+series.id;
+  meterLg3dActiveLatticeSeriesId=series.id;
+  try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
+  steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
+ } else {
+  meterActiveSeriesPoints=5;
+  meterActiveSeriesKey='lg-3d-matrix-profile';
+  steps=[];
+ }
+ meterSeriesSteps=steps;
+ try{ meterSetActiveSeriesChartContext(); }catch(e){}
+ try{ meterResetSeriesButtons(); }catch(e){}
+ // resetSeriesButtons re-applies choice on autocal tab; force 3D LUT so a
+ // previous greyscale AutoCal choice cannot stick after prepare.
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ try{
+  document.getElementById('chartsGreyscaleWrap').style.display='none';
+  document.getElementById('chartsColorWrap').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
+ }catch(e){}
+ // Force-hide ColorChecker-style Delta-E + averages for every 3D LUT profile.
+ try{
+  const deSec=document.getElementById('meterColorDeltaESection');
+  if(deSec) deSec.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  const tableWrap=document.getElementById('colorReadingsTableWrap');
+  if(tableWrap) tableWrap.style.display='none';
+ }catch(e){}
+ if(steps.length){
+  try{ meterBuildPatchThumbs(steps,new Set(),null); }catch(e){}
+  try{ meterSetThumbsVisible(true); }catch(e){}
+  try{ drawAllChartsPreset(steps); }catch(e){}
+ } else {
+  try{ meterSetThumbsVisible(false); }catch(e){}
+  try{ drawAllChartsPreset([]); }catch(e){}
+ }
+ try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+ try{ meterClearLiveReading(); }catch(e){}
+ try{ meterResetLiveReadingDisplay(); }catch(e){}
+ try{ meterUpdateDeltaEFormControl(); }catch(e){}
+ return true;
+}
+
 function meterShow3dLutAutoCalContext(){
- if(meterPreserveAutoCalTabForSeries('colors',30)) return;
- meterSetSeriesTab('color',true);
+ // Keep AutoCal tab on 3D LUT — never fall through to ColorChecker (colors-30).
+ meterSeriesTab='autocal';
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ try{ meterUpdateSeriesTabUi(); }catch(e){}
+ // Always re-assert 3D LUT after tab UI refresh (series button resets above
+ // must not leave Greyscale/3D LUT/Tone Map all secondary).
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ if(String(meterActiveSeriesKey||'').indexOf('lg-3d-')===0) return;
+ // First entry with no profile context yet: install a clean volume shell.
+ try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
 }
 
 function meterDefaultSeriesButtonForTab(tab){
- const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':'meterSeriesGroupGreyscale');
+ const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':(tab==='3dlut'?'meterSeriesGroup3dLut':'meterSeriesGroupGreyscale'));
  if(!group) return null;
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
+}
+
+// 3D LUT measurement tab: only show charts/thumbs after a lattice/hybrid/skeleton
+// series is selected. Otherwise leftover greyscale/ColorChecker charts from the
+// previous tab stay on screen.
+// True only when the ACTIVE series is a volume profiling series (not greyscale
+// 26 / ColorChecker 30, and not a stale AutoCal lg-3d-* key alone).
+function meter3dLutTabHasSelectedSeries(){
+ try{
+  if(typeof meterActiveVolumeProfileSeries==='function'){
+   const s=meterActiveVolumeProfileSeries();
+   if(s&&(s.kind==='lattice'||s.kind==='hybrid'||s.kind==='skeleton')) return true;
+  }
+ }catch(e){}
+ return false;
+}
+// When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
+let meter3dLutChartsAllowed=true;
+// Live gate (does not rely on the cached flag alone): empty 3D LUT always wins.
+function meterShouldSuppressMeterCharts(){
+ try{
+  if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') return false;
+  return !meter3dLutTabHasSelectedSeries();
+ }catch(e){ return false; }
+}
+// Sole show/hide path for #meterCharts so tone-map restore / status polls cannot
+// re-open ColorChecker leftovers on an empty 3D LUT tab.
+function meterSetMeterChartsVisible(wantShow){
+ const charts=document.getElementById('meterCharts');
+ if(!charts) return false;
+ if(wantShow&&meterShouldSuppressMeterCharts()){
+  meter3dLutChartsAllowed=false;
+  charts.style.display='none';
+  charts.setAttribute('data-3dlut-empty','1');
+  return false;
+ }
+ if(wantShow){
+  charts.style.display='';
+  charts.removeAttribute('data-3dlut-empty');
+  return true;
+ }
+ charts.style.display='none';
+ return false;
+}
+function meterSync3dLutTabChartVisibility(){
+ const on3d=meterNormalizeSeriesTab(meterSeriesTab)==='3dlut';
+ if(!on3d){
+  meter3dLutChartsAllowed=true;
+  const charts=document.getElementById('meterCharts');
+  if(charts) charts.removeAttribute('data-3dlut-empty');
+  return;
+ }
+ const has=meter3dLutTabHasSelectedSeries();
+ meter3dLutChartsAllowed=!!has;
+ const charts=document.getElementById('meterCharts');
+ const exportRow=document.getElementById('meterExportRow');
+ const grey=document.getElementById('chartsGreyscaleWrap');
+ const color=document.getElementById('chartsColorWrap');
+ const thumbs=document.getElementById('meterPatchThumbs');
+ const thumbsWrap=document.getElementById('meterPatchThumbsWrap')||(thumbs&&thumbs.parentElement);
+ const clearBtn=document.getElementById('meterClearChartBtn');
+ if(!has){
+  meterSetMeterChartsVisible(false);
+  if(charts) charts.setAttribute('data-3dlut-empty','1');
+  if(exportRow) exportRow.style.display='none';
+  if(grey) grey.style.display='none';
+  if(color) color.style.display='none';
+  if(thumbs) thumbs.style.display='none';
+  if(thumbsWrap&&thumbsWrap!==charts) try{ thumbsWrap.style.display='none'; }catch(e){}
+  if(clearBtn) clearBtn.style.display='none';
+  try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
+  try{ if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false}); }catch(e){}
+  try{ if(typeof meterResetLiveReadingDisplay==='function') meterResetLiveReadingDisplay(); }catch(e){}
+  const liveEl=document.getElementById('meterLiveReading');
+  if(liveEl) liveEl.style.display='none';
+  // Hide progress/export leftovers from greyscale/color runs.
+  const progress=document.getElementById('meterProgress');
+  if(progress&&!meterSeriesRunning) progress.style.display='none';
+ } else {
+  meterSetMeterChartsVisible(true);
+  if(grey) grey.style.display='none';
+  if(color) color.style.display='';
+ }
+}
+// drawAllCharts / preset must not fight the empty 3D LUT tab.
+// LIVE check only: do NOT OR in the cached meter3dLutChartsAllowed flag.
+// That flag stays false from the empty-tab hide until after sync; OR-ing it
+// blocked the first Hybrid/lattice draw after Select series, so the old
+// ColorChecker canvas was un-hidden without a redraw (second load "fixed" it).
+function meter3dLutChartsBlocked(){
+ return meterShouldSuppressMeterCharts();
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
  const previousTab=meterNormalizeSeriesTab(meterSeriesTab);
  meterSeriesTab=meterNormalizeSeriesTab(tab);
  meterUpdateSeriesTabUi();
+ // 3D LUT tab never auto-loads a leftover greyscale/color series into the charts.
+ if(meterSeriesTab==='3dlut'){
+  meterSync3dLutTabChartVisibility();
+  try{ meterUpdateReadButtons(); }catch(e){}
+  // Beat any post-tab async redraw (status poll / refresh charts).
+  try{
+   requestAnimationFrame(function(){
+    try{ meterSync3dLutTabChartVisibility(); }catch(e2){}
+    try{ meterUpdateReadButtons(); }catch(e2){}
+   });
+  }catch(e){}
+  if(skipAutoSelect) return;
+  return;
+ }
  if(skipAutoSelect) return;
  if(meterSeriesTab==='autocal'){
   meterSelectAutoCalGreyscale();
@@ -23287,6 +24775,25 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
+ // Leaving Tone Map / 3D LUT empty shell: restore charts if another series is live.
+ try{
+  if(meterSeriesTab!=='3dlut'&&meterActiveSeriesType&&meterDetected){
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+   else{
+    const charts=document.getElementById('meterCharts');
+    if(charts) charts.style.display='';
+   }
+   const grey=document.getElementById('chartsGreyscaleWrap');
+   const color=document.getElementById('chartsColorWrap');
+   if(meterActiveSeriesType==='greyscale'){
+    if(grey) grey.style.display='';
+    if(color) color.style.display='none';
+   } else if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+    if(grey) grey.style.display='none';
+    if(color) color.style.display='';
+   }
+  }
+ }catch(e){}
 }
 
 function meterSelectAutoCalGreyscale(){
@@ -23300,7 +24807,9 @@ function meterSelectAutoCal3dLut(){
  meterSeriesTab='autocal';
  meterSetAutoCalSeriesChoice('3d-lut');
  meterUpdateSeriesTabUi();
- meterSelectSeries('colors',30,{preserveTab:true});
+ // 3D LUT charts are independent of ColorChecker — install the default
+ // hybrid/volume shell (or last modal source) with empty readings.
+ try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
 }
 
 function meterSelectAutoCalToneMap(){
@@ -23347,15 +24856,24 @@ function meterUpdateToneMapPanelVisibility(){
  if(panel) panel.style.display=show?'':'none';
  if(show){
   // Peak-only UI: luminance bar + Measure & Upload — no greyscale/color charts.
-  if(charts) charts.style.display='none';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(false);
+  else if(charts) charts.style.display='none';
   if(exportRow) exportRow.style.display='none';
   try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
   try{ meterUpdateGreyscaleChartMode(); }catch(e){}
  } else {
-  // Leaving Tone Map: restore chart shell when a series is active.
+  // Leaving Tone Map: restore chart shell when a series is active — but never
+  // on an empty 3D LUT tab (ColorChecker leftovers must stay hidden).
   try{ meterUpdateGreyscaleChartMode(); }catch(e){}
+  if(typeof meterShouldSuppressMeterCharts==='function'&&meterShouldSuppressMeterCharts()){
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(false);
+   else if(charts){ charts.style.display='none'; charts.setAttribute('data-3dlut-empty','1'); }
+   if(exportRow) exportRow.style.display='none';
+   return;
+  }
   if(charts&&meterActiveSeriesType&&meterDetected){
-   charts.style.display='';
+   if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+   else charts.style.display='';
    const grey=document.getElementById('chartsGreyscaleWrap');
    const color=document.getElementById('chartsColorWrap');
    if(meterActiveSeriesType==='greyscale'){
@@ -23993,10 +25511,1963 @@ function meterSaveGreyProfileEditor(){
  meterRefreshActiveSeriesCharts();
  toast('Custom greyscale values saved');
 }
+// ---- Custom user-defined patch series ----
+// One state blob, persisted as custom_series_json via /api/meter/settings
+// (same mechanism as grey_patch_profiles_json). Series ids start at 1001 so
+// the series key "greyscale-<id>" / "colors-<id>" can never collide with the
+// built-in points values (2,11,21,24,26,30,100,256).
+// Manual / CSV / CCFX patch lists were historically capped at 200; raise high
+// enough for large CalMAN / ColourSpace imports (400–2k+ nodes). Lattice
+// series expand from params and are not subject to this store limit.
+const METER_CUSTOM_SERIES_MAX_PATCHES=3000;
+let meterCustomSeriesState={format:'pgenerator-custom-series-v1',next_id:1001,series:[]};
+
+// Durability backup: every custom-series mutation is mirrored to localStorage
+// (marked unsynced) and the mark clears once the settings save that carried
+// the blob lands on the Pi. At boot, unsynced backup series missing from the
+// server blob are merged back and re-saved — so a failed save (daemon
+// restart, network blip) followed by a page refresh can no longer lose work.
+const METER_CUSTOM_SERIES_BACKUP_KEY='pgen.meter.customSeries.backup';
+function meterCustomSeriesBackupWrite(unsynced){
+ try{ localStorage.setItem(METER_CUSTOM_SERIES_BACKUP_KEY,JSON.stringify({unsynced:!!unsynced,state:meterCustomSeriesState})); }catch(e){}
+}
+function meterCustomSeriesBackupRead(){
+ try{
+  const raw=localStorage.getItem(METER_CUSTOM_SERIES_BACKUP_KEY);
+  if(raw){ const p=JSON.parse(raw); if(p&&typeof p==='object') return p; }
+ }catch(e){}
+ return null;
+}
+function meterCustomSeriesRecoverFromBackup(){
+ const backup=meterCustomSeriesBackupRead();
+ if(!backup||!backup.unsynced||!backup.state||!Array.isArray(backup.state.series)) return false;
+ const have={};
+ (meterCustomSeriesState.series||[]).forEach(sr=>{ if(sr) have[String(sr.name||'')+'|'+String(sr.mode||'')]=1; });
+ let recovered=0;
+ backup.state.series.forEach(sr=>{
+  if(!sr||have[String(sr.name||'')+'|'+String(sr.mode||'')]) return;
+  meterCustomSeriesState.series.push(sr);
+  recovered++;
+ });
+ if(!recovered) return false;
+ meterCustomSeriesNormalizeState();
+ meterCustomSeriesDirty=true;
+ return true;
+}
+
+function meterCustomSeriesModeKey(mode){
+ const m=String(mode!=null?mode:((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')).toLowerCase();
+ if(m==='hdr10'||m==='hlg'||m==='hdr') return 'hdr';
+ if(m==='dv') return 'dv';
+ return 'sdr';
+}
+
+// A manual series stores range-specific codes (Limited/legal vs Full), so it is
+// tagged with the range its codes were authored for. '' = untagged/legacy (or a
+// lattice, whose codes are re-derived from params at read time) and matches any
+// output range. Only 'full' and 'limited' are meaningful tags.
+function meterCustomSeriesRangeKey(range){
+ const r=String(range==null?'':range).toLowerCase();
+ if(r==='full'||r==='pc'||r==='extended') return 'full';
+ if(r==='limited'||r==='legal'||r==='video'||r==='tv') return 'limited';
+ return '';
+}
+
+// The range the WebUI is currently driving to the TV (from rgb_quant_range),
+// used to show the operator only the series that will render correctly.
+function meterCurrentOutputRangeKey(){
+ return (typeof meterIsLimitedRange==='function' && meterIsLimitedRange()) ? 'limited' : 'full';
+}
+
+// A series is shown for the current output when it is untagged (legacy/lattice)
+// or its tag matches the range being output right now.
+function meterSeriesMatchesCurrentRange(series){
+ if(!series) return false;
+ const r=meterCustomSeriesRangeKey(series.range);
+ return r==='' || r===meterCurrentOutputRangeKey();
+}
+
+function meterCustomSeriesClampCode(value,max){
+ const numeric=Math.round(Number(value));
+ if(!Number.isFinite(numeric)) return 0;
+ return Math.max(0,Math.min(max,numeric));
+}
+
+function meterCustomSeriesCode8To10(code8){
+ return meterCustomSeriesClampCode(code8,255)*4;
+}
+
+function meterCustomSeriesCode10To8(code10){
+ return Math.min(255,Math.round(meterCustomSeriesClampCode(code10,1023)/4));
+}
+
+function meterCustomSeriesSanitizePatch(raw,index){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ const patch={name:'',r8:0,g8:0,b8:0,r10:0,g10:0,b10:0,target_nits:null};
+ patch.name=String(src.name==null?'':src.name).replace(/[\[\]{}"\\,]/g,'').slice(0,40).trim();
+ if(!patch.name) patch.name='Patch '+(Number(index||0)+1);
+ ['r','g','b'].forEach(ch=>{
+  const c10=Number(src[ch+'10']);
+  const c8=Number(src[ch+'8']);
+  if(src[ch+'10']!=null&&Number.isFinite(c10)){
+   patch[ch+'10']=meterCustomSeriesClampCode(c10,1023);
+   patch[ch+'8']=meterCustomSeriesCode10To8(patch[ch+'10']);
+  } else {
+   patch[ch+'8']=meterCustomSeriesClampCode(c8,255);
+   patch[ch+'10']=meterCustomSeriesCode8To10(patch[ch+'8']);
+  }
+ });
+ const nits=Number(src.target_nits);
+ patch.target_nits=(Number.isFinite(nits)&&nits>0)?Math.min(10000,nits):null;
+ // Optional EXPLICIT target chromaticity. Without it the chart derives the
+ // target from the patch codes — which is faithful to the signal but, in PQ,
+ // pins nearly every code-defined mix to the gamut edge (small code
+ // differences are huge linear-light ratios). Operators who want a specific
+ // verification target enter it here and it is used verbatim.
+ const tx=Number(src.target_x), ty=Number(src.target_y);
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&tx>0&&tx<1&&ty>0&&ty<1){
+  patch.target_x=Math.round(tx*10000)/10000;
+  patch.target_y=Math.round(ty*10000)/10000;
+ } else {
+  patch.target_x=null;
+  patch.target_y=null;
+ }
+ return patch;
+}
+
+function meterCustomSeriesNormalizeState(){
+ if(!meterCustomSeriesState||typeof meterCustomSeriesState!=='object') meterCustomSeriesState={};
+ meterCustomSeriesState.format='pgenerator-custom-series-v1';
+ if(!Array.isArray(meterCustomSeriesState.series)) meterCustomSeriesState.series=[];
+ const seen={};
+ let maxId=1000;
+ meterCustomSeriesState.series=meterCustomSeriesState.series.filter(s=>s&&typeof s==='object').map((s,si)=>{
+  const id=Math.round(Number(s.id));
+  const valid=Number.isFinite(id)&&id>=1001&&!seen[id];
+  if(valid){seen[id]=true;if(id>maxId) maxId=id;}
+  const kind=(s.kind==='lattice')?'lattice':'manual';
+  return {
+   id:valid?id:0,
+   name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Custom '+(si+1)),
+   category:(kind==='lattice')?'color':((s.category==='color')?'color':'greyscale'),
+   mode:meterCustomSeriesModeKey(s.mode),
+   range:(kind==='lattice')?'':meterCustomSeriesRangeKey(s.range),
+   kind:kind,
+   params:(kind==='lattice')?meterLatticeSanitizeParams(s.params):undefined,
+   patches:(kind==='lattice')?[]:((Array.isArray(s.patches)?s.patches:[]).slice(0,METER_CUSTOM_SERIES_MAX_PATCHES).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi)))
+  };
+ });
+ meterCustomSeriesState.series.forEach(s=>{
+  if(!s.id){maxId+=1;s.id=maxId;seen[s.id]=true;}
+  const used={};
+  s.patches.forEach((p,pi)=>{
+   if(used[p.name]) p.name=p.name+' #'+(pi+1);
+   used[p.name]=true;
+  });
+ });
+ const nextId=Math.round(Number(meterCustomSeriesState.next_id));
+ meterCustomSeriesState.next_id=Math.max(maxId+1,Number.isFinite(nextId)?nextId:0,1001);
+ return meterCustomSeriesState;
+}
+
+// Built-in lattice presets live on reserved ids 900-999 (below the 1001+ user
+// range) so the 3D Cube tab always has series to select. They behave exactly
+// like user lattice series (params-only, range-aware measurement) but are not
+// persisted, listed in the manager, or deletable.
+const METER_BUILTIN_CUBE_SERIES=[
+ {id:903,name:'Cube 3³',category:'color',mode:'any',kind:'lattice',params:{size:3,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
+ {id:905,name:'Cube 5³',category:'color',mode:'any',kind:'lattice',params:{size:5,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
+ {id:909,name:'Cube 9³',category:'color',mode:'any',kind:'lattice',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]},
+ {id:917,name:'Cube 17³',category:'color',mode:'any',kind:'lattice',params:{size:17,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]}
+];
+
+// Built-in 3D LUT AutoCal profiling series (reserved ids 920-939). Skeleton =
+// multi-level WRGB ramps only; hybrid = skeleton + lattice volume (deduped).
+// Not listed on the 3D Cube chart tab as pure lattices; used by profiling selects.
+const METER_BUILTIN_3D_PROFILE_SERIES=[
+ {id:920,name:'Skeleton WRGB',category:'color',mode:'any',kind:'skeleton',params:{levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:923,name:'Hybrid 3³',category:'color',mode:'any',kind:'hybrid',params:{size:3,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:925,name:'Hybrid 5³',category:'color',mode:'any',kind:'hybrid',params:{size:5,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:929,name:'Hybrid 9³',category:'color',mode:'any',kind:'hybrid',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]}
+];
+
+// Built-in cube lattices pick node spacing from the CURRENT signal mode:
+// SDR stays signal-uniform (the display gamma already spreads decoded light),
+// HDR switches to light-uniform PQ spacing up to the mastering peak so the
+// same patch count fills the chroma interior instead of crowding the gamut
+// edge (see the spacing note in meterLatticeSanitizeParams). Returns a copy —
+// the METER_BUILTIN_CUBE_SERIES constants stay untouched.
+function meterBuiltinCubeSeriesForMode(builtin){
+ if(!builtin||(builtin.kind!=='lattice'&&builtin.kind!=='hybrid')) return builtin;
+ if(builtin.kind==='hybrid'){
+  // Hybrid volume half follows lattice spacing rules; skeleton levels stay as-is.
+  const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+  const hdr=(modeKey==='hdr');
+  const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
+  const params=Object.assign({},builtin.params,
+   hdr?{spacing:'light',pq:true,peak_nits:peak}:{spacing:'signal',pq:false});
+  return Object.assign({},builtin,{params:params});
+ }
+ const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+ const hdr=(modeKey==='hdr');
+ const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
+ const params=Object.assign({},builtin.params,
+  hdr?{spacing:'light',pq:true,peak_nits:peak}:{spacing:'signal',pq:false});
+ return Object.assign({},builtin,{params:params});
+}
+
+function meterCustomSeriesById(id){
+ const numeric=Math.round(Number(id));
+ if(Number.isFinite(numeric)&&numeric>=900&&numeric<1000){
+  let builtin=METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+  if(!builtin&&typeof METER_BUILTIN_3D_PROFILE_SERIES!=='undefined')
+   builtin=METER_BUILTIN_3D_PROFILE_SERIES.find(s=>s.id===numeric)||null;
+  if(builtin&&typeof meterBuiltinCubeSeriesForMode==='function') return meterBuiltinCubeSeriesForMode(builtin);
+  return builtin;
+ }
+ if(!Number.isFinite(numeric)||numeric<1001) return null;
+ const state=meterCustomSeriesNormalizeState();
+ return state.series.find(s=>s.id===numeric)||null;
+}
+
+function meterCustomSeriesForMode(category,mode){
+ const state=meterCustomSeriesNormalizeState();
+ const modeKey=meterCustomSeriesModeKey(mode);
+ const cat=(category==='color')?'color':'greyscale';
+ // Only series that render correctly for the current output range are offered
+ // (untagged/lattice series match any range). Keeps the read-side dropdowns
+ // from listing a Limited grid while the display is outputting Full, etc.
+ return state.series.filter(s=>s.mode===modeKey&&s.category===cat&&meterSeriesMatchesCurrentRange(s));
+}
+
+function meterActiveSeriesIsCustom(){
+ return !!meterCustomSeriesById(meterActiveSeriesPoints);
+}
+
+// ---- Parameter-defined lattice series ----
+// A kind:'lattice' series stores only generator params; patches are expanded
+// deterministically here AND in the server's webui_lattice_series_steps_from_body.
+// Any change to this algorithm must be mirrored there (locked by shared fixtures
+// in tests/lattice-expansion-regression.js + tests/lattice-server-steps-regression.pl).
+function meterLatticeGcd(a,b){ while(b){ const t=a%b; a=b; b=t; } return a; }
+
+function meterLatticeSpreadOrder(count){
+ const total=Math.max(0,Math.round(Number(count)||0));
+ if(total===0) return [];
+ if(total===1) return [0];
+ let stride=Math.floor(total*0.618034);
+ if(stride<1) stride=1;
+ while(meterLatticeGcd(stride,total)!==1) stride++;
+ const out=[];
+ let idx=0;
+ for(let k=0;k<total;k++){ out.push(idx); idx=(idx+stride)%total; }
+ return out;
+}
+
+function meterLatticeSanitizeParams(raw){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ const num=(v,def,min,max)=>{ const n=Math.round(Number(v)); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):def; };
+ let grey=num(src.grey_points,0,0,101);
+ if(grey<2) grey=0;
+ let threshold=Number(src.threshold_pct);
+ if(!Number.isFinite(threshold)) threshold=0;
+ threshold=Math.max(0,Math.min(50,threshold));
+ return {
+  size:num(src.size,9,3,50),
+  grey_points:grey,
+  threshold_pct:threshold,
+  order:(src.order==='grid')?'grid':'spread',
+  reverse:!!src.reverse,
+  // Node spacing: 'signal' = uniform code steps (classic). 'light' = uniform
+  // DECODED-light steps up to peak_nits, normalized so the corners still hit
+  // 100% signal. In PQ, signal-uniform mixes decode to near-primary light
+  // ratios (75/50/25 ≈ 380:35:1) and crowd the gamut edge — light-uniform
+  // spacing fills the chroma interior with the same patch count.
+  spacing:(src.spacing==='light')?'light':'signal',
+  peak_nits:num(src.peak_nits,1000,100,10000),
+  // Baked at generation time from the series' signal mode: light spacing uses
+  // the PQ encode for HDR lattices, a 2.4 power law for SDR ones.
+  pq:!!src.pq
+ };
+}
+
+// Per-axis node fractions for a lattice. Self-contained math (no chart-state
+// dependencies) — MUST stay algorithm-identical to the server expansion in
+// webui_lattice_series_steps_from_body (parity-locked).
+function meterLatticeAxisFracs(N,params){
+ const div=N-1;
+ const out=[];
+ const light=!!(params&&params.spacing==='light');
+ const pqe=(L)=>{ const m1=2610/16384,m2=2523/32,c1=3424/4096,c2=2413/128,c3=2392/128; const y=Math.max(0,L)/10000; const p=Math.pow(y,m1); return Math.pow((c1+c2*p)/(1+c3*p),m2); };
+ const peak=(params&&params.peak_nits)||1000;
+ const top=pqe(peak);
+ for(let i=0;i<N;i++){
+  const t=i/div;
+  if(!light){ out.push(t); continue; }
+  // Endpoints pinned EXACTLY: pqe(0) is ~7e-7, not 0, and a black frac of
+  // 9.7e-7 breaks the frac-exact corner detection (corners-first ordering,
+  // display-referenced ceilings) even though the percent name rounds to 0.
+  if(i===0){ out.push(0); continue; }
+  if(i===div){ out.push(1); continue; }
+  if(params.pq){ out.push(top>0?(pqe(t*peak)/top):t); }
+  else { out.push(Math.pow(t,1/2.4)); }
+ }
+ return out;
+}
+
+function meterLatticePct(f){
+ const v=Math.round(f*1000)/10;
+ return String(v);
+}
+
+function meterLatticeKeepNode(fr,fg,fb,thresholdPct){
+ if(!(thresholdPct>0)) return true;
+ return (0.2126*fr+0.7152*fg+0.0722*fb)*100>=thresholdPct;
+}
+
+function meterLatticeExpandPatches(rawParams){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const N=params.size;
+ const div=N-1;
+ const makePatch=(name,fr,fg,fb)=>({
+  name:name,frac_r:fr,frac_g:fg,frac_b:fb,
+  r8:Math.round(fr*255),g8:Math.round(fg*255),b8:Math.round(fb*255),
+  r10:Math.round(fr*1023),g10:Math.round(fg*1023),b10:Math.round(fb*1023),
+  target_nits:null
+ });
+ const patches=[];
+ if(params.grey_points>=2){
+  const G=params.grey_points;
+  patches.push(makePatch('G 100%',1,1,1));
+  for(let i=0;i<G;i++){
+   const f=i/(G-1);
+   if(f>=1) continue;
+   patches.push(makePatch('G '+meterLatticePct(f)+'%',f,f,f));
+  }
+ }
+ const nodes=[];
+ const axisFracs=meterLatticeAxisFracs(N,params);
+ for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+  const fr=axisFracs[ri],fg=axisFracs[gi],fb=axisFracs[bi];
+  if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
+  nodes.push(makePatch(meterLatticePct(fr)+'/'+meterLatticePct(fg)+'/'+meterLatticePct(fb),fr,fg,fb));
+ }
+ let ordered=nodes;
+ if(params.order==='spread') ordered=meterLatticeSpreadOrder(nodes.length).map(i=>nodes[i]);
+ if(params.reverse) ordered=ordered.slice().reverse();
+ // Reference corners first: W, R, G, B (then K when present) lead the run so
+ // the display-referenced chart targets (measured white peak + additive
+ // per-channel ceilings from the cube's own corners) are live from the first
+ // handful of patches instead of engaging only when the spread order happens
+ // to reach them. MUST stay algorithm-identical to the server expansion in
+ // webui_lattice_series_steps_from_body (parity-locked by the lattice tests).
+ const latticeCornerRank=(p)=>{
+  const one=v=>v>=1, zero=v=>v<=0;
+  if(one(p.frac_r)&&one(p.frac_g)&&one(p.frac_b)) return 0;
+  if(one(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 1;
+  if(zero(p.frac_r)&&one(p.frac_g)&&zero(p.frac_b)) return 2;
+  if(zero(p.frac_r)&&zero(p.frac_g)&&one(p.frac_b)) return 3;
+  if(zero(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 4;
+  return -1;
+ };
+ const cornerLead=ordered.filter(p=>latticeCornerRank(p)>=0).sort((a,b)=>latticeCornerRank(a)-latticeCornerRank(b));
+ if(cornerLead.length) ordered=[...cornerLead,...ordered.filter(p=>latticeCornerRank(p)<0)];
+ patches.push(...ordered);
+ return patches;
+}
+
+function meterLatticeCountForParams(rawParams){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const N=params.size;
+ let count=(params.grey_points>=2)?params.grey_points:0;
+ const axisFracs=meterLatticeAxisFracs(N,params);
+ for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+  if(meterLatticeKeepNode(axisFracs[ri],axisFracs[gi],axisFracs[bi],params.threshold_pct)) count++;
+ }
+ return count;
+}
+
+// Default multi-level WRGB skeleton levels (percent). Matches worker skeleton_levels.
+function meterSkeletonDefaultLevels(){
+ return [0,5,10,20,30,40,50,60,70,80,90,100];
+}
+
+function meterSkeletonSanitizeParams(raw){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ let levels=Array.isArray(src.levels)?src.levels.map(v=>Math.round(Number(v))).filter(n=>Number.isFinite(n)&&n>=0&&n<=100):meterSkeletonDefaultLevels();
+ if(!levels.length) levels=meterSkeletonDefaultLevels();
+ // unique sorted
+ levels=Array.from(new Set(levels)).sort((a,b)=>a-b);
+ return {levels:levels};
+}
+
+function meterSkeletonExpandPatches(rawParams){
+ const params=meterSkeletonSanitizeParams(rawParams);
+ const makePatch=(name,fr,fg,fb)=>({
+  name:name,frac_r:fr,frac_g:fg,frac_b:fb,
+  r8:Math.round(fr*255),g8:Math.round(fg*255),b8:Math.round(fb*255),
+  r10:Math.round(fr*1023),g10:Math.round(fg*1023),b10:Math.round(fb*1023),
+  target_nits:null
+ });
+ const pct=f=>meterLatticePct(f);
+ const patches=[];
+ const seen=new Set();
+ const push=(fr,fg,fb)=>{
+  const name=pct(fr)+'/'+pct(fg)+'/'+pct(fb);
+  if(seen.has(name)) return;
+  seen.add(name);
+  patches.push(makePatch(name,fr,fg,fb));
+ };
+ push(0,0,0);
+ for(const L of params.levels){
+  if(!(L>0)) continue;
+  const f=L/100;
+  push(f,f,f); // white at level
+  push(f,0,0); // red
+  push(0,f,0); // green
+  push(0,0,f); // blue
+ }
+ return patches;
+}
+
+function meterSkeletonCountForParams(rawParams){
+ return meterSkeletonExpandPatches(rawParams).length;
+}
+
+// Hybrid = skeleton edges + lattice volume (dedupe by name). Skeleton leads so
+// multi-level WRGB is measured first; volume interiors follow.
+function meterHybridExpandPatches(rawParams){
+ const src=(rawParams&&typeof rawParams==='object')?rawParams:{};
+ const sk=meterSkeletonExpandPatches(src);
+ const lat=meterLatticeExpandPatches(src);
+ const seen=new Set(sk.map(p=>p.name));
+ const out=sk.slice();
+ for(const p of lat){
+  if(!p||!p.name||seen.has(p.name)) continue;
+  seen.add(p.name);
+  out.push(p);
+ }
+ return out;
+}
+
+function meterHybridCountForParams(rawParams){
+ return meterHybridExpandPatches(rawParams).length;
+}
+
+function meterCustomSeriesPatches(series){
+ if(!series) return [];
+ if(series.kind==='lattice') return meterLatticeExpandPatches(series.params);
+ if(series.kind==='skeleton') return meterSkeletonExpandPatches(series.params);
+ if(series.kind==='hybrid') return meterHybridExpandPatches(series.params);
+ return Array.isArray(series.patches)?series.patches:[];
+}
+
+function meterProfilingSeriesPatchCount(series){
+ if(!series) return 0;
+ try{
+  if(series.kind==='lattice') return meterLatticeCountForParams(series.params);
+  if(series.kind==='skeleton') return meterSkeletonCountForParams(series.params);
+  if(series.kind==='hybrid') return meterHybridCountForParams(series.params);
+  return Array.isArray(series.patches)?series.patches.length:0;
+ }catch(e){ return 0; }
+}
+
+function meterLatticeWireRange(){
+ const tenBit=meterPatchBitDepth()===10;
+ const limited=(typeof meterPatchUsesVideoRange==='function')&&meterPatchUsesVideoRange();
+ if(tenBit) return limited?{min:64,span:876,max:1023}:{min:0,span:1023,max:1023};
+ return limited?{min:16,span:219,max:255}:{min:0,span:255,max:255};
+}
+
+let meterCustomSeriesReturnToManager=false;
+// True once THIS session has created/edited/deleted a custom series. Guards
+// the settings save: a tab that loaded while the blob was empty must not post
+// its stale empty state over data a newer tab saved (the server preserves the
+// stored blob when the key is omitted). Deletions set this flag, so wiping
+// the last series still persists.
+let meterCustomSeriesDirty=false;
+
+// Refresh the custom-series blob from the Pi so series created in ANOTHER
+// browser/computer appear without a reload. Local unsaved edits win (dirty
+// state skips the refresh; it posts on the next save instead).
+async function meterRefreshCustomSeriesFromServer(){
+ if(meterCustomSeriesDirty) return false;
+ let s=null;
+ try{ s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000}); }catch(e){ return false; }
+ if(!s||!s.custom_series_json) return false;
+ try{
+  const next=JSON.parse(s.custom_series_json);
+  if(JSON.stringify(next)===JSON.stringify(meterCustomSeriesState)) return false;
+  meterCustomSeriesState=next;
+  meterCustomSeriesNormalizeState();
+  meterRenderCustomSeriesButtons();
+  return true;
+ }catch(e){}
+ return false;
+}
+
+async function meterOpenCustomSeriesManager(){
+ const modal=document.getElementById('meterCustomSeriesManagerModal');
+ if(!modal) return;
+ meterCustomSeriesReturnToManager=false;
+ const showAllEl=document.getElementById('meterCustomSeriesManagerShowAll');
+ if(showAllEl) showAllEl.checked=meterCustomSeriesManagerShowAll;
+ meterRenderCustomSeriesManager();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+ // Refresh from the Pi in the background and re-render if anything changed.
+ try{ if(await meterRefreshCustomSeriesFromServer()) meterRenderCustomSeriesManager(); }catch(e){}
+}
+
+function meterCloseCustomSeriesManager(){
+ const modal=document.getElementById('meterCustomSeriesManagerModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+function meterOpenLutTools(){
+ const modal=document.getElementById('meterLutToolsModal');
+ if(!modal) return;
+ if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseLutTools(){
+ const modal=document.getElementById('meterLutToolsModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+let meterCustomSeriesManagerShowAll=false;
+function meterCustomSeriesManagerToggleShowAll(on){
+ meterCustomSeriesManagerShowAll=!!on;
+ meterRenderCustomSeriesManager();
+}
+function meterCustomSeriesRangeLabel(range){
+ const r=meterCustomSeriesRangeKey(range);
+ return r==='full'?'Full':(r==='limited'?'Limited':'Any');
+}
+function meterRenderCustomSeriesManager(){
+ const body=document.getElementById('meterCustomSeriesManagerBody');
+ if(!body) return;
+ const state=meterCustomSeriesNormalizeState();
+ // By default only the series that match the display being driven RIGHT NOW are
+ // listed — the current signal mode AND the current output range — because those
+ // are the only ones that chart against the right law and send correct-range
+ // codes. "Show all" lifts both filters so nothing is ever permanently hidden.
+ const modeKey=meterCustomSeriesModeKey();
+ const rangeKey=meterCurrentOutputRangeKey();
+ const showAll=meterCustomSeriesManagerShowAll;
+ const listed=showAll?state.series.slice()
+  :state.series.filter(series=>series.mode===modeKey&&meterSeriesMatchesCurrentRange(series));
+ const scope=document.getElementById('meterCustomSeriesManagerScope');
+ if(scope){
+  const hidden=state.series.length-listed.length;
+  scope.textContent=showAll
+   ?('Showing all '+state.series.length+' custom series (every mode and range).')
+   :('Showing '+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+' series for your current output'
+     +(hidden>0?(' — '+hidden+' other-mode/range series hidden (tick “Show all”).'):'.'));
+ }
+ if(!listed.length){
+  body.innerHTML='<tr><td colspan="6" style="padding:10px;color:var(--text2)">'
+   +(showAll
+     ?'No custom series yet. Use New Greyscale, New Color, New 3D LUT Lattice or Import to create one.'
+     :'No custom series match your current output ('+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+'). Tick “Show all modes &amp; ranges” to see series for other displays, or create/import one.')
+   +'</td></tr>';
+  return;
+ }
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ body.innerHTML=listed.map(series=>{
+  const isLattice=series.kind==='lattice';
+  const patchInfo=isLattice
+   ?('Lattice '+series.params.size+'³ ('+meterLatticeCountForParams(series.params)+' patches)')
+   :(series.patches.length+' patches');
+  const rangeLbl=isLattice?'Any':meterCustomSeriesRangeLabel(series.range);
+  return '<tr style="border-bottom:1px solid #1a1a28">'
+   +'<td style="padding:6px">'+esc(series.name)+'</td>'
+   +'<td style="padding:6px">'+(series.category==='color'?'Color':'Greyscale')+'</td>'
+   +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
+   +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px" title="'+(isLattice?'Lattice codes are re-derived for the current range at read time':'Signal range these patch codes are authored for')+'">'+rangeLbl+'</span></td>'
+   +'<td style="padding:6px">'+patchInfo+'</td>'
+   +'<td style="padding:6px"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">'
+    +'<button class="btn btn-sm btn-primary" onclick="meterCustomSeriesLoad('+series.id+')" title="Close this window and load the series into the charts">Load</button>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterManagerEditSeries('+series.id+')">Edit</button>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'calman\')" title="Export as CalMAN 8-bit CSV">CalMAN</button>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'colourspace\')" title="Export as ColourSpace CSV">CSpace</button>'
+    +'<button class="btn btn-sm btn-danger" onclick="meterManagerDeleteSeries('+series.id+')">Delete</button>'
+   +'</div></td>'
+  +'</tr>';
+ }).join('');
+}
+
+function meterCustomSeriesLoad(id){
+ const series=meterCustomSeriesById(id);
+ if(!series){ toast('Series not found',true); return; }
+ meterCloseCustomSeriesManager();
+ const type=(series.kind==='lattice'||series.category==='color')?'colors':'greyscale';
+ meterSelectSeries(type,series.id,{force:true});
+}
+
+function meterManagerNewSeries(category){
+ meterCustomSeriesReturnToManager=true;
+ meterCloseCustomSeriesManager();
+ meterOpenCustomSeriesEditor(category);
+}
+
+function meterManagerEditSeries(id){
+ const series=meterCustomSeriesById(id);
+ if(!series) return;
+ meterCustomSeriesReturnToManager=true;
+ meterCloseCustomSeriesManager();
+ if(series.kind==='lattice'&&typeof meterOpenLatticeGenerator==='function'){
+  meterOpenLatticeGenerator(id);
+ } else {
+  meterOpenCustomSeriesEditor(series.category,id);
+ }
+}
+
+async function meterManagerDeleteSeries(id){
+ const ok=await meterDeleteCustomSeriesById(id);
+ if(ok) meterRenderCustomSeriesManager();
+}
+
+async function meterDeleteCustomSeriesById(id){
+ const series=meterCustomSeriesById(id);
+ if(!series) return false;
+ meterCustomSeriesDirty=true;
+ const ok=await meterShowChoiceModal({title:'Delete series?',body:'Delete "'+series.name+'" and all its patches? This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
+ if(!ok) return false;
+ const state=meterCustomSeriesNormalizeState();
+ const seriesKey=((series.category==='color')?'colors':'greyscale')+'-'+series.id;
+ state.series=state.series.filter(s=>s.id!==series.id);
+ const wasActive=meterActiveSeriesKey===seriesKey;
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ if(wasActive){
+  meterActiveSeriesKey='';
+  meterSeriesSteps=null;
+  meterReadings=[];
+  meterSetSeriesTab(meterSeriesTab);
+ }
+ toast('Custom series deleted');
+ return true;
+}
+
+function meterExportCustomSeriesById(id,format){
+ const series=meterCustomSeriesById(id);
+ if(!series){ toast('Series not found',true); return; }
+ const patches=meterCustomSeriesPatches(series);
+ if(!patches.length){ toast('Series has no patches',true); return; }
+ const fmt=(format==='colourspace')?'colourspace':'calman';
+ const base=(String(series.name||'custom-series').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'custom-series')+'-'+fmt;
+ const filename=meterPromptExportFilename('custom-series-'+fmt,base,'csv','Enter a file name for the patch list export');
+ if(!filename) return;
+ const blob=new Blob([meterCustomSeriesCsv({name:series.name,patches:patches},fmt)],{type:'text/csv'});
+ meterDownloadBlob(blob,filename);
+}
+
+let meterLatticeGenEditingId=null;
+
+function meterLatticeGenParamsFromForm(){
+ const val=(id)=>{ const el=document.getElementById(id); return el?el.value:''; };
+ const chk=(id)=>{ const el=document.getElementById(id); return !!(el&&el.checked); };
+ const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+ const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
+ return meterLatticeSanitizeParams({
+  size:val('meterLatticeSize'),
+  grey_points:val('meterLatticeGrey'),
+  threshold_pct:val('meterLatticeThreshold'),
+  order:val('meterLatticeOrder'),
+  reverse:chk('meterLatticeReverse'),
+  spacing:val('meterLatticeSpacing'),
+  // Baked at generation time: HDR lattices space light via the PQ encode up
+  // to the current mastering peak; SDR uses a 2.4 power law.
+  pq:modeKey==='hdr',
+  peak_nits:peak
+ });
+}
+
+function meterLatticeEstimateSeconds(count){
+ const delay=(typeof meterDelayMs==='function')?meterDelayMs():1000;
+ return Math.round(Math.max(0,Number(count)||0)*((delay+1500)/1000));
+}
+
+function meterLatticeFormatDuration(seconds){
+ const s=Math.max(0,Math.round(Number(seconds)||0));
+ if(s<60) return s+'s';
+ if(s<3600){ const m=Math.floor(s/60); return m+'m '+(s%60)+'s'; }
+ const h=Math.floor(s/3600);
+ return h+'h '+Math.floor((s%3600)/60)+'m';
+}
+
+function meterLatticeGenSyncReadout(){
+ const readout=document.getElementById('meterLatticeCountReadout');
+ if(!readout) return;
+ const count=meterLatticeCountForParams(meterLatticeGenParamsFromForm());
+ readout.textContent=count+' patches ≈ '+meterLatticeFormatDuration(meterLatticeEstimateSeconds(count))+' to measure';
+}
+
+function meterOpenLatticeGenerator(id){
+ const modal=document.getElementById('meterLatticeGenModal');
+ if(!modal) return;
+ const existing=(id!=null)?meterCustomSeriesById(id):null;
+ meterLatticeGenEditingId=(existing&&existing.kind==='lattice')?existing.id:null;
+ const params=meterLatticeGenEditingId?existing.params:meterLatticeSanitizeParams({});
+ const set=(fid,v)=>{ const el=document.getElementById(fid); if(el) el.value=v; };
+ set('meterLatticeName',meterLatticeGenEditingId?existing.name:'');
+ set('meterLatticeSize',params.size);
+ set('meterLatticeGrey',params.grey_points);
+ set('meterLatticeThreshold',params.threshold_pct);
+ set('meterLatticeOrder',params.order);
+ set('meterLatticeSpacing',params.spacing||'signal');
+ const rev=document.getElementById('meterLatticeReverse');
+ if(rev) rev.checked=!!params.reverse;
+ const title=document.getElementById('meterLatticeGenTitle');
+ if(title) title.textContent=meterLatticeGenEditingId?'Edit Lattice Series':'Generate Lattice Series';
+ meterLatticeGenSyncReadout();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseLatticeGenerator(){
+ meterLatticeGenEditingId=null;
+ const modal=document.getElementById('meterLatticeGenModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+ if(meterCustomSeriesReturnToManager){
+  meterCustomSeriesReturnToManager=false;
+  meterOpenCustomSeriesManager();
+ }
+}
+
+function meterSaveLatticeGenerator(){
+ const nameInput=document.getElementById('meterLatticeName');
+ meterCustomSeriesDirty=true;
+ const params=meterLatticeGenParamsFromForm();
+ let name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
+ if(!name) name='Lattice '+params.size+'³';
+ const state=meterCustomSeriesNormalizeState();
+ let series;
+ if(meterLatticeGenEditingId!=null){
+  series=state.series.find(s=>s.id===meterLatticeGenEditingId);
+  if(!series){ toast('Series no longer exists',true); meterCloseLatticeGenerator(); return; }
+ } else {
+  series={id:state.next_id,category:'color',mode:meterCustomSeriesModeKey(),kind:'lattice',params:{},patches:[],name:''};
+  state.next_id+=1;
+  state.series.push(series);
+ }
+ series.name=name;
+ series.kind='lattice';
+ series.category='color';
+ series.params=params;
+ meterCustomSeriesNormalizeState();
+ const seriesId=series.id;
+ meterCustomSeriesReturnToManager=false;
+ meterCloseLatticeGenerator();
+ meterCloseCustomSeriesManager();
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ meterSelectSeries('colors',seriesId);
+ toast('Lattice series saved');
+}
+
+// UI safety caps for very large (lattice) series: thumbnails and preset charts
+// are O(n) DOM/canvas work, and the status poll payload grows with readings.
+function meterSeriesUiCaps(stepCount){
+ const count=Math.max(0,Number(stepCount)||0);
+ return {
+  thumbs:count<=500,
+  presetSample:(count>2000)?2000:0,
+  pollScale:count>20000?5:(count>5000?3:(count>2000?2:1)),
+  confirmStart:count>2000
+ };
+}
+
+function meterSampleSteps(steps,max){
+ const list=Array.isArray(steps)?steps:[];
+ const cap=Math.max(2,Number(max)||0);
+ if(list.length<=cap) return list;
+ const out=[];
+ for(let i=0;i<cap;i++) out.push(list[Math.floor(i*list.length/cap)]);
+ out[out.length-1]=list[list.length-1];
+ return out;
+}
+
+// Parse an Adobe/Resolve-style .cube 3D LUT for preview/validation only.
+// Never throws; malformed input lands in .errors. Neutral diagonal uses index
+// i*(S^2+S+1), which addresses r=g=b nodes in either axis ordering.
+function meterCubeLutParse(text){
+ const out={ok:false,title:'',size:0,nodes:0,domainMin:[0,0,0],domainMax:[1,1,1],valueMin:null,valueMax:null,neutral:[],monotonic:true,errors:[]};
+ const lines=String(text||'').split(/\r\n|\r|\n/);
+ const values=[];
+ for(let li=0;li<lines.length;li++){
+  const line=lines[li].trim();
+  if(!line||line.charAt(0)==='#') continue;
+  const m3=line.match(/^([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)$/);
+  if(m3){
+   const r=Number(m3[1]),g=Number(m3[2]),b=Number(m3[3]);
+   if(Number.isFinite(r)&&Number.isFinite(g)&&Number.isFinite(b)){ values.push([r,g,b]); continue; }
+  }
+  const kw=line.match(/^([A-Z_0-9]+)\s*(.*)$/);
+  if(!kw){ out.errors.push('Unrecognised line '+(li+1)); continue; }
+  const key=kw[1],rest=kw[2].trim();
+  if(key==='TITLE') out.title=rest.replace(/^"+|"+$/g,'');
+  else if(key==='LUT_3D_SIZE') out.size=parseInt(rest,10)||0;
+  else if(key==='LUT_1D_SIZE') out.errors.push('1D LUTs are not supported');
+  else if(key==='DOMAIN_MIN'||key==='DOMAIN_MAX'){
+   const parts=rest.split(/\s+/).map(Number);
+   if(parts.length===3&&parts.every(Number.isFinite)){ if(key==='DOMAIN_MIN') out.domainMin=parts; else out.domainMax=parts; }
+   else out.errors.push(key+' malformed');
+  }
+ }
+ if(!out.size||out.size<2) out.errors.push('Missing or invalid LUT_3D_SIZE');
+ out.nodes=values.length;
+ if(out.size>=2&&values.length!==out.size*out.size*out.size){
+  out.errors.push('Node count '+values.length+' != '+out.size+'^3 ('+(out.size*out.size*out.size)+')');
+ }
+ if(values.length){
+  let vmin=values[0][0],vmax=values[0][0];
+  for(let i=0;i<values.length;i++){
+   for(let c=0;c<3;c++){ const v=values[i][c]; if(v<vmin) vmin=v; if(v>vmax) vmax=v; }
+  }
+  out.valueMin=vmin;
+  out.valueMax=vmax;
+  const dmin=Math.min(out.domainMin[0],out.domainMin[1],out.domainMin[2]);
+  const dmax=Math.max(out.domainMax[0],out.domainMax[1],out.domainMax[2]);
+  if(vmin<dmin-0.001||vmax>dmax+0.001) out.errors.push('Values outside DOMAIN range ('+vmin.toFixed(4)+' .. '+vmax.toFixed(4)+')');
+ }
+ if(!out.errors.length){
+  const stepIdx=out.size*out.size+out.size+1;
+  for(let i=0;i<out.size;i++) out.neutral.push(values[i*stepIdx]);
+  for(let i=1;i<out.neutral.length;i++){
+   for(let c=0;c<3;c++){
+    if(out.neutral[i][c]<out.neutral[i-1][c]-0.0005) out.monotonic=false;
+   }
+  }
+  out.values=values;
+  out.ok=true;
+ }
+ return out;
+}
+
+// Convert a parsed .cube (standard red-fastest node order) to Autodesk/Kodak
+// .3dl text: a shaper line of N input codes on the 0..1023 scale, then N^3
+// "R G B" lines of 12-bit outputs with BLUE fastest / red slowest (the .3dl
+// node order is the reverse of .cube, so the walk transposes).
+function meterCubeTo3dl(parsed){
+ if(!parsed||!parsed.ok||!Array.isArray(parsed.values)) return '';
+ const N=parsed.size;
+ const shaper=[];
+ for(let i=0;i<N;i++) shaper.push(i===0?0:Math.floor(i*1023/(N-1)));
+ const lines=[shaper.join(' ')];
+ const to12=(v)=>Math.round(Math.max(0,Math.min(1,Number(v)||0))*4095);
+ for(let r=0;r<N;r++){
+  for(let g=0;g<N;g++){
+   for(let b=0;b<N;b++){
+    const node=parsed.values[(b*N+g)*N+r];
+    lines.push(to12(node[0])+' '+to12(node[1])+' '+to12(node[2]));
+   }
+  }
+ }
+ return lines.join('\n')+'\n';
+}
+
+function meterRenderCubePreview(parsed,filename){
+ const panel=document.getElementById('meterCubePreviewPanel');
+ if(!panel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const fmt3=(t)=>Array.isArray(t)?t.map(v=>Number(v).toFixed(4)).join(' / '):'--';
+ let html='<div style="font-weight:700;color:var(--text);margin-bottom:6px">.cube preview: '+esc(filename||'')+'</div>';
+ if(parsed.errors.length){
+  html+='<div style="color:var(--red);margin-bottom:6px">'+parsed.errors.map(esc).join('<br>')+'</div>';
+ }
+ if(parsed.ok){
+  const mid=parsed.neutral[Math.floor(parsed.neutral.length/2)];
+  html+='<div>Title: '+esc(parsed.title||'(none)')+' &middot; Size: '+parsed.size+'&sup3; ('+parsed.nodes+' nodes)</div>'
+   +'<div>Domain: '+fmt3(parsed.domainMin)+' &rarr; '+fmt3(parsed.domainMax)+' &middot; Values: '+Number(parsed.valueMin).toFixed(4)+' .. '+Number(parsed.valueMax).toFixed(4)+'</div>'
+   +'<div>Neutral axis: black '+fmt3(parsed.neutral[0])+' &middot; mid '+fmt3(mid)+' &middot; white '+fmt3(parsed.neutral[parsed.neutral.length-1])+'</div>'
+   +'<div>Neutral monotonic: '+(parsed.monotonic?'<span style="color:var(--green)">yes</span>':'<span style="color:var(--red)">NO</span>')+'</div>'
+   +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>'
+   +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm btn-secondary" onclick="meterViewImportedLutIn3d()" title="Render the previewed LUT as a 3D cube (input lattice vs LUT output positions)">View in 3D</button><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button></div>';
+ }
+ panel.innerHTML=html;
+ panel.style.display='';
+}
+
+function meterOpenCubeImport(){
+ const input=document.getElementById('meterCubeImportInput');
+ if(!input) return;
+ input.value='';
+ input.click();
+}
+
+let meterLastCubePreview=null;
+
+function meterDownloadPreviewedCubeAs3dl(){
+ const preview=meterLastCubePreview;
+ if(!preview||!preview.parsed||!preview.parsed.ok){ toast('Import a valid .cube first',true); return; }
+ const text=meterCubeTo3dl(preview.parsed);
+ if(!text){ toast('.3dl conversion failed',true); return; }
+ meterDownloadBlob(new Blob([text],{type:'text/plain'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dl');
+}
+
+function meterImportCubeFile(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ if(!file) return;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  const parsed=meterCubeLutParse(String(reader.result||''));
+  // Raw text is retained so the upload-only AutoCal path can save the file
+  // on the generator verbatim (no client-side re-serialisation).
+  meterLastCubePreview={parsed:parsed,filename:file.name,text:String(reader.result||'')};
+  meterRenderCubePreview(parsed,file.name);
+  if(parsed.ok) toast('.cube parsed: '+parsed.size+'³, '+(parsed.monotonic?'neutral OK':'neutral NOT monotonic'),!parsed.monotonic);
+  else toast('.cube file is invalid — see preview panel',true);
+ };
+ reader.readAsText(file);
+}
+
+async function meterLoadSolvedLutList(){
+ const panel=document.getElementById('meterSolvedLutList');
+ if(!panel) return;
+ try{
+  const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  const luts=(r&&Array.isArray(r.luts))?r.luts:[];
+  if(!luts.length){ panel.textContent='No solved LUTs yet — run a 3D LUT AutoCal to create one.'; return; }
+  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  panel.innerHTML=luts.map(l=>{
+   const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
+   return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
+    +'<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(l.name)+'">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
+    +'<button class="btn btn-sm btn-secondary" title="Render this LUT as a 3D cube (input lattice vs LUT output positions)" onclick="meterViewSolvedLutIn3d(\''+esc(l.name)+'\')">3D</button>'
+    +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">.cube</button>'
+    +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+esc(l.name)+'\')">.3dl</button>'
+    +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+esc(l.name)+'\')">&#10005;</button>'
+   +'</div>';
+  }).join('');
+ }catch(e){
+  panel.textContent='Could not load LUT list.';
+ }
+}
+
+async function meterDownloadSolvedLut(name){
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const blob=await resp.blob();
+  meterDownloadBlob(blob,name);
+ }catch(e){
+  toast('LUT download failed',true);
+ }
+}
+
+async function meterDownloadSolvedLutAs3dl(name){
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const parsed=meterCubeLutParse(await resp.text());
+  if(!parsed.ok){ toast('.cube could not be parsed for conversion',true); return; }
+  const text=meterCubeTo3dl(parsed);
+  if(!text){ toast('.3dl conversion failed',true); return; }
+  meterDownloadBlob(new Blob([text],{type:'text/plain'}),String(name).replace(/\.cube$/,'')+'.3dl');
+ }catch(e){
+  toast('.3dl conversion failed',true);
+ }
+}
+
+async function meterDeleteSolvedLut(name){
+ const ok=await meterShowChoiceModal({title:'Delete LUT?',body:'Delete "'+String(name)+'" and its companion .bin/.json files from the LUT history? The TV keeps whatever is already uploaded. This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
+ if(!ok) return;
+ try{
+  const r=await fetchJSON('/api/3d-lut/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:name}),_timeoutMs:8000});
+  if(r&&r.status==='ok'){
+   toast('LUT deleted');
+   meterLoadSolvedLutList();
+  } else {
+   toast((r&&r.message)?r.message:'LUT delete failed',true);
+  }
+ }catch(e){
+  toast('LUT delete failed',true);
+ }
+}
+
+// ---- LUT Tools 3D cube viewer ----
+// Renders a parsed .cube's CONTENTS in signal RGB space: hollow box = input
+// lattice node, filled dot = where the LUT sends it, faint connector = the
+// node's displacement. An identity LUT shows every dot centred in its box.
+// This is the ONLY place the RGB cube visual lives — measurement series plot
+// on the CIE charts (profiling is characterization, not verification).
+let _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2};
+let meterLutCubeState=null; // {parsed, name}
+
+function lutCubeProject(fr,fg,fb,layout){
+ const px=fr-0.5,py=fg-0.5,pz=fb-0.5;
+ const cy=Math.cos(_lutCube3d.yaw),sy=Math.sin(_lutCube3d.yaw);
+ const cp=Math.cos(_lutCube3d.pitch),sp=Math.sin(_lutCube3d.pitch);
+ const x1=px*cy-pz*sy,z1=px*sy+pz*cy,y1=py;
+ const y2=y1*cp+z1*sp,z2=-y1*sp+z1*cp;
+ const persp=_lutCube3d.dist/(_lutCube3d.dist+z2);
+ const base=Math.min(layout.w,layout.h)*0.36*_lutCube3d.scale;
+ return {sx:layout.cx+x1*base*persp,sy:layout.cy-y2*base*persp,z:z2,persp:persp};
+}
+
+function meterViewImportedLutIn3d(){
+ const pv=meterLastCubePreview;
+ if(!pv||!pv.parsed||!pv.parsed.ok){ toast('Import a valid .cube first',true); return; }
+ meterLutCubeShow(pv.parsed,pv.filename||'imported .cube');
+}
+
+async function meterViewSolvedLutIn3d(name){
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const parsed=meterCubeLutParse(await resp.text());
+  if(!parsed.ok){ toast('.cube could not be parsed',true); return; }
+  meterLutCubeShow(parsed,name);
+ }catch(e){
+  toast('LUT view failed',true);
+ }
+}
+
+function meterLutCubeShow(parsed,name){
+ meterLutCubeState={parsed:parsed,name:String(name||'')};
+ const wrap=document.getElementById('lutCubeViewWrap');
+ const label=document.getElementById('lutCubeViewName');
+ if(label) label.textContent=meterLutCubeState.name+' ('+parsed.size+'³)';
+ if(wrap){
+  wrap.style.display='';
+  // Bring the viewer into view — clicking 3D on a row far down the solved
+  // list otherwise renders the cube off-screen above the scroll position.
+  try{ wrap.scrollIntoView({block:'start',behavior:'smooth'}); }catch(e){ wrap.scrollIntoView(); }
+ }
+ meterLutCubeBindHandlers();
+ requestAnimationFrame(meterLutCubeDraw);
+}
+
+// Coalesce drag/wheel repaints onto animation frames — a full-lattice 17-cube
+// paints ~5k markers per frame, and one synchronous repaint per mousemove
+// event stalls the drag on high-rate mice.
+function meterLutCubeDrawSoon(){
+ if(meterLutCubeDrawSoon._raf) return;
+ meterLutCubeDrawSoon._raf=true;
+ requestAnimationFrame(()=>{ meterLutCubeDrawSoon._raf=false; meterLutCubeDraw(); });
+}
+
+function meterLutCubeBindHandlers(){
+ const canvas=document.getElementById('lutCubeView');
+ if(!canvas||canvas._lutCubeBound) return;
+ canvas._lutCubeBound=true;
+ let drag=null;
+ canvas.addEventListener('mousedown',e=>{
+  if(!meterLutCubeState) return;
+  drag={x:e.clientX,y:e.clientY};
+  canvas.style.cursor='grabbing';
+  e.preventDefault();
+ });
+ window.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  _lutCube3d.yaw+=(e.clientX-drag.x)*0.01;
+  _lutCube3d.pitch=Math.max(-1.2,Math.min(1.2,_lutCube3d.pitch+(e.clientY-drag.y)*0.01));
+  drag={x:e.clientX,y:e.clientY};
+  meterLutCubeDrawSoon();
+ });
+ window.addEventListener('mouseup',()=>{ drag=null; canvas.style.cursor='grab'; });
+ canvas.addEventListener('wheel',e=>{
+  if(!meterLutCubeState) return;
+  e.preventDefault();
+  _lutCube3d.scale=Math.max(0.3,Math.min(4,_lutCube3d.scale*(e.deltaY<0?1.1:0.9)));
+  meterLutCubeDrawSoon();
+ },{passive:false});
+ canvas.addEventListener('dblclick',()=>{ _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterLutCubeDraw(); });
+}
+
+function meterLutCubeDraw(){
+ if(!meterLutCubeState) return;
+ const parsed=meterLutCubeState.parsed;
+ const N=parsed.size;
+ const values=parsed.values;
+ if(!(N>=2)||!Array.isArray(values)) return;
+ const ctx=getChartCtx('lutCubeView');
+ if(!ctx||!(ctx.w>10)) return;
+ ctx.setTransform(1,0,0,1,0,0);
+ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+ const dpr=window.devicePixelRatio||1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
+ // wireframe
+ const corners=[[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]].map(c=>lutCubeProject(c[0],c[1],c[2],layout));
+ const edges=[[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+ ctx.strokeStyle='rgba(132,148,178,0.45)';ctx.lineWidth=1;
+ edges.forEach(e=>{ ctx.beginPath();ctx.moveTo(corners[e[0]].sx,corners[e[0]].sy);ctx.lineTo(corners[e[1]].sx,corners[e[1]].sy);ctx.stroke(); });
+ ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle='#ff7a7a';ctx.fillText('R',corners[1].sx+8,corners[1].sy+4);
+ ctx.fillStyle='#7aff9b';ctx.fillText('G',corners[2].sx-8,corners[2].sy-6);
+ ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
+ ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
+ // Sample the lattice down to <=9 indices per axis for legibility (33/65-cube
+ // LUTs draw as a 9x9x9 subset that always includes both ends of each axis)
+ // unless the operator asks for the full lattice.
+ const fullEl=document.getElementById('lutCubeFullLattice');
+ const showAll=!!(fullEl&&fullEl.checked);
+ const per=showAll?N:Math.min(9,N);
+ const axis=[];
+ for(let k=0;k<per;k++){ const idx=Math.round(k*(N-1)/(per-1)); if(axis.indexOf(idx)<0) axis.push(idx); }
+ const clamp01=v=>Math.max(0,Math.min(1,Number(v)||0));
+ const nodes=[];
+ for(let bi=0;bi<axis.length;bi++) for(let gi=0;gi<axis.length;gi++) for(let ri=0;ri<axis.length;ri++){
+  const r=axis[ri],g=axis[gi],b=axis[bi];
+  const fr=r/(N-1),fg=g/(N-1),fb=b/(N-1);
+  const out=values[r+g*N+b*N*N]||[fr,fg,fb];
+  nodes.push({fr:fr,fg:fg,fb:fb,or:clamp01(out[0]),og:clamp01(out[1]),ob:clamp01(out[2])});
+ }
+ const scale=Math.max(0.35,Math.min(3,_lutCube3d.scale));
+ // Full-lattice rendering packs up to N³ markers into the same canvas — use
+ // markedly smaller markers (and skip the white outline) so structure stays
+ // readable instead of smearing into a solid blob.
+ const dense=axis.length>9;
+ const msz=dense?0.4:1;
+ // Targets checkbox: off = only the LUT's output dots (no input boxes, no
+ // displacement connectors). Missing element (tests/headless) = on.
+ const targetsEl=document.getElementById('lutCubeShowTargets');
+ const showTargets=!targetsEl||targetsEl.checked!==false;
+ const drawn=nodes.map(n=>({n:n,pin:lutCubeProject(n.fr,n.fg,n.fb,layout),pout:lutCubeProject(n.or,n.og,n.ob,layout)}));
+ drawn.sort((a,b)=>b.pin.z-a.pin.z);
+ drawn.forEach(d=>{
+  const col='rgb('+Math.round(d.n.fr*255)+','+Math.round(d.n.fg*255)+','+Math.round(d.n.fb*255)+')';
+  const moved=Math.abs(d.n.or-d.n.fr)+Math.abs(d.n.og-d.n.fg)+Math.abs(d.n.ob-d.n.fb)>0.004;
+  if(showTargets){
+   const sq=Math.max(dense?0.4:1,2.4*d.pin.persp*scale*msz);
+   ctx.strokeStyle=col;ctx.lineWidth=Math.max(dense?0.3:0.5,0.9*scale*msz);
+   ctx.strokeRect(d.pin.sx-sq,d.pin.sy-sq,sq*2,sq*2);
+   if(moved){
+    ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=Math.max(dense?0.25:0.4,0.7*scale*msz);
+    ctx.beginPath();ctx.moveTo(d.pin.sx,d.pin.sy);ctx.lineTo(d.pout.sx,d.pout.sy);ctx.stroke();
+   }
+  }
+  const mr=Math.max(dense?0.5:1.1,2.5*d.pout.persp*scale*msz);
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.fill();
+  if(!dense){
+   ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=0.6;
+   ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.stroke();
+  }
+ });
+ ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ const shown=axis.length;
+ ctx.fillText(N+'³ LUT'+(shown<N?(' · showing '+shown+'³ subset'):'')+' · hollow = input node, filled = LUT output',8,ctx.h-8);
+}
+
+// ---- Generate 3D LUT from a measured lattice (measure -> solve -> export) ----
+// POSTs the completed lattice read's XYZ data to /api/3d-lut/solve; the worker
+// (solve_only mode) builds the baseline model from the lattice's own corners,
+// adds bounded per-node residual corrections, and exports .cube/.bin/.json to
+// the solved-LUT dir. Works for ANY display — nothing is uploaded to a TV.
+let meterLutSolvePolling=null;
+let meterLutSolvePendingDownload='';
+
+function meterGenerateLutFromLattice(opts){
+ const series=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+  ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
+  ||null;
+ if(!series){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Select a 3D LUT profiling series first',true);
+  return;
+ }
+ const readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
+ if(readings.length<5){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Measure the series first (the W/R/G/B/K corners at minimum)',true);
+  return;
+ }
+ const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
+ const missing=corners.filter(n=>!readings.some(rd=>rd.name===n));
+ if(missing.length){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Series read is missing corner patches: '+missing.join(', '),true);
+  return;
+ }
+ meterLutSolveStart(series,readings,opts);
+}
+
+async function meterLutSolveStart(series,readings,opts){
+ const payload=readings.map(rd=>{ const xyz=meterReadingXYZ(rd)||{X:0,Y:0,Z:0}; return {name:rd.name,X:xyz.X,Y:xyz.Y,Z:xyz.Z}; });
+ const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toLowerCase();
+ const gamut=String(((document.getElementById('meterTargetGamut')||{}).value)||'auto');
+ const gamma=(typeof meterAutoCalTargetGammaValue==='function')?String(meterAutoCalTargetGammaValue()||''):'';
+ // External / host apps (Resolve, madVR, editing): include greyscale in the
+ // cube by default — there is no LG 1D DPG. Operators can opt out if they
+ // already have a separate 1D. LG AutoCal keeps identity greys separately.
+ let includeGreyscale=true;
+ if(opts&&Object.prototype.hasOwnProperty.call(opts,'includeGreyscale')){
+  includeGreyscale=!!opts.includeGreyscale;
+ }
+ // HDR10: Calman only supports matrix — force matrix solve even if a volume series was measured.
+ let methodGuess=(series&&(series.kind==='hybrid'||series.kind==='skeleton'||series.kind==='lattice'))
+  ?String(series.kind):'hybrid';
+ if(signalMode==='hdr10') methodGuess='matrix';
+ const body={
+  signal_mode:signalMode, requested_signal_mode:signalMode, ui_signal_mode:signalMode,
+  target_gamut:gamut, target_gamma:gamma,
+  display_type:(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'',
+  method:methodGuess,
+  solve_cube_size:33,
+  lattice_readings:payload,
+  // Complete cube for host software (default). 0 = force identity greys.
+  include_greyscale:includeGreyscale?1:0,
+  // Mid-sat WRGB damp (hybrid): blend inverse toward matrix where W engages.
+  // Off for HDR matrix-only solves (no hybrid inverse path).
+  lg_autocal_3dlut_mid_sat_blend:signalMode==='hdr10'?0:1,
+  solve_matrix_only:signalMode==='hdr10'?1:undefined
+ };
+ // Build 3D LUT already collected format + greyscale; other callers can still confirm.
+ if(!(opts&&opts.auto)){
+  const ok=await meterShowChoiceModal({
+   title:'Generate 3D LUT?',
+   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
+   acceptLabel:'Generate',cancelLabel:'Cancel',
+   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
+  });
+  if(!ok) return;
+  if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
+   body.include_greyscale=ok.include_greyscale?1:0;
+  }
+ }
+ // Stash download preference for the poll completion handler.
+ meterLutSolvePendingDownload=(opts&&opts.downloadFormat)?String(opts.downloadFormat):'';
+ if(meterLutSolvePendingDownload!=='3dl') meterLutSolvePendingDownload=meterLutSolvePendingDownload==='cube'?'cube':'';
+ let r=null;
+ try{ r=await fetchJSON('/api/3d-lut/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:15000}); }catch(e){}
+ if(!r||r.status!=='started'){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  meterLutSolvePendingDownload='';
+  toast((r&&r.message)||'LUT solve failed to start',true);
+  return;
+ }
+ toast('Solving 3D LUT…');
+ if(meterLutSolvePolling) clearInterval(meterLutSolvePolling);
+ meterLutSolvePolling=setInterval(meterLutSolvePoll,1500);
+}
+
+async function meterLutSolvePoll(){
+ let s=null;
+ try{ s=await fetchJSON('/api/3d-lut/solve/status',{_quiet:true,_timeoutMs:5000}); }catch(e){ return; }
+ if(!s) return;
+ if(s.status==='complete'){
+  if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
+  const rep=s.solve_report||{};
+  const how=(rep.mode==='measured_inverse')
+   ?('measured inverse from '+(rep.nodes_used||0)+' nodes')
+   :((rep.mode==='matrix_plus_residuals')
+    ?('matrix + residuals from '+(rep.nodes_used||0)+' nodes'
+      +((rep.residual_signal_rms!=null)?(', residual RMS '+(Math.round(rep.residual_signal_rms*1000)/10)+'% signal'):''))
+    :'matrix only'+(rep.residual_skip_reason?(' ('+rep.residual_skip_reason+')'):''));
+  toast('3D LUT solved: '+how);
+  try{
+   const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
+   const pref=meterLutSolvePendingDownload||'';
+   meterLutSolvePendingDownload='';
+   meterBuild3dLutPending=null;
+   if(nm){
+    meterLutSolveDonePrompt(nm,how,s);
+    // Build 3D LUT flow: immediately download the format chosen up front.
+    if(pref==='cube'||pref==='3dl'){
+     setTimeout(function(){ try{ meterLutSolveDownload(pref); }catch(e){} },250);
+    }
+   }
+  }catch(e){}
+  return;
+ }
+ if(s.status==='error'){
+  if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
+  meterLutSolvePendingDownload='';
+  meterBuild3dLutPending=null;
+  toast(s.message||'LUT solve failed',true);
+ }
+}
+
+// Solve-complete prompt: the point of a lattice read is the LUT, so completion
+// pops the download/format chooser (both formats stay available; View in 3D
+// opens LUT Tools' cube viewer on the fresh solve).
+let meterLutSolveDoneName=null;
+function meterLutSolveDonePrompt(name,how,state){
+ meterLutSolveDoneName=String(name||'');
+ const summary=document.getElementById('lutSolveDoneSummary');
+ if(summary){
+  const esc=(t)=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const sz=(state&&state.cube_lut_size)||33;
+  summary.innerHTML='<div style="font-weight:600;color:var(--text)">'+esc(meterLutSolveDoneName)+'</div>'
+   +'<div>'+esc(sz)+'&sup3; &middot; '+esc(how||'')+'</div>'
+   +'<div style="margin-top:4px">Choose a download format — the LUT also stays in LUT Tools.</div>';
+ }
+ const modal=document.getElementById('lutSolveDoneModal');
+ if(modal){ modal.style.display='flex'; try{ uiSyncBodyScrollLock(); }catch(e){} }
+}
+
+function meterLutSolveDownload(fmt){
+ if(!meterLutSolveDoneName){ toast('No solved LUT',true); return; }
+ if(fmt==='3dl') meterDownloadSolvedLutAs3dl(meterLutSolveDoneName);
+ else meterDownloadSolvedLut(meterLutSolveDoneName);
+}
+
+function meterLutSolveView3d(){
+ const name=meterLutSolveDoneName;
+ meterLutSolveDoneClose();
+ if(!name) return;
+ try{ meterOpenLutTools(); meterLoadSolvedLutList(); meterViewSolvedLutIn3d(name); }catch(e){}
+}
+
+function meterLutSolveDoneClose(){
+ const modal=document.getElementById('lutSolveDoneModal');
+ if(modal) modal.style.display='none';
+ try{ uiSyncBodyScrollLock(); }catch(e){}
+}
+
+function meterCustomSeriesStepTargets(step,series,patch){
+ const out={};
+ // Explicit per-patch target chromaticity (operator-entered) is authoritative;
+ // code-derived chroma is the fallback for patches without one.
+ if(patch&&Number.isFinite(Number(patch.target_x))&&Number.isFinite(Number(patch.target_y))&&Number(patch.target_x)>0&&Number(patch.target_y)>0){
+  out.target_x=Number(patch.target_x);
+  out.target_y=Number(patch.target_y);
+ } else {
+ try{
+  const xy=targetChromaticityXY(step.r,step.g,step.b);
+  if(xy&&Number.isFinite(xy.x)&&Number.isFinite(xy.y)){
+   out.target_x=Math.round(xy.x*10000)/10000;
+   out.target_y=Math.round(xy.y*10000)/10000;
+  }
+ }catch(e){}
+ }
+ const refNits=(typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():0;
+ const isHdr=(typeof meterChartIsHdr==='function')&&meterChartIsHdr();
+ const kind=String((series&&series.kind)||'');
+ const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
+ // Volume R=G=B nodes are neutral greys even though the series category is color.
+ const isNeutralGrey=Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b)
+  &&(series.category!=='color'||isVolume);
+ if(isHdr&&patch&&patch.target_nits!=null&&Number(patch.target_nits)>0){
+  out.custom_target_nits=Number(patch.target_nits);
+  if(refNits>0) out.target_Yn=Math.round((out.custom_target_nits/refNits)*100000)/100000;
+ } else if(!isHdr&&isNeutralGrey&&typeof meterGreyscaleTargetYnForCode==='function'){
+  const targetYn=meterGreyscaleTargetYnForCode(step.g);
+  if(Number.isFinite(targetYn)&&targetYn>=0) out.target_Yn=targetYn;
+ } else if(isVolume&&isNeutralGrey&&step.signal_g_pct!=null&&typeof meterGreyscaleTargetYnForCode!=='function'){
+  // Fallback: encode stimulus fraction through a 2.2 power for target_Yn.
+  const frac=Math.max(0,Math.min(1,(Number(step.signal_g_pct)||0)/100));
+  out.target_Yn=Math.round(Math.pow(frac,2.2)*100000)/100000;
+ } else {
+  try{
+   const abs=targetColorXYZAbs(step.r,step.g,step.b);
+   if(abs&&Number.isFinite(abs.Y)&&refNits>0) out.target_Yn=Math.round((abs.Y/refNits)*100000)/100000;
+  }catch(e){}
+ }
+ return out;
+}
+
+function meterBuildCustomSeriesSteps(series){
+ if(!series) return [];
+ const sourcePatches=meterCustomSeriesPatches(series);
+ if(!Array.isArray(sourcePatches)||!sourcePatches.length) return [];
+ const tenBit=meterPatchBitDepth()===10;
+ const inputMax=tenBit?1023:255;
+ // Hybrid/skeleton share lattice wire-code mapping (worker patch_code_for_percent).
+ // Treating only kind==='lattice' as wire-mapped made hybrid thumbs/targets use
+ // raw 0-255 fractions while the panel got limited/full legal codes — mismatch.
+ const kind=String(series.kind||'');
+ const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
+ const wire=isVolume?meterLatticeWireRange():null;
+ const previewForCode=(code)=>{
+  const numeric=Number(code)||0;
+  return inputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/inputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
+ };
+ const isGrey=!isVolume&&series.category!=='color';
+ const fractionPct=(code)=>Math.round(meterGreySignalFractionFromCode(code)*1000)/10;
+ const fracToPct=(f)=>Math.round((Number(f)||0)*1000)/10;
+ const steps=[];
+ sourcePatches.forEach((patch,idx)=>{
+  const fr=(patch&&patch.frac_r!=null)?Number(patch.frac_r):null;
+  const fg=(patch&&patch.frac_g!=null)?Number(patch.frac_g):null;
+  const fb=(patch&&patch.frac_b!=null)?Number(patch.frac_b):null;
+  const r=isVolume?Math.round(wire.min+(Number.isFinite(fr)?fr:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
+  const g=isVolume?Math.round(wire.min+(Number.isFinite(fg)?fg:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
+  const b=isVolume?Math.round(wire.min+(Number.isFinite(fb)?fb:0)*wire.span):meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
+  const greyIre=isGrey?fractionPct(g):(isVolume&&Number.isFinite(fg)?fracToPct(fg):(idx+1));
+  const step={
+   ire:greyIre,
+   stimulus:greyIre,
+   signal_r_pct:isGrey?fractionPct(r):(isVolume&&Number.isFinite(fr)?fracToPct(fr):undefined),
+   signal_g_pct:isGrey?fractionPct(g):(isVolume&&Number.isFinite(fg)?fracToPct(fg):undefined),
+   signal_b_pct:isGrey?fractionPct(b):(isVolume&&Number.isFinite(fb)?fracToPct(fb):undefined),
+   r:r,g:g,b:b,
+   preview_r:previewForCode(r),
+   preview_g:previewForCode(g),
+   preview_b:previewForCode(b),
+   input_max:inputMax,
+   name:patch.name||('Patch '+(idx+1)),
+   series_type:isGrey?'greyscale':'colors',
+   custom_series_id:series.id
+  };
+  // Every step gets target_x/y/Yn — the CIE 3D chart derives target boxes from these; without them lattice targets collapse to the floor plane.
+  Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
+  steps.push(step);
+ });
+ return steps;
+}
+
+let meterCustomSeriesEditor=null;
+
+function meterRenderCustomSeriesButtons(){
+ // Custom series LOAD from the Custom Series manager. The per-group
+ // "Custom Series" buttons keep a STATIC label; the loaded custom series is
+ // named in the tag beside the button of its category. Nothing is loaded by
+ // default — the tag only appears after the operator loads a series.
+ const active=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ const activeCat=active?(active.kind==='lattice'?'3dlut':(active.category==='color'?'color':'greyscale')):null;
+ [['meterCustomSeriesBtnGrey','meterCustomSeriesLoadedGrey','greyscale'],
+  ['meterCustomSeriesBtnColor','meterCustomSeriesLoadedColor','color'],
+  ['meterCustomSeriesBtn3dLut','meterCustomSeriesLoaded3dLut','3dlut']].forEach(row=>{
+  const btn=document.getElementById(row[0]);
+  const tag=document.getElementById(row[1]);
+  const on=!!(active&&activeCat===row[2]);
+  if(btn){
+   btn.classList.toggle('btn-primary',on);
+   btn.classList.toggle('btn-secondary',!on);
+  }
+  if(tag){
+   tag.textContent=on?String(active.name||('Series '+active.id)):'';
+   tag.style.display=on?'inline-block':'none';
+   tag.title=on?String(active.name||''):'';
+  }
+ });
+}
+
+function meterOpenCustomSeriesEditor(category,id){
+ meterCustomSeriesEditorUnsaved=false;
+ meterCustomSeriesNormalizeState();
+ const existing=(id!=null)?meterCustomSeriesById(id):null;
+ meterCustomSeriesEditor=existing
+  ?{id:existing.id,category:existing.category,mode:existing.mode,range:existing.range,patches:existing.patches.map(p=>Object.assign({},p))}
+  :{id:null,category:(category==='color')?'color':'greyscale',mode:meterCustomSeriesModeKey(),range:meterCurrentOutputRangeKey(),patches:[meterCustomSeriesSanitizePatch({},0)]};
+ const modal=document.getElementById('meterCustomSeriesModal');
+ if(!modal) return;
+ const title=document.getElementById('meterCustomSeriesModalTitle');
+ if(title) title.textContent=(existing?'Edit ':'New ')+'Custom '+(meterCustomSeriesEditor.category==='color'?'Color':'Greyscale')+' Series';
+ const modeLabel=document.getElementById('meterCustomSeriesModalModeLabel');
+ if(modeLabel) modeLabel.textContent=meterCustomSeriesEditor.mode.toUpperCase()+' · saved per signal mode';
+ const nameInput=document.getElementById('meterCustomSeriesNameInput');
+ if(nameInput) nameInput.value=existing?existing.name:'';
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ if(rangeInput) rangeInput.value=(meterCustomSeriesRangeKey(meterCustomSeriesEditor.range)==='full')?'full':'limited';
+ const deleteBtn=document.getElementById('meterCustomSeriesDeleteBtn');
+ if(deleteBtn) deleteBtn.style.display=existing?'':'none';
+ meterRenderCustomSeriesEditor();
+ modal.style.display='flex';
+ uiSyncBodyScrollLock();
+}
+
+let meterCustomSeriesEditorUnsaved=false;
+async function meterCloseCustomSeriesEditor(){
+ if(meterCustomSeriesEditorUnsaved){
+  const ok=await meterShowChoiceModal({title:'Discard changes?',body:'This series has unsaved changes (imported or edited patches). Close without saving?',acceptLabel:'Discard',cancelLabel:'Keep editing'});
+  if(!ok) return;
+ }
+ meterCustomSeriesEditorUnsaved=false;
+ return meterCloseCustomSeriesEditorNow();
+}
+function meterCloseCustomSeriesEditorNow(){
+ meterCustomSeriesEditor=null;
+ const modal=document.getElementById('meterCustomSeriesModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+ if(meterCustomSeriesReturnToManager){
+  meterCustomSeriesReturnToManager=false;
+  meterOpenCustomSeriesManager();
+ }
+}
+
+function meterRenderCustomSeriesEditor(){
+ const editor=meterCustomSeriesEditor;
+ if(!editor) return;
+ const isColor=editor.category==='color';
+ const isHdr=editor.mode==='hdr';
+ const head=document.getElementById('meterCustomSeriesEditorHead');
+ const body=document.getElementById('meterCustomSeriesEditorBody');
+ if(!head||!body) return;
+ const th=(label)=>'<th style="text-align:left;padding:6px">'+label+'</th>';
+ head.innerHTML=th('Patch')
+  +(isColor?th('R 8-bit')+th('G 8-bit')+th('B 8-bit')+th('R 10-bit')+th('G 10-bit')+th('B 10-bit'):th('8-bit')+th('10-bit'))
+  +(isColor?th('Tgt x')+th('Tgt y'):'')
+  +(isHdr?th('Target Y (cd/m²)'):'')
+  +th('');
+ const inputStyle='width:72px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box';
+ const codeInput=(row,field,value,max)=>'<td style="padding:6px"><input type="number" min="0" max="'+max+'" step="1" data-cs-row="'+row+'" data-cs-field="'+field+'" value="'+value+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+ body.innerHTML=editor.patches.map((p,i)=>{
+  let cells='<td style="padding:6px"><input type="text" maxlength="40" data-cs-row="'+i+'" data-cs-field="name" value="'+String(p.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+';width:120px"></td>';
+  if(isColor){
+   cells+=codeInput(i,'r8',p.r8,255)+codeInput(i,'g8',p.g8,255)+codeInput(i,'b8',p.b8,255);
+   cells+=codeInput(i,'r10',p.r10,1023)+codeInput(i,'g10',p.g10,1023)+codeInput(i,'b10',p.b10,1023);
+  } else {
+   cells+=codeInput(i,'grey8',p.g8,255)+codeInput(i,'grey10',p.g10,1023);
+  }
+  if(isColor){
+   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity x. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_x" value="'+(p.target_x!=null?p.target_x:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity y. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_y" value="'+(p.target_y!=null?p.target_y:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+  }
+  if(isHdr) cells+='<td style="padding:6px"><input type="number" min="0" max="10000" step="0.1" placeholder="auto" data-cs-row="'+i+'" data-cs-field="target_nits" value="'+(p.target_nits!=null?p.target_nits:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+  cells+='<td style="padding:6px"><button class="btn btn-sm btn-danger" onclick="meterCustomSeriesEditorRemoveRow('+i+')" title="Remove patch">&#10005;</button></td>';
+  return '<tr style="border-bottom:1px solid #1a1a28">'+cells+'</tr>';
+ }).join('');
+}
+
+function meterCustomSeriesEditorSetInput(row,field,value){
+ const el=document.querySelector('#meterCustomSeriesEditorBody input[data-cs-row="'+row+'"][data-cs-field="'+field+'"]');
+ if(el) el.value=String(value);
+}
+
+function meterCustomSeriesEditorSync(input){
+ const editor=meterCustomSeriesEditor;
+ if(!editor||!input||!input.dataset) return;
+ meterCustomSeriesEditorUnsaved=true;
+ const row=parseInt(input.dataset.csRow,10);
+ const field=String(input.dataset.csField||'');
+ const patch=editor.patches[row];
+ if(!patch) return;
+ if(field==='name'){ patch.name=input.value; return; }
+ if(field==='target_nits'){
+  const v=parseFloat(input.value);
+  patch.target_nits=(Number.isFinite(v)&&v>0)?Math.min(10000,v):null;
+  return;
+ }
+ if(field==='target_x'||field==='target_y'){
+  const v=parseFloat(input.value);
+  patch[field]=(Number.isFinite(v)&&v>0&&v<1)?Math.round(v*10000)/10000:null;
+  return;
+ }
+ const raw=parseInt(input.value,10);
+ if(!Number.isFinite(raw)) return;
+ const grey=field==='grey8'||field==='grey10';
+ const tenBit=field.slice(-2)==='10';
+ const channels=grey?['r','g','b']:[field.replace(/8$|10$/,'')];
+ channels.forEach(ch=>{
+  if(tenBit){
+   patch[ch+'10']=meterCustomSeriesClampCode(raw,1023);
+   patch[ch+'8']=meterCustomSeriesCode10To8(patch[ch+'10']);
+  } else {
+   patch[ch+'8']=meterCustomSeriesClampCode(raw,255);
+   patch[ch+'10']=meterCustomSeriesCode8To10(patch[ch+'8']);
+  }
+ });
+ const sibling=grey?(tenBit?'grey8':'grey10'):(tenBit?channels[0]+'8':channels[0]+'10');
+ const ref=channels[0];
+ meterCustomSeriesEditorSetInput(row,sibling,tenBit?patch[ref+'8']:patch[ref+'10']);
+}
+
+function meterCustomSeriesEditorAddRow(){
+ const editor=meterCustomSeriesEditor;
+ if(!editor) return;
+ if(editor.patches.length>=METER_CUSTOM_SERIES_MAX_PATCHES){ toast('Patch limit reached ('+METER_CUSTOM_SERIES_MAX_PATCHES+')',true); return; }
+ editor.patches.push(meterCustomSeriesSanitizePatch({},editor.patches.length));
+ meterRenderCustomSeriesEditor();
+}
+
+function meterCustomSeriesEditorRemoveRow(index){
+ const editor=meterCustomSeriesEditor;
+ if(!editor) return;
+ editor.patches.splice(index,1);
+ meterRenderCustomSeriesEditor();
+}
+
+function meterSaveCustomSeriesEditor(){
+ const editor=meterCustomSeriesEditor;
+ if(!editor) return;
+ meterCustomSeriesDirty=true;
+ const nameInput=document.getElementById('meterCustomSeriesNameInput');
+ const name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
+ if(!name){ toast('Enter a series name',true); return; }
+ if(!editor.patches.length){ toast('Add at least one patch',true); return; }
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ const range=(rangeInput&&rangeInput.value==='full')?'full':'limited';
+ const state=meterCustomSeriesNormalizeState();
+ let series;
+ if(editor.id!=null){
+  series=state.series.find(s=>s.id===editor.id);
+  if(!series){ toast('Series no longer exists',true); meterCloseCustomSeriesEditor(); return; }
+ } else {
+  series={id:state.next_id,category:editor.category,mode:editor.mode,name:'',patches:[]};
+  state.next_id+=1;
+  state.series.push(series);
+ }
+ series.name=name;
+ series.range=range;
+ series.patches=editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i));
+ meterCustomSeriesNormalizeState();
+ const seriesType=(series.category==='color')?'colors':'greyscale';
+ const seriesId=series.id;
+ meterCustomSeriesEditorUnsaved=false;
+ meterCloseCustomSeriesEditor();
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ meterSelectSeries(seriesType,seriesId);
+ toast('Custom series saved');
+}
+
+async function meterDeleteCustomSeries(){
+ const editor=meterCustomSeriesEditor;
+ if(!editor||editor.id==null) return;
+ const id=editor.id;
+ meterCustomSeriesEditorUnsaved=false;
+ meterCloseCustomSeriesEditor();
+ await meterDeleteCustomSeriesById(id);
+}
+
+function meterCustomSeriesCsv(series,format){
+ const rows=(typeof meterCustomSeriesPatches==='function')?meterCustomSeriesPatches(series):((series&&Array.isArray(series.patches))?series.patches:[]);
+ if(!rows.length) return '';
+ if(format==='colourspace'){
+  // Light Illusion ColourSpace layout: "# Bitdepth"/"# Range" comment header,
+  // then "index,R,G,B,name" with integer code values at the declared bit depth.
+  // Codes are stored as-authored, so the header must reflect the series' range
+  // tag (Full = PC range, otherwise Legal/Limited) for a clean round-trip.
+  const rangeHdr=(meterCustomSeriesRangeKey(series&&series.range)==='full')?'Full':'Legal';
+  const header='# Bitdepth 10\r\n# Range '+rangeHdr+'\r\n';
+  const body=rows.map((p,i)=>{
+   const name=String(p.name||('Patch '+(i+1))).replace(/[\r\n,]/g,' ').trim();
+   return [(i+1),meterCustomSeriesClampCode(p.r10,1023),meterCustomSeriesClampCode(p.g10,1023),meterCustomSeriesClampCode(p.b10,1023),name].join(',');
+  }).join('\r\n');
+  return header+body+'\r\n';
+ }
+ return rows.map(p=>[p.r8,p.g8,p.b8].map(c=>String(meterCustomSeriesClampCode(c,255))).join(',')).join('\r\n')+'\r\n';
+}
+
+function meterExportCustomSeries(format){
+ const editor=meterCustomSeriesEditor;
+ if(!editor){ toast('Open a custom series first',true); return; }
+ const nameInput=document.getElementById('meterCustomSeriesNameInput');
+ const seriesName=String((nameInput&&nameInput.value)||'custom-series');
+ const rangeInput=document.getElementById('meterCustomSeriesRangeInput');
+ const draftRange=(rangeInput&&rangeInput.value==='full')?'full':'limited';
+ const draft={name:seriesName,range:draftRange,patches:editor.patches.map((p,i)=>meterCustomSeriesSanitizePatch(p,i))};
+ if(!draft.patches.length){ toast('Add at least one patch before exporting',true); return; }
+ const fmt=(format==='colourspace')?'colourspace':'calman';
+ const base=(seriesName.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'custom-series')+'-'+fmt;
+ const filename=meterPromptExportFilename('custom-series-'+fmt,base,'csv','Enter a file name for the patch list export');
+ if(!filename) return;
+ const blob=new Blob([meterCustomSeriesCsv(draft,fmt)],{type:'text/csv'});
+ meterDownloadBlob(blob,filename);
+}
+
+// Parse a CalMAN- or ColourSpace-style CSV patch list into sanitised patches.
+// ColourSpace files carry "# Bitdepth N" / "# Range X" comment headers and an
+// index column; CalMAN/generic files are bare "R,G,B" 8-bit triplets. Bit depth
+// comes from the header when present, else is inferred from the value magnitude
+// (any code > 255 => 10-bit). Returns {patches, bits}.
+function meterCustomSeriesParseCsv(text,bitsHint){
+ const lines=String(text||'').split(/\r\n|\r|\n/);
+ let headerBits=0;
+ const rows=[];
+ lines.forEach(line=>{
+  const trimmed=String(line||'').trim();
+  if(!trimmed) return;
+  if(trimmed.charAt(0)==='#'){
+   const bm=trimmed.match(/bit\s*depth\s*[:=]?\s*(\d+)/i);
+   if(bm){ const b=parseInt(bm[1],10); headerBits=(b>=10)?10:8; }
+   return;
+  }
+  const fields=trimmed.split(',').map(f=>f.trim());
+  const nums=[];
+  for(let i=0;i<fields.length;i++){
+   const n=Number(fields[i]);
+   if(fields[i]!==''&&Number.isFinite(n)) nums.push(n); else break;
+  }
+  // 3 leading numbers => R,G,B; 4+ => index,R,G,B (ColourSpace shape).
+  let rgb=null,nameIdx=-1;
+  if(nums.length>=4){ rgb=[nums[1],nums[2],nums[3]]; nameIdx=4; }
+  else if(nums.length===3){ rgb=[nums[0],nums[1],nums[2]]; nameIdx=3; }
+  if(!rgb) return;
+  // Keep the trailing label verbatim (e.g. "10.0% #1"): the stimulus prefix is
+  // redundant for the measurement (the RGB codes define the patch) but useful
+  // as a human-readable level label, so preserve it in the patch name.
+  const name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
+  rows.push({rgb:rgb,name:name});
+ });
+ // Bit-depth precedence: a "# Bitdepth" header wins; then the caller's hint
+ // (derived from the filename, e.g. "..._10bit_10b_legal.csv"); then
+ // auto-detect from the max code. The hint is ESSENTIAL for low-stimulus
+ // 10-bit files whose codes all fall <=255 (e.g. a 10% grid) -- auto-detect
+ // would wrongly call them 8-bit and quadruple every code.
+ let bits=headerBits;
+ if(!bits && (bitsHint===8||bitsHint===10||bitsHint===12)) bits=bitsHint;
+ if(!bits){
+  const maxCode=rows.reduce((m,r)=>Math.max(m,r.rgb[0],r.rgb[1],r.rgb[2]),0);
+  bits=(maxCode>255)?10:8;
+ }
+ const tenBit=(bits>=10);
+ const scale=(bits===12)?0.25:1;   // store is 10-bit; scale 12-bit codes down
+ const totalRows=rows.length;
+ const patches=rows.slice(0,METER_CUSTOM_SERIES_MAX_PATCHES).map((r,idx)=>{
+  const raw=tenBit
+   ?{name:r.name,r10:Math.round(r.rgb[0]*scale),g10:Math.round(r.rgb[1]*scale),b10:Math.round(r.rgb[2]*scale)}
+   :{name:r.name,r8:r.rgb[0],g8:r.rgb[1],b8:r.rgb[2]};
+  return meterCustomSeriesSanitizePatch(raw,idx);
+ });
+ return {patches:patches,bits:bits,truncated:totalRows>patches.length,sourceCount:totalRows};
+}
+
+// ---- Import wizard (CalMAN CSV / ColourSpace CSV / CalMAN CCFX) ----
+// One "Import…" entry point. CSV formats create a single series; CCFX can hold
+// many series (SDR and HDR mixed), so its step lists every set with a per-row
+// checkbox, editable name, bit depth and SDR/HDR — auto-detected from the set
+// name, all editable before import.
+let meterImportWizardState=null;
+
+function meterImportWizardFormat(){
+ const r=document.querySelector('input[name="meterImpFmt"]:checked');
+ return r?r.value:'calman_csv';
+}
+function meterImportBitOptions(sel){
+ return [8,10,12].map(b=>'<option value="'+b+'"'+(Number(b)===Number(sel)?' selected':'')+'>'+b+'-bit</option>').join('');
+}
+function meterImportModeOptions(sel){
+ return ['sdr','hdr'].map(m=>'<option value="'+m+'"'+(m===sel?' selected':'')+'>'+m.toUpperCase()+'</option>').join('');
+}
+function meterImportRangeOptions(sel){
+ const k=(sel==='full')?'full':'limited';
+ return [['limited','Limited (legal)'],['full','Full']].map(o=>'<option value="'+o[0]+'"'+(o[0]===k?' selected':'')+'>'+o[1]+'</option>').join('');
+}
+// Range TAG for the stored series ('full'|'limited'). meterImportDetectRange
+// returns the code-conversion form ('full'|'legal'); map 'legal' -> 'limited'.
+function meterImportRangeKeyFromName(name){
+ return meterImportDetectRange(name)==='full'?'full':'limited';
+}
+// A ColourSpace CSV may carry a "# Range Legal|Extended|Full" header; honour it
+// over the filename guess. Extended/PC == Full; Legal/Video == Limited.
+function meterImportDetectRangeFromCsv(text,filename){
+ const m=String(text||'').match(/^#\s*range\s*[:=]?\s*(legal|video|tv|limited|extended|pc|full)/im);
+ if(m){ const v=m[1].toLowerCase(); return (v==='full'||v==='extended'||v==='pc')?'full':'limited'; }
+ return meterImportRangeKeyFromName(filename);
+}
+function meterImportDetectBits(name){
+ const n=String(name||'').toLowerCase();
+ if(/12\s*-?\s*bit/.test(n)||/\b12b(it)?[_\-. ]/.test(n)) return 12;
+ if(/8\s*-?\s*bit/.test(n)||/\b8b(it)?[_\-. ]/.test(n)) return 8;
+ return 10;
+}
+function meterImportDetectMode(name){
+ // Names delimit tokens with underscores (e.g. "..._limited_HDR_10bit"), and
+ // "_" is a \w char so \bhdr\b never matches there. Treat any non-letter
+ // (start/end/underscore/space/digit) as a token boundary.
+ const n=String(name||'').toLowerCase();
+ if(/(^|[^a-z])(hdr|pq|hlg|st2084|smpte2084|2084)([^a-z]|$)/.test(n)) return 'hdr';
+ return 'sdr';
+}
+function meterImportDetectRange(name){
+ const n=String(name||'').toLowerCase();
+ if(/\bfull\b|pc\s*range|0-255|0-1023/.test(n)) return 'full';
+ return 'legal';
+}
+function meterImportPctToCode(pct,bits,range){
+ let p=Number(pct); if(!Number.isFinite(p)) p=0;
+ p=Math.max(0,Math.min(100,p))/100;
+ if(Number(bits)===8) return Math.round(range==='full'?p*255:16+p*219);
+ return Math.round(range==='full'?p*1023:64+p*876);   // 10-bit store (12-bit maps here too)
+}
+function meterImportCcfxPatch(p,bits,range,idx){
+ const raw={name:p.name};
+ if(Number(bits)===8){
+  raw.r8=meterImportPctToCode(p.r,8,range); raw.g8=meterImportPctToCode(p.g,8,range); raw.b8=meterImportPctToCode(p.b,8,range);
+ } else {
+  raw.r10=meterImportPctToCode(p.r,10,range); raw.g10=meterImportPctToCode(p.g,10,range); raw.b10=meterImportPctToCode(p.b,10,range);
+ }
+ return meterCustomSeriesSanitizePatch(raw,idx);
+}
+// Most CCFX ColorDefinitions are DataType="RGB" (Data1/2/3 = RGB percentages),
+// but some sets (e.g. "SG Fleshtones") are DataType="XnYnZn" — normalized XYZ
+// tristimulus (Y=1 at reference white, D65). Convert those to Rec.709/sRGB
+// gamma-encoded RGB percentages so they import as real colours; treating XYZ as
+// RGB% made every fleshtone patch read as near-black. Chromaticity is preserved
+// by the inverse matrix; luminance rides the sRGB OETF.
+function meterCcfxXyzToRgbPct(X,Y,Z){
+ const r= 3.2406*X - 1.5372*Y - 0.4986*Z;
+ const g=-0.9689*X + 1.8758*Y + 0.0415*Z;
+ const b= 0.0557*X - 0.2040*Y + 1.0570*Z;
+ const enc=(v)=>{ v=Math.max(0,Math.min(1,v)); return (v<=0.0031308?12.92*v:1.055*Math.pow(v,1/2.4)-0.055)*100; };
+ return [enc(r),enc(g),enc(b)];
+}
+function meterImportParseCcfx(text){
+ let xml=String(text||'').replace(/^﻿/,'').replace(/<\?xml[\s\S]*?\?>/i,'');
+ const doc=new DOMParser().parseFromString(xml,'application/xml');
+ if(doc.getElementsByTagName('parsererror').length) throw new Error('bad xml');
+ const setEls=doc.getElementsByTagName('ColorSet');
+ const sets=[];
+ for(let i=0;i<setEls.length;i++){
+  const se=setEls[i];
+  const nm=se.getAttribute('Name')||('Set '+(i+1));
+  const defs=se.getElementsByTagName('ColorDefinition');
+  const patches=[];
+  for(let j=0;j<defs.length;j++){
+   const d=defs[j];
+   const dt=String(d.getAttribute('DataType')||'RGB').toUpperCase();
+   const d1=parseFloat(d.getAttribute('Data1'))||0;
+   const d2=parseFloat(d.getAttribute('Data2'))||0;
+   const d3=parseFloat(d.getAttribute('Data3'))||0;
+   const rgb=(dt==='XNYNZN'||dt==='XYZ')?meterCcfxXyzToRgbPct(d1,d2,d3):[d1,d2,d3];
+   patches.push({name:d.getAttribute('Name')||('#'+(j+1)),r:rgb[0],g:rgb[1],b:rgb[2]});
+  }
+  if(patches.length) sets.push({name:nm,patches:patches});
+ }
+ return sets;
+}
+function meterOpenImportWizard(){
+ meterImportWizardState=null;
+ const body=document.getElementById('meterImportWizardBody');
+ if(body) body.innerHTML='<div style="font-size:.78rem;color:var(--text2)">Pick a format above, then choose a file.</div>';
+ const act=document.getElementById('meterImportWizardActions'); if(act) act.style.display='none';
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent='';
+ const m=document.getElementById('meterImportWizardModal'); if(m){ m.style.display='flex'; uiSyncBodyScrollLock(); }
+}
+function meterCloseImportWizard(){
+ const m=document.getElementById('meterImportWizardModal'); if(m) m.style.display='none';
+ uiSyncBodyScrollLock();
+}
+function meterImportWizardFormatChanged(){
+ meterImportWizardState=null;
+ const body=document.getElementById('meterImportWizardBody');
+ if(body) body.innerHTML='<div style="font-size:.78rem;color:var(--text2)">Choose a file to continue.</div>';
+ const act=document.getElementById('meterImportWizardActions'); if(act) act.style.display='none';
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent='';
+}
+function meterImportWizardChooseFile(){
+ const inp=document.getElementById('meterImportWizardFile');
+ if(!inp) return;
+ inp.accept=(meterImportWizardFormat()==='calman_ccfx')?'.ccfx,.xml':'.csv,.txt';
+ inp.value=''; inp.click();
+}
+function meterImportWizardOnFile(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ if(!file) return;
+ const fmt=meterImportWizardFormat();
+ const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent=file.name;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   if(fmt==='calman_ccfx') meterImportWizardRenderCcfx(String(reader.result||''),file.name);
+   else meterImportWizardRenderCsv(String(reader.result||''),file.name);
+  }catch(e){ toast('Could not read that file',true); }
+ };
+ if(fmt==='calman_ccfx') reader.readAsText(file,'utf-16'); else reader.readAsText(file);
+}
+function meterImportWizardRenderCsv(text,filename){
+ meterImportWizardState={mode:'csv',csvText:text,filename:filename};
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+ const base=String(filename||'').replace(/\.[^.]+$/,'').replace(/[\[\]{}"\\]/g,'').trim();
+ const bits=meterImportDetectBits(filename);
+ const md=meterImportDetectMode(filename);
+ const rg=meterImportDetectRangeFromCsv(text,filename);
+ const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;box-sizing:border-box';
+ const body=document.getElementById('meterImportWizardBody');
+ body.innerHTML='<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:.8rem;color:#ddd;max-width:560px">'
+  +'<label>Series name</label><input type="text" id="meterImpCsvName" maxlength="96" value="'+esc(base)+'" style="'+inpStyle+';width:100%">'
+  +'<label>Bit depth</label><select id="meterImpCsvBits" style="'+inpStyle+'">'+meterImportBitOptions(bits)+'</select>'
+  +'<label>Mode</label><select id="meterImpCsvMode" style="'+inpStyle+'">'+meterImportModeOptions(md)+'</select>'
+  +'<label title="The signal range these codes are in. The series is only offered while the display outputs this range.">Range</label><select id="meterImpCsvRange" style="'+inpStyle+'">'+meterImportRangeOptions(rg)+'</select>'
+  +'</div>'
+  +'<div style="font-size:.72rem;color:var(--text2);margin-top:8px">CSV codes are used as-is at the chosen bit depth and range.</div>';
+ const act=document.getElementById('meterImportWizardActions'); act.style.display='';
+ document.getElementById('meterImportWizardCommitBtn').textContent='Import series';
+}
+function meterImportWizardRenderCcfx(text,filename){
+ let sets; try{ sets=meterImportParseCcfx(text); }catch(e){ toast('Could not parse that CCFX file',true); return; }
+ if(!sets.length){ toast('No color sets found in that CCFX file',true); return; }
+ meterImportWizardState={mode:'ccfx',sets:sets,filename:filename};
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+ const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:4px;box-sizing:border-box';
+ let rows='';
+ sets.forEach((s,i)=>{
+  rows+='<tr style="border-bottom:1px solid #1a1a28">'
+   +'<td style="padding:4px;text-align:center"><input type="checkbox" id="meterImpCk_'+i+'" checked></td>'
+   +'<td style="padding:4px"><input type="text" id="meterImpNm_'+i+'" maxlength="96" value="'+esc(s.name)+'" style="'+inpStyle+';width:100%;min-width:220px"></td>'
+   +'<td style="padding:4px"><select id="meterImpBd_'+i+'" style="'+inpStyle+'">'+meterImportBitOptions(meterImportDetectBits(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select id="meterImpMd_'+i+'" style="'+inpStyle+'">'+meterImportModeOptions(meterImportDetectMode(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select id="meterImpRg_'+i+'" style="'+inpStyle+'">'+meterImportRangeOptions(meterImportRangeKeyFromName(s.name))+'</select></td>'
+   +'<td style="padding:4px;text-align:center">'+s.patches.length+'</td>'
+   +'</tr>';
+ });
+ const body=document.getElementById('meterImportWizardBody');
+ body.innerHTML='<div style="font-size:.76rem;color:var(--text2);margin-bottom:6px">'+sets.length+' series found. Check the ones to import; edit name / bit depth / mode / range as needed (auto-set from the set name).</div>'
+  +'<label style="font-size:.76rem;color:#ddd;display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="meterImpCkAll" checked onchange="meterImportToggleAll(this.checked)"> Select all</label>'
+  +'<div style="max-height:46vh;overflow:auto;border:1px solid #2a3140;border-radius:6px">'
+  +'<table style="width:100%;border-collapse:collapse;font-size:.74rem;color:#ddd">'
+  +'<thead><tr style="border-bottom:1px solid #2a3140;position:sticky;top:0;background:#111723">'
+  +'<th style="padding:5px">Import</th><th style="text-align:left;padding:5px">Name</th><th style="padding:5px">Bit depth</th><th style="padding:5px">Mode</th><th style="padding:5px">Range</th><th style="padding:5px">Patches</th>'
+  +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+ const act=document.getElementById('meterImportWizardActions'); act.style.display='';
+ document.getElementById('meterImportWizardCommitBtn').textContent='Import checked series';
+}
+function meterImportToggleAll(checked){
+ const st=meterImportWizardState; if(!st||st.mode!=='ccfx') return;
+ st.sets.forEach((s,i)=>{ const c=document.getElementById('meterImpCk_'+i); if(c) c.checked=!!checked; });
+}
+function meterImportAddSeries(name,mode,patches,range){
+ const st=meterCustomSeriesNormalizeState();
+ const src=Array.isArray(patches)?patches:[];
+ const kept=src.slice(0,METER_CUSTOM_SERIES_MAX_PATCHES);
+ const series={id:st.next_id,category:'color',mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
+  range:(range==='full'?'full':'limited'),
+  name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:kept};
+ st.next_id+=1; st.series.push(series);
+ return {series:series,truncated:src.length>kept.length,sourceCount:src.length,keptCount:kept.length};
+}
+function meterImportWizardCommit(){
+ const st=meterImportWizardState; if(!st){ toast('Choose a file first',true); return; }
+ let created=0;
+ let truncNotes=[];
+ if(st.mode==='csv'){
+  const bits=parseInt((document.getElementById('meterImpCsvBits')||{}).value,10)||10;
+  const name=String((document.getElementById('meterImpCsvName')||{}).value||'').trim();
+  const mode=((document.getElementById('meterImpCsvMode')||{}).value==='hdr')?'hdr':'sdr';
+  const range=((document.getElementById('meterImpCsvRange')||{}).value==='full')?'full':'limited';
+  const parsed=meterCustomSeriesParseCsv(st.csvText,bits);
+  if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
+  const added=meterImportAddSeries(name,mode,parsed.patches,range);
+  if(added.truncated||parsed.truncated) truncNotes.push((name||'CSV')+': '+(added.sourceCount||parsed.sourceCount)+' → '+added.keptCount);
+  created=1;
+ } else {
+  st.sets.forEach((s,i)=>{
+   const ck=document.getElementById('meterImpCk_'+i); if(!ck||!ck.checked) return;
+   const name=String((document.getElementById('meterImpNm_'+i)||{}).value||s.name).trim()||s.name;
+   const bits=parseInt((document.getElementById('meterImpBd_'+i)||{}).value,10)||10;
+   const mode=((document.getElementById('meterImpMd_'+i)||{}).value==='hdr')?'hdr':'sdr';
+   const rangeKey=((document.getElementById('meterImpRg_'+i)||{}).value==='full')?'full':'limited';
+   const patches=s.patches.map((p,pi)=>meterImportCcfxPatch(p,bits,(rangeKey==='full'?'full':'legal'),pi));
+   const added=meterImportAddSeries(name,mode,patches,rangeKey);
+   if(added.truncated) truncNotes.push(name+': '+added.sourceCount+' → '+added.keptCount);
+   created++;
+  });
+  if(!created){ toast('Check at least one series to import',true); return; }
+ }
+ meterCustomSeriesNormalizeState();
+ meterCustomSeriesDirty=true;
+ saveMeterSettings();
+ meterRenderCustomSeriesButtons();
+ meterCloseImportWizard();
+ const mgr=document.getElementById('meterCustomSeriesManagerModal');
+ if(mgr&&mgr.style.display!=='none') meterRenderCustomSeriesManager();
+ if(truncNotes.length) toast('Imported '+created+' series (capped at '+METER_CUSTOM_SERIES_MAX_PATCHES+' patches: '+truncNotes.join('; ')+')',true);
+ else toast('Imported '+created+' series');
+}
+
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
 function meterBuildStepsJS(type,points){
  if(type==='greyscale' && points===256) points=100;
 	 const steps=[];
+	 const customSeries=(Number(points)>=900)?meterCustomSeriesById(points):null;
+	 if(customSeries){
+	  steps.push(...meterBuildCustomSeriesSteps(customSeries));
+	  return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
+	 }
 	 if(type==='greyscale'){
 	  if(points===2){
    const twoPoint=meterSyncTwoPointInputs();
@@ -24273,6 +27744,53 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
+// Remembered operator preference for the lattice profiling charts. Whenever
+// the operator toggles 3D View or Targets while a lattice series is active,
+// the choice is stored and re-applied on every future lattice activation —
+// across page reloads — instead of the built-in defaults.
+function meterLatticeViewPrefs(){
+ try{
+  const raw=localStorage.getItem('pgen.meter.latticeViewPrefs');
+  if(raw){ const p=JSON.parse(raw); if(p&&typeof p==='object') return p; }
+ }catch(e){}
+ return {};
+}
+
+function meterLatticeViewPrefSave(field,value){
+ if(!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())) return;
+ try{
+  const p=meterLatticeViewPrefs();
+  p[String(field)]=value?'1':'0';
+  localStorage.setItem('pgen.meter.latticeViewPrefs',JSON.stringify(p));
+ }catch(e){}
+}
+
+// Lattice (3D LUT profiling) chart view when a lattice series becomes active:
+// the operator's LAST REMEMBERED choice wins (meterLatticeViewPrefs); the
+// built-in defaults (3D xyY ON — neutral-ratio nodes separate by luminance;
+// target boxes OFF — profiling patches have no gradable reference) apply only
+// before any choice has been made. Selection AND recovery re-fire during a
+// live read (shared-series sync), so application is memoized PER SERIES KEY —
+// and the toggle handlers update the stored preference immediately, so even a
+// re-fire can only ever re-apply what the operator last chose.
+let meterLattice3dDefaultedKey=null;
+function meterLatticeDefault3dView(points){
+ try{
+  const cubeSeries=meterCustomSeriesById(points);
+  if(!cubeSeries||cubeSeries.kind!=='lattice') return;
+  const key='colors-'+points;
+  if(meterLattice3dDefaultedKey===key) return;
+  meterLattice3dDefaultedKey=key;
+  const prefs=meterLatticeViewPrefs();
+  const want3d=(prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true;
+  const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
+  const view3d=document.getElementById('meterCie3dView');
+  if(view3d&&view3d.checked!==want3d){ view3d.checked=want3d; meterOnCie3dViewChange(); }
+  const targets=document.getElementById('meterCieOptTargets');
+  if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
+ }catch(e){}
+}
+
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
@@ -24282,7 +27800,7 @@ async function meterSelectSeries(type,points,opts){
   return;
  }
  const key=type+'-'+points;
- if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
@@ -24294,7 +27812,20 @@ async function meterSelectSeries(type,points,opts){
  clearActive();
  if(meterSeriesRunning) meterStop();
  else meterStopContinuous();
+ meterLatticeDefault3dView(points);
  if(meterActiveSeriesKey===key){
+  // Same-key early return ONLY when the active context matches the LIVE
+  // signal mode. A stale restore (e.g. the boot restore racing the config
+  // load) can leave an SDR-cached series active while the generator is in
+  // HDR10 — the whole PQ chart pipeline (BT.2390 control, st2084 target
+  // decode) silently collapses. A manual re-select must rebuild with the
+  // live mode instead of keeping the stale context.
+  const _liveMode=String(meterChartSignalMode()||'sdr').toLowerCase();
+  const _activeMode=String(meterActiveSeriesSignalMode||_liveMode).toLowerCase();
+  // opts.force (Custom Series manager "Load") always rebuilds: after saving a
+  // new series it is auto-selected, so a manual Load would otherwise hit this
+  // same-key early return and appear to "not load".
+  if(_activeMode===_liveMode&&!opts.force){
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
@@ -24312,6 +27843,7 @@ async function meterSelectSeries(type,points,opts){
   meterUpdateReadButtons();
   meterUpdateDeltaEFormControl();
   return;
+  }
  }
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
   meterCacheSeriesState(meterSeriesRunning?'running':'complete');
@@ -24336,19 +27868,44 @@ async function meterSelectSeries(type,points,opts){
  meterActiveSeriesPoints=points;
  meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
- if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  // Highlight the clicked button
  meterResetSeriesButtons();
  meterActiveSeriesKey=key;
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+key+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ meterRenderCustomSeriesButtons();
  if(opts.preserveTab&&meterSeriesTab==='autocal'){
   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
  }
+ // Volume series now active: clear the empty-3D-LUT suppress flag BEFORE any
+ // draw so the first Hybrid/lattice load is not blocked (stale ColorChecker).
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
+ // Drop any leftover readings that do not belong to this series (e.g. ColorChecker
+ // samples still in memory after loading a custom grid).
+ try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
  if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+  try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
+  // Lattice cache snapshots can carry server-shaped steps (the server
+  // expansion computes no chart targets). The freshly built client steps are
+  // name-identical (parity-locked) and DO carry target_x/y/Yn — prefer them,
+  // otherwise target resolution falls through to the raw absolute stimulus
+  // decode and every bright node charts against an unachievable target.
+  try{
+   const lat=meterActiveLatticeSeries();
+   if(lat&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===steps.length&&meterSeriesSteps.some(s=>s&&s.target_x==null)){
+    meterSeriesSteps=steps;
+    if(Array.isArray(meterReadings)&&meterReadings.length){
+     meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; } });
+     drawAllCharts([...meterReadings]);
+    } else {
+     drawAllChartsPreset([...meterSeriesSteps]);
+    }
+   }
+  }catch(e){}
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
@@ -24358,7 +27915,12 @@ async function meterSelectSeries(type,points,opts){
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
   }
   meterUpdateDeltaEFormControl();
+  try{
+   const hasReal=(Array.isArray(meterReadings)&&meterReadings.some(r=>meterReadingIsRealMeasurement(r)));
+   if(!hasReal) showColorReadingDetail(null);
+  }catch(e){}
   toast(meterSeriesLabelFromKey(key)+' loaded');
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
   return;
  }
  // Sort for display
@@ -24371,19 +27933,27 @@ async function meterSelectSeries(type,points,opts){
   document.getElementById('chartsGreyscaleWrap').style.display='none';
   document.getElementById('chartsColorWrap').style.display='';
  }
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterReadSeriesBtn').style.display='';
- meterSetThumbsVisible(true);
  meterHideWorkflowProgress();
  // Build thumbnails and pre-populate all charts
- meterBuildPatchThumbs(sortedSteps,null);
- drawAllChartsPreset(sortedSteps);
+ const uiCaps=meterSeriesUiCaps(sortedSteps.length);
+ if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,null);
+ meterSetThumbsVisible(uiCaps.thumbs);
+ drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
  // No default patch selection — user must click a thumbnail
  meterUpdateThumbStyles(document.getElementById('meterPatchThumbs'),null,null);
  meterUpdateReadButtons();
  meterUpdateDeltaEFormControl();
+ // Fresh series load with no readings for this series: clear stale detail
+ // (e.g. ColorChecker Light Skin still sitting in the panel).
+ try{
+  const hasReal=(Array.isArray(meterReadings)&&meterReadings.some(r=>meterReadingIsRealMeasurement(r)));
+  if(!hasReal) showColorReadingDetail(null);
+ }catch(e){}
  toast(meterSeriesLabelFromKey(key)+' loaded');
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 }
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
@@ -24430,6 +28000,17 @@ function meterMeasurementSignalContext(payload){
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
+  // CCSS override: only inject when the caller didn't already pass one.
+  // The wizard / meterRunSeries pass `ccss_override` explicitly via the
+  // pendingConfig snapshot; single reads / autocal reads fall through to
+  // the current main-control value. Empty token => server uses the
+  // technology default. The display_type token is whatever the caller set
+  // (tech key, since we redirected getEffectiveDisplayType() to the tech
+  // dropdown). ccss_override is independent — it's the CCSS file.
+  if(body.ccss_override==null){
+   const override=(typeof getCcssOverride==='function')?getCcssOverride():'';
+   if(override) body.ccss_override=override;
+  }
    if(meterTargetWhitePointEnabled()){
     body.custom_d65_enabled=true;
     body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
@@ -25691,7 +29272,7 @@ async function meterAutoCalAdjustBrightness(delta){
 }
 
 function meterAutoCalResultRows(status){
- const source=(status&&status.magic_wand&&status.post_series_after&&Array.isArray(status.post_series_after.readings))?status.post_series_after:status;
+ const source=status;
  const readings=(source&&Array.isArray(source.readings)?source.readings:(Array.isArray(meterReadings)?meterReadings:[]))
  .filter(rd=>rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd));
  const greyMode=meterGreyRefMode();
@@ -25757,7 +29338,11 @@ function meterAutoCalRenderDuration(status){
 function meterAutoCalRenderResults(status){
  const summary=document.getElementById('meterAutoCalResultsSummary');
  const worst=document.getElementById('meterAutoCalResultsWorst');
+ const applyAllNote=document.getElementById('meterAutoCalResultsApplyAllNote');
  meterAutoCalRenderDuration(status);
+ // Full AutoCal (SDR + HDR) only: remind operator to copy the picture mode
+ // to every HDMI input on the TV.
+ if(applyAllNote) applyAllNote.style.display=(status&&status.full_autocal)?'':'none';
  if(!summary&&!worst) return;
  if(status&&status.full_autocal){
   const lut=status.lut3d||{};
@@ -25836,10 +29421,6 @@ function meterAutoCalCloseComplete(){
  meterFullAutoCalStartedAt=null;
 	 meterFullAutoCalConfig=null;
 	 meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
 	 meterFullAutoCalClearReportData();
 	 meterAutoCalSetOverlay(false,null);
 	 // Calibration pinned Target Gamma to 2.2; restore the HDR10 default
@@ -25851,6 +29432,13 @@ function meterAutoCalCloseComplete(){
 	 }
 	}
 
+// Clear whatever patch is on the display (fire-and-forget). The last profiling
+// patch used to linger on the TV until the operator closed the complete modal
+// (which calls this via meterAutoCalCloseCompleteAction). Call it the moment a
+// run reaches a terminal state so the panel returns to idle immediately.
+function meterClearDisplayPattern(){
+ try{ fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(function(){}); }catch(e){}
+}
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
  // Tell the backend the run is over so it clears the full-workflow +
@@ -25863,6 +29451,7 @@ async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
  meterAutoCalCloseComplete();
 }
+
 
 function meterAutoCalScheduleCompleteAutoClose(postReportAvailable){
  meterAutoCalClearCompleteAutoClose();
@@ -26140,10 +29729,8 @@ async function meterAutoCalBackToLuminance(){
 
 function meterAutoCalSetGreyscaleOptionControls(){
 	 const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
-	 const magicChoice=document.getElementById('meterAutoCalMagicWandEnabled');
 	 const choicesCaptured=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 	 if(optionsBox) optionsBox.style.display=(meterAutoCalPendingConfig&&(meterAutoCalPendingConfig.fullWorkflow||(choicesCaptured&&meterAutoCalPhase!=='options')))?'none':'';
-	 if(magicChoice) magicChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'magicWandEnabled')?meterAutoCalPendingConfig.magicWandEnabled!==false:false;
 }
 
 function meterAutoCalShowPreflightOptions(){
@@ -26166,10 +29753,6 @@ function meterAutoCalShowPreflightOptions(){
 function meterAutoCalAcceptPreflightOptions(){
 	 if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
 	 meterAutoCalPendingConfig.postCommitPolishEnabled=false;
-	 // Gated off 2026-06-29: the Magic Wand checkbox was removed from
-	 // the preflight options dialog; force magicWandEnabled to false
-	 // so a stale config or a recomputed choice value cannot enable it.
-	 meterAutoCalPendingConfig.magicWandEnabled=false;
 	 meterAutoCalPendingConfig.greyscaleOptionsCaptured=true;
  meterAutoCalPhase='disclaimer';
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
@@ -26316,6 +29899,9 @@ async function meterAutoCalReadCodePatch(code,label,range,dtype){
   display_type:dtype,
   refresh_rate:getMeterRefreshRate()||undefined,
   delay_ms:Math.max(meterDelayMs(),1200),
+  // The autocal inner-loop single reads also need the operator's CCSS
+  // override so a custom profile survives every patch probe.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   patch_r:numeric,
   patch_g:numeric,
   patch_b:numeric,
@@ -26980,6 +30566,10 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 	   display_type:getEffectiveDisplayType(),
 	   refresh_rate:getMeterRefreshRate()||undefined,
 	   delay_ms:settleMs,
+	   // HDR peak probe (auto-cal luminance setup): same CCSS override
+	   // contract as the inner-loop reads so a custom profile survives
+	   // the white patch probes.
+	   ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
 	   patch_r:whiteStep.r,
 	   patch_g:whiteStep.g,
 	   patch_b:whiteStep.b,
@@ -27199,7 +30789,7 @@ async function meterAutoCalApplyStatus(status){
 	  }
   document.getElementById('chartsGreyscaleWrap').style.display='';
   document.getElementById('chartsColorWrap').style.display='none';
-  document.getElementById('meterCharts').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
   document.getElementById('meterExportRow').style.display='';
   meterSetThumbsVisible(true);
  }
@@ -27346,6 +30936,36 @@ function meterFullAutoCalBeginReportData(skipPreCal){
  meterFullAutoCalReportData.pre_cal_skipped=!!skipPreCal;
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData('started');
+}
+
+// Re-anchor the persisted report object to the run that is actually finishing.
+// A full run that reaches completion/report WITHOUT going through the
+// interactive start (resumed/adopted after a page reload, or otherwise driven
+// outside the wizard) never calls meterFullAutoCalBeginReportData(), so it
+// reuses whatever report object is left in localStorage. Observed failure: a
+// run reused a PRIOR run's object -- started_at frozen ~12h before the actual
+// calibration, pre_cal_skipped still null -- so the post-cal report showed no
+// valid "before" and was stamped with the wrong run's timing. Detect that
+// staleness (report predates this run's start, or has no start) and re-anchor a
+// fresh object to THIS run. Guarded on "no pre captured" so a run that DID run
+// the wizard Pre-Cal step never loses its before charts. Idempotent: after
+// anchoring, started_at == the run start, so it will not fire again.
+function meterFullAutoCalEnsureReportRun(runId,runStartedAt){
+ var d=meterFullAutoCalLoadReportData();
+ if(!d) return;
+ var runStart=Number(runStartedAt)||Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults&&meterFullAutoCalResults.first||{}).started_at)||0;
+ var reportStart=Number(d.started_at)||0;
+ var stale=(runStart>0&&reportStart>0&&reportStart<runStart-1000)||(!reportStart);
+ if(stale&&!meterFullAutoCalReportSetAnyData('pre')){
+  var fresh=meterFullAutoCalDefaultReportData();
+  fresh.run_id=runId||meterFullAutoCalRunId||d.run_id||null;
+  fresh.started_at=runStart||Date.now();
+  fresh.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||d.signal_mode||meterLgAutoCalRequestedSignalMode();
+  if(d.post) fresh.post=d.post;
+  if(d.stages&&typeof d.stages==='object') fresh.stages=d.stages;
+  meterFullAutoCalReportData=fresh;
+  meterFullAutoCalSaveReportData();
+ }
 }
 
 function meterFullAutoCalArchiveReportData(stage,extra){
@@ -27495,9 +31115,33 @@ function meterFullAutoCalPromptDefaults(){
 }
 
 function meterFullAutoCalDefaultConfig(){
+ // HDR10: Calman matrix-only — never default Full AutoCal to hybrid/lattice.
+ const hdr=typeof meterLg3dHdrMatrixOnly==='function'&&meterLg3dHdrMatrixOnly();
+ if(hdr){
+  return {
+   signalMode:meterLgAutoCalRequestedSignalMode(),
+   method:'matrix',
+   profileSource:'matrix',
+   latticeSeriesId:null,
+   upload:true,
+   targetDelta:null,
+   targetY:null,
+   setupY:null,
+   headroomY:null,
+   dtype:null,
+   patternSignalRange:null,
+   wp:null,
+   preCalSkipped:false,
+   postCommitPolishEnabled:false,
+   shadowFixEnabled:true
+  };
+ }
+ const resolved=meterLg3dResolveProfilingChoice('hybrid3',null);
  return {
   signalMode:meterLgAutoCalRequestedSignalMode(),
-  method:meterFullAutoCalMethodValue(),
+  method:(resolved&&resolved.method)||'hybrid',
+  profileSource:'hybrid3',
+  latticeSeriesId:(resolved&&resolved.series&&resolved.series.id!=null)?Math.round(Number(resolved.series.id)):923,
   upload:true,
   targetDelta:null,
   targetY:null,
@@ -27508,9 +31152,8 @@ function meterFullAutoCalDefaultConfig(){
   wp:null,
 	  preCalSkipped:false,
 	  postCommitPolishEnabled:false,
-	  magicWandEnabled:false,
 	  shadowFixEnabled:true
-	 };
+ };
 	}
 
 function meterConfigFlag(config,key,fallback){
@@ -27531,30 +31174,16 @@ function meterFullAutoCalPostCommitPolishEnabled(){
 	 return false;
 	}
 
-	function meterFullAutoCalMagicWandEnabled(){
-	 // Gated off 2026-06-29: the Magic Wand experimental feature is no
-	 // longer used. The UI checkboxes were removed from both the SDR/HDR
-	 // greyscale autocal wizard and the full autocal wizard, and the
-	 // feature is forced off here so a stale config or a serialized
-	 // meterFullAutoCalConfig.magicWandEnabled=true does not run the
-	 // post-series-adjust / meterAutoCalStartMagicWand path.
-	 return false;
-	}
-
-	function meterFullAutoCalPostSeriesAdjustEnabled(){
-	 return meterFullAutoCalMagicWandEnabled();
-	}
-
 function meterFullAutoCalPostTouchupEnabled(){
  return false;
 }
 
 	function meterFullAutoCalPost3dCleanupEnabled(){
-	 return !meterFullAutoCalPostTouchupEnabled()&&(meterFullAutoCalMagicWandEnabled()||meterFullAutoCalPostCommitPolishEnabled());
+	 return !meterFullAutoCalPostTouchupEnabled()&&meterFullAutoCalPostCommitPolishEnabled();
 	}
 
 	function meterFullAutoCalMeticulousEnabled(){
-	 return meterFullAutoCalPostCommitPolishEnabled()&&meterFullAutoCalMagicWandEnabled();
+	 return false;
 	}
 
 function meterAutoCalPostCommitPolishChoiceValue(){
@@ -27566,7 +31195,7 @@ function meterAutoCalPostCommitPolishChoiceValue(){
 	}
 
 	function meterFullAutoCalMeticulousChoiceValue(){
-	 return meterFullAutoCalPostCommitPolishChoiceValue()&&meterFullAutoCalMagicWandChoiceValue();
+	 return false;
 	}
 
 function meterFullAutoCalPostCommitPolishChoiceValue(){
@@ -27574,22 +31203,6 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 }
 
 	function meterFullAutoCalPostCommitVerifyChoiceValue(){
-	 return false;
-	}
-
-	function meterAutoCalMagicWandChoiceValue(){
-	 // Gated off 2026-06-29: the standalone-greyscale Magic Wand checkbox
-	 // was removed from the preflight options dialog; force the choice
-	 // to false here so the dialog's captured config still produces a
-	 // non-magic-wand payload even if some code path queries the value.
-	 return false;
-	}
-
-	function meterFullAutoCalMagicWandChoiceValue(){
-	 // Gated off 2026-06-29: the full-autocal Magic Wand checkbox was
-	 // removed from the confirm dialog; force the choice to false here
-	 // so the captured config still produces a non-magic-wand payload
-	 // even if some code path queries the value.
 	 return false;
 	}
 
@@ -27604,7 +31217,7 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	}
 
 		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
-		 return meterFullAutoCalMagicWandChoiceValue();
+		 return false;
 		}
 
 function meterFullAutoCalHdrWorkflowActive(){
@@ -27670,8 +31283,64 @@ function meterShowChoiceModal(options){
   title.style.cssText='font-size:1.0rem;font-weight:700;margin-bottom:10px;color:var(--text,#e3e6ef)';
   title.textContent=String(opts.title||'Confirm');
   const body=document.createElement('div');
-  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:18px;white-space:pre-line';
+  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:14px;white-space:pre-line';
   body.textContent=String(opts.body||'');
+  const checks=Array.isArray(opts.checkboxes)?opts.checkboxes:[];
+  const checkInputs={};
+  const checkHost=document.createElement('div');
+  checkHost.style.cssText='display:grid;gap:8px;margin-bottom:16px';
+  checks.forEach(c=>{
+   if(!c||!c.id) return;
+   const lab=document.createElement('label');
+   lab.style.cssText='display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text,#e3e6ef);cursor:pointer;line-height:1.4';
+   const inp=document.createElement('input');
+   inp.type='checkbox';
+   inp.checked=c.checked!==false;
+   inp.style.cssText='margin-top:3px;accent-color:var(--accent,#5b7fff)';
+   lab.appendChild(inp);
+   const span=document.createElement('span');
+   span.textContent=String(c.label||c.id);
+   lab.appendChild(span);
+   checkHost.appendChild(lab);
+   checkInputs[c.id]=inp;
+  });
+  const radios=Array.isArray(opts.radios)?opts.radios:[];
+  const radioInputs={};
+  const radioHost=document.createElement('div');
+  radioHost.style.cssText='display:grid;gap:10px;margin-bottom:16px';
+  radios.forEach(g=>{
+   if(!g||!g.id||!Array.isArray(g.options)||!g.options.length) return;
+   const group=document.createElement('div');
+   group.style.cssText='display:grid;gap:6px';
+   if(g.label){
+    const gl=document.createElement('div');
+    gl.style.cssText='font-size:.72rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em';
+    gl.textContent=String(g.label);
+    group.appendChild(gl);
+   }
+   const name='meterChoiceRadio_'+g.id;
+   let first=true;
+   g.options.forEach(opt=>{
+    if(!opt||opt.value==null) return;
+    const lab=document.createElement('label');
+    lab.style.cssText='display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text,#e3e6ef);cursor:pointer;line-height:1.4';
+    const inp=document.createElement('input');
+    inp.type='radio';
+    inp.name=name;
+    inp.value=String(opt.value);
+    inp.checked=opt.checked===true||(opt.checked==null&&first);
+    first=false;
+    inp.style.cssText='margin-top:3px;accent-color:var(--accent,#5b7fff)';
+    lab.appendChild(inp);
+    const span=document.createElement('span');
+    span.textContent=String(opt.label!=null?opt.label:opt.value);
+    lab.appendChild(span);
+    group.appendChild(lab);
+    if(!radioInputs[g.id]) radioInputs[g.id]=[];
+    radioInputs[g.id].push(inp);
+   });
+   radioHost.appendChild(group);
+  });
   const row=document.createElement('div');
   row.style.cssText='display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap';
   const cancelBtn=document.createElement('button');
@@ -27684,6 +31353,8 @@ function meterShowChoiceModal(options){
   row.appendChild(acceptBtn);
   card.appendChild(title);
   card.appendChild(body);
+  if(radios.length) card.appendChild(radioHost);
+  if(checks.length) card.appendChild(checkHost);
   card.appendChild(row);
   root.appendChild(card);
   document.body.appendChild(root);
@@ -27695,7 +31366,17 @@ function meterShowChoiceModal(options){
    try{ root.remove(); }catch(e){}
    resolve(value);
   };
-  acceptBtn.onclick=()=>cleanup(true);
+  acceptBtn.onclick=()=>{
+   if(!checks.length&&!radios.length){ cleanup(true); return; }
+   const out={accepted:true};
+   Object.keys(checkInputs).forEach(id=>{ out[id]=!!(checkInputs[id]&&checkInputs[id].checked); });
+   Object.keys(radioInputs).forEach(id=>{
+    const list=radioInputs[id]||[];
+    const sel=list.find(inp=>inp&&inp.checked);
+    out[id]=sel?String(sel.value):'';
+   });
+   cleanup(out);
+  };
   cancelBtn.onclick=()=>cleanup(false);
   root.onclick=(ev)=>{ if(ev.target===root) cleanup(false); };
   function onKey(ev){ if(ev.key==='Escape') cleanup(false); }
@@ -28029,7 +31710,11 @@ function meterFullAutoCalClearCompletionHandled(){
 
 function meterFullAutoCalMergeConfigFromGreyscaleStatus(status){
  if(!status) return;
- const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
+ // Preserve method/profileSource/latticeSeriesId from the wizard — greyscale
+ // status never carries the 3D profiling choice; a bare DefaultConfig merge
+ // used to re-introduce method=matrix via meterFullAutoCalMethodValue().
+ const prev=meterFullAutoCalConfig||{};
+ const next={...meterFullAutoCalDefaultConfig(),...prev};
  const targetDelta=Number(status.target_delta_e);
  if(Number.isFinite(targetDelta)&&targetDelta>0) next.targetDelta=targetDelta;
  const targetY=Number(status.target_luminance||status.calibrated_white_luminance);
@@ -28042,6 +31727,9 @@ function meterFullAutoCalMergeConfigFromGreyscaleStatus(status){
  const headroomY=Number(status.headroom_target_luminance);
  if(Number.isFinite(headroomY)&&headroomY>0) next.headroomY=headroomY;
  if(status.display_type) next.dtype=status.display_type;
+ // Track the CCSS override echo from the worker state so later 3D LUT /
+ // polish stages (and the in-progress screen) read the same value.
+ if(status.ccss_override!=null) next.ccss_override=String(status.ccss_override);
  // Track the live HDMI quant range for later 3D LUT / polish stages.
  // Never default to limited ("1") -- that made Full-range Full AutoCal
  // hand a limited patternSignalRange into 3D LUT profiling.
@@ -28055,6 +31743,10 @@ function meterFullAutoCalMergeConfigFromGreyscaleStatus(status){
    : String(getVal('rgb_quant_range')||'');
   if(liveRange==='1'||liveRange==='2') next.patternSignalRange=liveRange;
  }
+ // Re-assert wizard profiling (prev wins over defaults).
+ if(prev.method) next.method=prev.method;
+ if(prev.profileSource) next.profileSource=prev.profileSource;
+ if(prev.latticeSeriesId!=null) next.latticeSeriesId=prev.latticeSeriesId;
  meterFullAutoCalConfig=next;
  meterFullAutoCalSaveState();
 }
@@ -28080,13 +31772,11 @@ function meterFullAutoCalStatusMatchesRun(status){
 
 function meterFullAutoCalMergeCleanupConfigFromStatus(status){
  if(!(status&&status.full_workflow)) return;
- const hasPolish=Object.prototype.hasOwnProperty.call(status,'full_autocal_post_commit_polish');
- const hasMagicWand=Object.prototype.hasOwnProperty.call(status,'full_autocal_magic_wand');
- if(!hasPolish&&!hasMagicWand) return;
- const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
- if(hasPolish) next.postCommitPolishEnabled=status.full_autocal_post_commit_polish!==false;
- if(hasMagicWand) next.magicWandEnabled=status.full_autocal_magic_wand===true;
- meterFullAutoCalConfig=next;
+  const hasPolish=Object.prototype.hasOwnProperty.call(status,'full_autocal_post_commit_polish');
+  if(!hasPolish) return;
+  const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
+  if(hasPolish) next.postCommitPolishEnabled=status.full_autocal_post_commit_polish!==false;
+  meterFullAutoCalConfig=next;
 }
 
 function meterFullAutoCalEnsureStatusPhase(status,phase){
@@ -28185,9 +31875,6 @@ function meterFullAutoCalAbort(message,isError){
  meterAutoCalRunning=false;
  meterLg3dAutoCalRunning=false;
  meterAutoCalPhase=isError?'error':'';
- meterAutoCalMagicWandActive=false;
- meterAutoCalMagicWandBaseStatus=null;
- meterAutoCalMagicWandFullWorkflow=false;
  // Drop the captured measurement port -- abort path, the user wants their
  // pre-run SELECT state back, not a mid-run snapshot.
  meterAutoCalCapturedMeasurementPort='';
@@ -28204,8 +31891,75 @@ function meterFullAutoCalAbort(message,isError){
  toast(text,!!isError);
 }
 
+// Worker method for Full AutoCal 3D stage. Prefer the live wizard select,
+// then last confirmed config, then hybrid (NOT matrix — matrix-only was
+// silently used as a hard-coded fallback and overrode Hybrid 5³ picks).
+// HDR10 is matrix-only (Calman parity) regardless of sticky select state.
 function meterFullAutoCalMethodValue(){
- return 'matrix';
+ if(typeof meterLg3dHdrMatrixOnly==='function'&&meterLg3dHdrMatrixOnly()) return 'matrix';
+ if(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='hdr10') return 'matrix';
+ const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+ const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
+ const src=methodSel?String(methodSel.value||'').toLowerCase():'';
+ if(src){
+  const resolved=meterLg3dResolveProfilingChoice(src,latSel&&latSel.value);
+  if(resolved&&resolved.method) return resolved.method;
+ }
+ if(meterFullAutoCalConfig&&meterFullAutoCalConfig.method) return String(meterFullAutoCalConfig.method);
+ return 'hybrid';
+}
+
+// Map profileSource (hybrid5/hybrid3/…) → reserved series id when latticeSeriesId
+// is missing after a state restore.
+function meterFullAutoCalSeriesIdForChoice(profileSource,method,latticeSeriesId){
+ const id=Math.round(Number(latticeSeriesId));
+ if(Number.isFinite(id)&&id>0) return id;
+ const src=String(profileSource||'').toLowerCase();
+ if(src==='hybrid5') return 925;
+ if(src==='hybrid9') return 929;
+ if(src==='hybrid3'||src==='hybrid') return 923;
+ if(src==='skeleton'||String(method||'').toLowerCase()==='skeleton') return 920;
+ if(String(method||'').toLowerCase()==='hybrid') return 923;
+ return null;
+}
+
+// Snapshot the 3D profiling UI into a plain object (worker method + series).
+function meterFullAutoCalCaptureProfilingChoice(){
+ if(typeof meterLg3dHdrMatrixOnly==='function'&&meterLg3dHdrMatrixOnly()){
+  return {method:'matrix',profileSource:'matrix',latticeSeriesId:null};
+ }
+ const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+ const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
+ const src=methodSel?String(methodSel.value||'hybrid3').toLowerCase():'hybrid3';
+ const resolved=meterLg3dResolveProfilingChoice(src,latSel&&latSel.value);
+ const method=(resolved&&resolved.method)||'hybrid';
+ const latticeSeriesId=meterFullAutoCalSeriesIdForChoice(
+  src,
+  method,
+  (resolved&&resolved.series&&resolved.series.id!=null)?resolved.series.id:(latSel&&latSel.value)
+ );
+ return {method:method,profileSource:src,latticeSeriesId:latticeSeriesId};
+}
+
+// Wizard "3D LUT profiling" choice: matrix / skeleton / hybrid / lattice.
+// The wizard NEVER offers the imported upload-only source — a full workflow
+// always profiles and solves.
+function meterFullAutoCalProfilingMethodChanged(){
+ const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+ const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
+ const v=methodSel?String(methodSel.value||'hybrid3').toLowerCase():'hybrid3';
+ const lattice=v==='lattice';
+ if(!latSel) return;
+ latSel.style.display=lattice?'':'none';
+ if(!lattice) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const prev=String(latSel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ latSel.innerHTML=list.map(s=>{
+  const count=meterProfilingSeriesPatchCount(s);
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) latSel.value=prev;
 }
 
 function meterFullAutoCalUploadValue(){
@@ -28224,20 +31978,37 @@ function meterFullAutoCalResolveConfirm(accepted){
  const resolver=meterFullAutoCalConfirmResolver;
  const opts=meterFullAutoCalConfirmOptions||{};
  let result=accepted;
-	 if(accepted&&opts.showPostCalTouchupChoice){
-	  result={
-	   accepted:true,
-	   postCommitPolishEnabled:meterFullAutoCalPostCommitPolishChoiceValue(),
-	   magicWandEnabled:meterFullAutoCalMagicWandChoiceValue()
-	  };
-	  if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
-	 }
+ // Always build a structured result when the dialog carried choices. Profiling
+ // used to be nested under showPostCalTouchupChoice only — easy to drop — and
+ // a bare `true` then fell through start3d to method=matrix via
+ // meterFullAutoCalMethodValue().
+ if(accepted){
+  const needObj=!!(opts.showPostCalTouchupChoice||opts.showProfilingChoice||opts.showShadowFixChoice);
+  if(needObj){
+   result={accepted:true};
+   if(opts.showPostCalTouchupChoice){
+    result.postCommitPolishEnabled=meterFullAutoCalPostCommitPolishChoiceValue();
+   }
+   if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
+   if(opts.showProfilingChoice){
+    const choice=meterFullAutoCalCaptureProfilingChoice();
+    result.method=choice.method;
+    result.profileSource=choice.profileSource;
+    result.latticeSeriesId=choice.latticeSeriesId;
+    try{
+     // Sticky last pick for next open (do not force matrix on open).
+     localStorage.setItem('meterFullAutoCalLastProfiling',JSON.stringify(choice));
+     console.info('Full AutoCal profiling choice',choice);
+    }catch(e){}
+   }
+  }
+ }
  meterFullAutoCalConfirmResolver=null;
  meterFullAutoCalConfirmOptions=null;
  const overlay=document.getElementById('meterAutoCalOverlay');
  if(overlay) overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-autocal-active');
- ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalShadowFixRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
+ ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalShadowFixRow','meterFullAutoCalProfilingRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });
@@ -28257,7 +32028,6 @@ function meterFullAutoCalConfirmDialog(options){
 	 const title=document.getElementById('meterFullAutoCalConfirmTitle');
 	 const message=document.getElementById('meterFullAutoCalConfirmMessage');
 	 const touchupChoiceRow=document.getElementById('meterFullAutoCalTouchupChoiceRow');
-	 const magicChoice=document.getElementById('meterFullAutoCalMagicWandEnabled');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
@@ -28272,7 +32042,26 @@ function meterFullAutoCalConfirmDialog(options){
  if(message) message.textContent=opts.message;
 	 if(touchupChoiceRow){
 	  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
-	  if(magicChoice) magicChoice.checked=meterFullAutoCalMagicWandEnabled();
+	 }
+	 const profilingRow=document.getElementById('meterFullAutoCalProfilingRow');
+	 if(profilingRow){
+	  profilingRow.style.display=opts.showProfilingChoice?'flex':'none';
+	  if(opts.showProfilingChoice){
+	   const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+	   // Default Hybrid 3³ (HTML selected). Prefer last sticky pick / current
+	   // config — NEVER force matrix here (that overrode manual Hybrid 5³).
+	   let pref='hybrid3';
+	   try{
+	    const sticky=JSON.parse(localStorage.getItem('meterFullAutoCalLastProfiling')||'null');
+	    if(sticky&&sticky.profileSource) pref=String(sticky.profileSource);
+	    else if(meterFullAutoCalConfig&&meterFullAutoCalConfig.profileSource) pref=String(meterFullAutoCalConfig.profileSource);
+	   }catch(e){}
+	   if(methodSel){
+	    const has=Array.from(methodSel.options||[]).some(o=>String(o.value)===pref);
+	    methodSel.value=has?pref:'hybrid3';
+	   }
+	   try{ meterFullAutoCalProfilingMethodChanged(); }catch(e){}
+	  }
 	 }
 	 const shadowFixRow=document.getElementById('meterFullAutoCalShadowFixRow');
 	 const shadowFixChoice=document.getElementById('meterFullAutoCalShadowFixEnabled');
@@ -28351,118 +32140,6 @@ function meterFullAutoCalSleep(ms){
 	 snap.status='complete';
 	 snap.report_key=key;
 	 return snap.readings.length?snap:null;
-	}
-
-	function meterAutoCalMagicWandLg26Validation(snap){
-	 if(!snap||!Array.isArray(snap.readings)) return {ok:false,message:'no readings'};
-	 let steps=Array.isArray(snap.steps)&&snap.steps.length?snap.steps:meterBuildStepsJS('greyscale',26);
-	 steps=meterGreyscaleSeriesSteps(steps);
-	 if(steps.length<26) return {ok:false,message:'expected 26 LG greyscale patches, found '+steps.length};
-	 const readings=snap.readings.filter(rd=>meterReadingHasLuminance(rd));
-	 const missing=[];
-	 steps.forEach(step=>{
-	  const found=readings.find(rd=>meterGreyscaleReadingMatchesStep(rd,step));
-	  if(!found){
-	   const label=String(step.name||'').trim()||(((step.stimulus!=null)?step.stimulus:step.ire)+'%');
-	   missing.push(label);
-	  }
-	 });
-	 if(missing.length) return {ok:false,message:'missing '+missing.slice(0,4).join(', ')+(missing.length>4?' and '+(missing.length-4)+' more':'')};
-	 return {ok:true,message:''};
-	}
-
-	function meterAutoCalMagicWandReadingLooks100(reading){
-	 if(!reading) return false;
-	 const name=String(reading.name||reading.patch_name||'').toLowerCase();
-	 if(name==='white'||name==='100%'||/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) return true;
-	 const values=[reading.stimulus,reading.level,reading.ire,reading.signal_r_pct,reading.patch_stimulus,reading.ddc_target_ire,reading.autocal_order_ire];
-	 return values.some(value=>{
-	  const n=Number(value);
-	  return Number.isFinite(n)&&Math.abs(n-100)<0.001;
-	 });
-	}
-
-	function meterAutoCalMagicWandTargetLuminanceFromSnapshot(snap){
-	 const readings=Array.isArray(snap&&snap.readings)?snap.readings:[];
-	 let best=null;
-	 let bestScore=-1;
-	 readings.forEach(rd=>{
-	  const y=meterReadingLuminanceNits(rd);
-	  if(!(Number.isFinite(Number(y))&&Number(y)>0)) return;
-	  if(!meterAutoCalMagicWandReadingLooks100(rd)) return;
-	  const name=String(rd.name||rd.patch_name||'').toLowerCase();
-	  let score=10;
-	  if(name==='white'||name==='100%') score+=30;
-	  if(/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) score+=25;
-	  if(rd.autocal_white_reference||rd.autocal_legal_white_anchor) score+=20;
-	  if(name.indexOf('109')>=0) score-=100;
-	  if(score>bestScore){
-	   bestScore=score;
-	   best=Number(y);
-	  }
-	 });
-	 if(best>0) return best;
-	 const white=snap&&snap.white_reading;
-	 const whiteY=white&&meterAutoCalMagicWandReadingLooks100(white)?Number(meterReadingLuminanceNits(white)):NaN;
-	 return (Number.isFinite(whiteY)&&whiteY>0)?whiteY:null;
-	}
-
-	async function meterAutoCalCaptureMagicWandLg26Series(stageKey,label,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const stage='magic_wand';
-	 if(fullWorkflow){
-	  meterFullAutoCalPhase='magic-wand';
-	  meterFullAutoCalSaveState();
-	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
-	  if(!meterFullAutoCalReportData.stages[stage]) meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
-	  meterFullAutoCalReportData.stages[stage][stageKey]={status:'running',started_at:Date.now(),label:label};
-	  meterFullAutoCalSaveReportData();
-	  meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-started');
-	 }
-	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:label},{workflow:fullWorkflow?'full':'greyscale',label:label});
-	 const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff(label);
-	 if(!calibrationOff) throw new Error('LG calibration mode must be off before '+label);
-	 const magicPoints=26;
-	 let snap=null;
-	 let lastValidation=null;
-	 for(let attempt=0;attempt<2;attempt++){
-	  let status=null;
-	  const attemptLabel=attempt>0?(label+' retry'):label;
-	  if(attempt>0){
-	   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:attemptLabel},{workflow:fullWorkflow?'full':'greyscale',label:attemptLabel});
-	   if(fullWorkflow) meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-retry',{reason:lastValidation&&lastValidation.message});
-	  }
-	  meterInternalSeriesWorkflow={workflow:fullWorkflow?'full':'greyscale',label:attemptLabel};
-	  try{
-	   meterSelectSeries('greyscale',magicPoints);
-	   await meterFullAutoCalSleep(100);
-	   const started=await meterRunSeries();
-	   if(!started) throw new Error('Unable to start '+label);
-	   status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
-	  }finally{
-	   meterInternalSeriesWorkflow=null;
-	  }
-	  if(!status||status.status!=='complete'){
-	   throw new Error((status&&status.current_name)||label+' did not complete');
-	  }
-	  const candidate=meterAutoCalCapturedSeriesSnapshotForKey('greyscale-'+magicPoints)||meterFullAutoCalSnapshotForKey('greyscale-'+magicPoints);
-	  lastValidation=meterAutoCalMagicWandLg26Validation(candidate);
-	  if(lastValidation.ok){
-	   snap=candidate;
-	   break;
-	  }
-	 }
-	 if(!snap) throw new Error('Magic Wand '+label+' did not capture a complete LG 26pt series: '+((lastValidation&&lastValidation.message)||'missing readings'));
-	 if(fullWorkflow){
-	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
-	  if(!meterFullAutoCalReportData.stages[stage]) meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
-	  meterFullAutoCalReportData.stages[stage][stageKey]={status:'complete',completed_at:Date.now(),label:label,readings:snap.readings.length,snapshot:snap};
-	  meterFullAutoCalSaveReportData();
-	  meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-complete',{readings:snap.readings.length});
-	 }
-	 return snap;
 	}
 
 async function meterFullAutoCalCaptureReportSet(stage){
@@ -28594,7 +32271,7 @@ function meterFullAutoCalReportEntries(){
    entries.push({title:'Pre-Cal '+item.label,snapshot:data&&data.pre?data.pre[item.key]:null});
   });
  }else if(hasPost){
-  entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal measurements were saved for this run. This usually means the Pre-Cal step was skipped or the page was running an older workflow before the report-state tracking was added.'});
+  entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal (“before”) measurements were captured for this run. Pre-Cal charts are only recorded by the Full AutoCal wizard’s Pre-Cal step at the start of a run — a run that was resumed or adopted after a page reload, or standalone/manual series reads, are not captured into this report.'});
  }
  series.forEach(item=>{
   if(hasPost||!hasPre&&!anyPre) entries.push({title:'Post-Cal '+item.label,snapshot:data&&data.post?data.post[item.key]:null});
@@ -28671,6 +32348,9 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 
 async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalLoadReportData();
+ // Defensive: if this run reached the report without a fresh begin (resume/
+ // adopt path), don't let it capture post into a stale/foreign report object.
+ meterFullAutoCalEnsureReportRun(meterFullAutoCalRunId);
  const filename=meterDefaultExportFilename('report','pgenerator_full_autocal_report','html');
  const series=meterFullAutoCalReportSeries();
  const btn=document.getElementById('meterFullAutoCalPostReportBtn');
@@ -28731,9 +32411,6 @@ async function meterFullAutoCalGeneratePostReport(){
   meterAutoCalRunning=false;
   meterAutoCalPhase='';
   meterActionPending=false;
-  meterAutoCalMagicWandActive=false;
-  meterAutoCalMagicWandBaseStatus=null;
-  meterAutoCalMagicWandFullWorkflow=false;
   meterAutoCalSetOverlay(false,null);
   meterClearSeriesRunUiState();
   meterHideWorkflowProgress();
@@ -28775,17 +32452,31 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const signalMode=meterLgAutoCalRequestedSignalMode();
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:signalMode==='hdr10',shadowFixDefault:true});
+ // HDR: Calman only supports matrix 3D LUT — restore old wizard (no type picker).
+ const hdrMatrixOnly=(signalMode==='hdr10');
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showProfilingChoice:!hdrMatrixOnly});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
 		  : false;
-		 const magicWandEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'magicWandEnabled'))
-		  ? accepted.magicWandEnabled!==false
-		  : meterFullAutoCalMagicWandChoiceValue();
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
 		  ? accepted.shadowFixEnabled!==false
 		  : true;
+		 let profilingMethod=(accepted&&typeof accepted==='object'&&accepted.method
+		  &&(accepted.method==='lattice'||accepted.method==='skeleton'||accepted.method==='hybrid'||accepted.method==='matrix'))
+		  ?accepted.method:'hybrid';
+		 let profilingSource=(accepted&&typeof accepted==='object'&&accepted.profileSource)
+		  ?String(accepted.profileSource)
+		  :((profilingMethod==='matrix')?'matrix':(profilingMethod==='skeleton')?'skeleton':'hybrid3');
+		 if(hdrMatrixOnly){
+		  profilingMethod='matrix';
+		  profilingSource='matrix';
+		 }
+		 const profilingLatticeSeriesId=hdrMatrixOnly?null:meterFullAutoCalSeriesIdForChoice(
+		  profilingSource,
+		  profilingMethod,
+		  (accepted&&typeof accepted==='object')?accepted.latticeSeriesId:null
+		 );
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -28807,9 +32498,12 @@ async function meterStartFullAutoCal(){
 		  signalMode:signalMode,
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
-		  magicWandEnabled:magicWandEnabled,
-		  shadowFixEnabled:shadowFixEnabled
+		  shadowFixEnabled:shadowFixEnabled,
+		  method:profilingMethod,
+		  profileSource:profilingSource,
+		  latticeSeriesId:profilingLatticeSeriesId
 		 };
+ try{ console.info('Full AutoCal config 3D profiling',{method:profilingMethod,profileSource:profilingSource,latticeSeriesId:profilingLatticeSeriesId}); }catch(e){}
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
  if(!skipPreCal){
@@ -28841,9 +32535,8 @@ async function meterFullAutoCalStart3d(firstStatus){
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(firstStatus);
  meterFullAutoCalMergeConfigFromGreyscaleStatus(firstStatus);
- const postCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
- const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
- meterFullAutoCalPhase='3d-lut';
+  const postCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+  meterFullAutoCalPhase='3d-lut';
  meterFullAutoCalSaveState();
  meterAutoCalRunning=false;
  meterAutoCalPhase='';
@@ -28851,14 +32544,32 @@ async function meterFullAutoCalStart3d(firstStatus){
  meterAutoCalSetOverlay(false,null);
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting 3D LUT AutoCal'},{workflow:'full',label:'Starting 3D LUT AutoCal'});
  meterUpdateReadButtons();
+ // Re-resolve from profileSource so Hybrid 5³ (925) survives greyscale→3D
+ // even if latticeSeriesId was dropped from a partial config restore.
+ const cfg3d=meterFullAutoCalConfig||{};
+ let startMethod=String(cfg3d.method||meterFullAutoCalMethodValue()||'hybrid').toLowerCase();
+ let startSeriesId=meterFullAutoCalSeriesIdForChoice(cfg3d.profileSource,startMethod,cfg3d.latticeSeriesId);
+ if(cfg3d.profileSource&&String(cfg3d.profileSource).toLowerCase().indexOf('hybrid')===0){
+  const r=meterLg3dResolveProfilingChoice(cfg3d.profileSource,startSeriesId);
+  if(r&&r.method) startMethod=r.method;
+  if(r&&r.series&&r.series.id!=null) startSeriesId=Math.round(Number(r.series.id));
+ }
+ // HDR10: Calman matrix-only — never launch a volume profile from a stale config.
+ const cfgHdr=String(cfg3d.signalMode||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'')||'').toLowerCase()==='hdr10'
+  ||(typeof meterLg3dHdrMatrixOnly==='function'&&meterLg3dHdrMatrixOnly());
+ if(cfgHdr){
+  startMethod='matrix';
+  startSeriesId=null;
+ }
+ try{ console.info('Full AutoCal starting 3D LUT',{method:startMethod,latticeSeriesId:startSeriesId,profileSource:cfg3d.profileSource}); }catch(e){}
  const start3dOptions={
   fullWorkflow:true,
   skipConfirm:true,
-  method:(meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||meterFullAutoCalMethodValue(),
+  method:startMethod,
+  latticeSeriesId:startSeriesId!=null?startSeriesId:undefined,
   upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue(),
-  postCommitPolishEnabled:postCommitPolishEnabled,
-  magicWandEnabled:magicWandEnabled
- };
+   postCommitPolishEnabled:postCommitPolishEnabled
+  };
  // Snapshot the wizard state: a failed start attempt calls fail() ->
  // meterFullAutoCalResetState, which clears it before we can retry.
  const start3dConfigSnapshot=meterFullAutoCalConfig?{...meterFullAutoCalConfig}:null;
@@ -28899,344 +32610,12 @@ function meterFullAutoCalTouchupTargetY(){
  return meterAutoCalTargetYValue();
 }
 
-	function meterAutoCalMagicWandAdjustmentReference(status,fullWorkflow){
-	 const first=fullWorkflow?((meterFullAutoCalResults&&meterFullAutoCalResults.first)||status||meterAutoCalMagicWandBaseStatus):(status||meterAutoCalMagicWandBaseStatus||(meterFullAutoCalResults&&meterFullAutoCalResults.first));
-	 const reference={};
- if(first&&first.lg_autocal_26_response_model&&typeof first.lg_autocal_26_response_model==='object'){
-  reference.lg_autocal_26_response_model=meterFullAutoCalCloneValue(first.lg_autocal_26_response_model);
- }
- if(first&&first.lg_autocal_26_best_known&&typeof first.lg_autocal_26_best_known==='object'){
-  reference.lg_autocal_26_best_known=meterFullAutoCalCloneValue(first.lg_autocal_26_best_known);
-	 }
-	 return Object.keys(reference).length?reference:undefined;
-	}
-
-	function meterFullAutoCalPostSeriesAdjustmentReference(){
-	 return meterAutoCalMagicWandAdjustmentReference();
-	}
-
-	function meterAutoCalMagicWandContext(status,fullWorkflow){
-	 const cfg=fullWorkflow?meterFullAutoCalConfig:null;
-	 const configuredTarget=Number(cfg&&cfg.targetDelta);
-	 const statusTarget=Number(status&&status.target_delta_e);
-	 const target=(Number.isFinite(configuredTarget)&&configuredTarget>0)?configuredTarget:((Number.isFinite(statusTarget)&&statusTarget>0)?statusTarget:meterAutoCalTargetDeltaValue());
-	 const configuredY=Number(cfg&&cfg.targetY);
-	 const statusY=Number(status&&(status.target_luminance||status.calibrated_white_luminance));
-	 const targetY=(Number.isFinite(configuredY)&&configuredY>0)?configuredY:((Number.isFinite(statusY)&&statusY>0)?statusY:meterAutoCalTargetYValue());
-	 const configuredSetupY=Number(cfg&&cfg.setupY);
-	 const statusSetupY=Number(status&&status.setup_luminance_reference);
-	 const setupY=(Number.isFinite(configuredSetupY)&&configuredSetupY>0)?configuredSetupY:((Number.isFinite(statusSetupY)&&statusSetupY>0)?statusSetupY:NaN);
-	 const configuredHeadroomY=Number(cfg&&cfg.headroomY);
-	 const statusHeadroomY=Number(status&&status.headroom_target_luminance);
-	 const headroomY=(Number.isFinite(configuredHeadroomY)&&configuredHeadroomY>0)?configuredHeadroomY:((Number.isFinite(statusHeadroomY)&&statusHeadroomY>0)?statusHeadroomY:NaN);
-	 const dtype=(cfg&&cfg.dtype)||(status&&status.display_type)||getEffectiveDisplayType();
-	 const patternSignalRange=(cfg&&cfg.patternSignalRange)||(status&&status.pattern_signal_range)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
-	 const wp=(cfg&&cfg.wp)||(status&&status.target_white)||meterTargetWhitePoint();
-	 return {target,targetY,setupY,headroomY,dtype,patternSignalRange,wp};
-	}
-
-	async function meterAutoCalStartMagicWand(status,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const afterPolish=!!(options&&options.afterPolish);
-	 if(fullWorkflow&&!meterFullAutoCalRunning) return false;
-	 if(fullWorkflow){
-	  if(!afterPolish) meterFullAutoCalResults.lut3d=status||null;
-	  const runId=status&&(status.full_autocal_run_id||status.run_id);
-	  if(runId) meterFullAutoCalRunId=runId;
-	  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
-	  meterFullAutoCalMarkCompletionHandled(status);
-	  meterFullAutoCalPhase='magic-wand';
-	  meterFullAutoCalSaveState();
-	  meterLg3dAutoCalRunning=false;
-	 }
-	 meterAutoCalMagicWandActive=true;
-	 meterAutoCalMagicWandBaseStatus=status||null;
-	 meterAutoCalMagicWandFullWorkflow=fullWorkflow;
-	 meterAutoCalRunning=false;
-	 meterAutoCalPhase='';
-	 meterActionPending=false;
-	 meterUpdateReadButtons();
-	 try{
-	  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
-	  if(!(await meterEnsureLgAutoCalTransport((fullWorkflow?'Full Auto Cal':'Greyscale Auto Cal')+' Magic Wand'))) throw new Error('LG Auto Cal transport is not ready');
-	  if(!meterEnsureLgAutoCalExtendedVideoTransport()) throw new Error('LG Auto Cal transport is not ready');
-	  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
-	  const beforeSnap=await meterAutoCalCaptureMagicWandLg26Series('before','Magic Wand LG 26pt read',{fullWorkflow});
-	  const beforeTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(beforeSnap);
-	  if(!(Number.isFinite(beforeTargetY)&&beforeTargetY>0)) throw new Error('Magic Wand LG 26pt read did not include a usable 100% white luminance');
-	  meterActiveSeriesType='greyscale';
-	  meterActiveSeriesPoints=26;
-	  meterActiveSeriesKey='greyscale-26';
-	  meterShowGreyscaleAutoCalContext();
-	  meterResetSeriesButtons();
-	  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
-	  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-	  meterSetActiveSeriesChartContext();
-	  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
-	  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
-	  const whiteStep=meterAutoCalWhiteStep();
-	  if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
-	  const ctx=meterAutoCalMagicWandContext(status,fullWorkflow);
-	  const deltaEFormula='deitp';
-	  const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-	  meterAutoCalPendingConfig={dtype:ctx.dtype,patternSignalRange:ctx.patternSignalRange,wp:ctx.wp,adjustable,whiteStep,magicWand:true,fullWorkflowMagicWand:fullWorkflow};
-	  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting Magic Wand'},{workflow:fullWorkflow?'full':'greyscale',label:'Starting Magic Wand'});
-	  await meterStopContinuous();
-	  const adjustBody=JSON.stringify(meterMeasurementSignalContext({
-	    type:'greyscale',
-	    points:26,
-	    display_type:ctx.dtype,
-	    delay_ms:meterDelayMs(),
-	    patch_size:getMeterPatchSize(),
-	    signal_range:getVal('rgb_quant_range'),
-	    pattern_signal_range:ctx.patternSignalRange||undefined,
-	    lg_greyscale_21:false,
-	    lg_autocal_26:true,
-	    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
-	    lg_autocal_26_anchor_predrive:false,
-	    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-	    ...meterPatternInsertionPayload(),
-	    target_delta_e:ctx.target,
-	    delta_e_formula:deltaEFormula,
-	    target_luminance:beforeTargetY,
-	    setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
-	    target_white:{x:ctx.wp.x,y:ctx.wp.y},
-	    picture_mode:meterLgPictureModeValue(),
-	    ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
-	    force_ddc_white_balance:true,
-	    lg_autocal_sdr_1d_dpg_upload_enabled:true,
-	    restore_factory_levels:false,
-	    reset_ddc_baseline:false,
-	    refresh_rate:getMeterRefreshRate()||undefined,
-	    require_device_ready:false,
-	    full_autocal_post_series_adjust:true,
-	    full_workflow:fullWorkflow?true:undefined,
-	    full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	    full_autocal_phase:fullWorkflow?'magic-wand':undefined,
-	    full_autocal_post_commit_polish:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():undefined,
-	    full_autocal_magic_wand:fullWorkflow?meterFullAutoCalMagicWandEnabled():undefined,
-	    post_cal_series_readings:beforeSnap.readings,
-	    post_cal_adjustment_reference:meterAutoCalMagicWandAdjustmentReference(status,fullWorkflow),
-	    post_cal_series_adjust_settle_ms:6000,
-	    post_commit_polish:false,
-	    post_commit_verify:false,
-	    post_commit_body_polish:false,
-	    post_commit_body_verify:false,
-	    post_commit_final_all_level_verify:false,
-	    post_commit_final_top_window:false,
-	    low_light:meterLowLightReadState(),
-	    steps:autocalSteps
-	   }));
-	  meterAutoCalRunning=true;
-	  meterAutoCalPhase='running';
-	  meterActionPending=true;
-	  let r=null;
-	  for(let attempt=0;attempt<5;attempt++){
-	   r=await fetchJSON('/api/meter/lg-autocal',{
-	    method:'POST',
-	    headers:{'Content-Type':'application/json'},
-	    body:adjustBody,
-	    _timeoutMs:10000
-	   });
-	   if(r&&r.status==='started') break;
-	   if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
-	   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for Magic Wand'},{workflow:fullWorkflow?'full':'greyscale',label:'Waiting for Magic Wand'});
-	   await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
-	  }
-	  if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start Magic Wand');
-	  meterActionPending=false;
-	  meterAutoCalSetOverlay(false,{phase:'running',current_name:'Magic Wand started',message:'Showing live charts'});
-	  if(meterAutoCalPolling) clearInterval(meterAutoCalPolling);
-	  meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
-	  await meterPollAutoCal();
-	  return true;
-	 }catch(e){
-	  meterAutoCalMagicWandActive=false;
-	  meterAutoCalMagicWandBaseStatus=null;
-	  meterAutoCalMagicWandFullWorkflow=false;
-	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand failed',true);
-	  else{
-	   meterAutoCalPhase='error';
-	   meterAutoCalRunning=true;
-	   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Magic Wand error',message:(e&&e.message)||'Magic Wand failed',status:'error'});
-	   toast((e&&e.message)||'Magic Wand failed',true);
-	  }
-	  return false;
-	 }finally{
-	  meterUpdateReadButtons();
-	 }
-	}
-
-	async function meterAutoCalFinishMagicWandAdjustment(adjustStatus,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 try{
-	  if(fullWorkflow) meterFullAutoCalMarkCompletionHandled(adjustStatus);
-	  meterAutoCalRunning=false;
-	  meterAutoCalPhase='';
-	  meterAutoCalPendingConfig=null;
-	  meterActionPending=false;
-	  const afterSnap=await meterAutoCalCaptureMagicWandLg26Series('after','Magic Wand verification',{fullWorkflow});
-	  const revertStatus=await meterAutoCalRunMagicWandRevert(adjustStatus,afterSnap,{fullWorkflow});
-	  const mergedStatus={
-	   ...(adjustStatus||{}),
-	   full_autocal_post_series_adjust:true,
-	   magic_wand:true,
-	   post_series_revert:revertStatus&&revertStatus.post_cal_series_revert?revertStatus.post_cal_series_revert:null,
-	   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand?meterFullAutoCalReportData.stages.magic_wand.before:null,
-	   post_series_after:afterSnap,
-	   readings:afterSnap&&Array.isArray(afterSnap.readings)?afterSnap.readings:[],
-	   steps:afterSnap&&Array.isArray(afterSnap.steps)?afterSnap.steps:[],
-	   white_reading:afterSnap&&afterSnap.white_reading?afterSnap.white_reading:null,
-	   summary_readings_source:'magic_wand_after_snapshot'
-	  };
-	  meterAutoCalMagicWandActive=false;
-		  meterAutoCalMagicWandBaseStatus=null;
-		  meterAutoCalMagicWandFullWorkflow=false;
-		  if(fullWorkflow){
-		   await meterFullAutoCalCompleteAfterHdrToneMap(mergedStatus,undefined,'magic-wand');
-		  }else{
-		   // Wizard-owned HDR tone-map prompt: the original autocal
-		   // commit set hdr20_1d_tonemap_pending; we still need the
-		   // fresh 100% peak read + operator decision before showing
-		   // the final "Greyscale Auto Cal complete" overlay.
-		   let completeStatus=mergedStatus;
-		   if(mergedStatus&&mergedStatus.hdr20_1d_tonemap_pending){
-		    const promptResult=await meterAutoCalPromptHdrToneMapUpload(mergedStatus,'magic-wand-standalone');
-		    if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
-		   }
-		   meterAutoCalPhase='complete';
-		   meterAutoCalRunning=true;
-	   meterAutoCalClearSavedState();
-	   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete',current_name:'Greyscale Auto Cal complete',message:'Greyscale Auto Cal and Magic Wand complete.'});
-	   toast('LG Auto Cal complete');
-	  }
-	  return true;
-	 }catch(e){
-	  meterAutoCalMagicWandActive=false;
-	  meterAutoCalMagicWandBaseStatus=null;
-	  meterAutoCalMagicWandFullWorkflow=false;
-	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand verification failed',true);
-	  else{
-	   meterAutoCalPhase='error';
-	   meterAutoCalRunning=true;
-	   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Magic Wand error',message:(e&&e.message)||'Magic Wand verification failed',status:'error'});
-	   toast((e&&e.message)||'Magic Wand verification failed',true);
-	  }
-	  return false;
-	 }finally{
-	  meterUpdateReadButtons();
-	 }
-	}
-
-	async function meterAutoCalRunMagicWandRevert(adjustStatus,afterSnap,options){
-	 const fullWorkflow=!!(options&&options.fullWorkflow);
-	 const adjustment=adjustStatus&&adjustStatus.post_cal_series_adjustment;
-	 if(!adjustment||!Array.isArray(adjustment.changes)||!adjustment.changes.length) return null;
-	 if(!afterSnap||!Array.isArray(afterSnap.readings)||!afterSnap.readings.length) return null;
-	 const afterTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(afterSnap);
-	 if(!(Number.isFinite(afterTargetY)&&afterTargetY>0)) throw new Error('Magic Wand verification did not include a usable 100% white luminance');
-	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:adjustment.changes.length,current_name:'Magic Wand failsafe'},{workflow:fullWorkflow?'full':'greyscale',label:'Magic Wand failsafe'});
-	 meterActiveSeriesType='greyscale';
- meterActiveSeriesPoints=26;
- meterActiveSeriesKey='greyscale-26';
- meterSetActiveSeriesChartContext();
- meterSeriesSteps=meterBuildStepsJS('greyscale',26);
- const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
-	 if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available for Magic Wand failsafe');
-	 const whiteStep=meterAutoCalWhiteStep();
-	 if(!whiteStep) throw new Error('100% white is required before Magic Wand failsafe can start');
-	 const ctx=meterAutoCalMagicWandContext(meterAutoCalMagicWandBaseStatus||adjustStatus,fullWorkflow);
-	 const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
- const body=JSON.stringify(meterMeasurementSignalContext({
-   type:'greyscale',
-   points:26,
-	   display_type:ctx.dtype,
-   delay_ms:meterDelayMs(),
-   patch_size:getMeterPatchSize(),
-   signal_range:getVal('rgb_quant_range'),
-	   pattern_signal_range:ctx.patternSignalRange||undefined,
-   lg_greyscale_21:false,
-   lg_autocal_26:true,
-   lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
-   lg_autocal_26_anchor_predrive:false,
-   lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-   ...meterPatternInsertionPayload(),
-	   target_delta_e:ctx.target,
-	   delta_e_formula:'deitp',
-	   target_luminance:afterTargetY,
-	   setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	   headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	   target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
-	   target_white:{x:ctx.wp.x,y:ctx.wp.y},
-	   picture_mode:meterLgPictureModeValue(),
-	   ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
-   force_ddc_white_balance:true,
-   lg_autocal_sdr_1d_dpg_upload_enabled:true,
-   restore_factory_levels:false,
-   reset_ddc_baseline:false,
-   refresh_rate:getMeterRefreshRate()||undefined,
-   require_device_ready:false,
-	   full_autocal_post_series_revert:true,
-	   full_workflow:fullWorkflow?true:undefined,
-	   full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	   full_autocal_phase:fullWorkflow?'magic-wand':undefined,
-   post_cal_series_after_readings:afterSnap.readings,
-   post_cal_series_adjustment_status:adjustment,
-   post_commit_polish:false,
-   post_commit_verify:false,
-   post_commit_body_polish:false,
-   post_commit_body_verify:false,
-   post_commit_final_all_level_verify:false,
-   post_commit_final_top_window:false,
-   low_light:meterLowLightReadState(),
-   steps:autocalSteps
-  }));
- let r=null;
- for(let attempt=0;attempt<5;attempt++){
-  r=await fetchJSON('/api/meter/lg-autocal',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body,
-   _timeoutMs:10000
-  });
-  if(r&&r.status==='started') break;
-  if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
-  await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
- }
-	 if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start Magic Wand failsafe');
- const start=Date.now();
- let last=null;
- while(Date.now()-start<180000){
-  const status=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:8000});
-  if(status) last=status;
-  if(status&&(status.status==='complete'||status.status==='cancelled'||status.status==='error')){
-	   if(status.status!=='complete') throw new Error((status&&status.message)||(status&&status.current_name)||'Magic Wand failsafe failed');
-	   if(fullWorkflow){
-	    meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
-	    if(meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand){
-	     meterFullAutoCalReportData.stages.magic_wand.revert={status:'complete',completed_at:Date.now(),snapshot:status.post_cal_series_revert||null};
-	     meterFullAutoCalSaveReportData();
-	     meterFullAutoCalArchiveReportData('magic_wand-revert-complete',{reverted:status.post_cal_series_revert&&Array.isArray(status.post_cal_series_revert.reverted)?status.post_cal_series_revert.reverted.length:0});
-	    }
-	   }
-	   return status;
-  }
-  await meterFullAutoCalSleep(750);
- }
-	 throw new Error((last&&last.current_name)||'Timed out waiting for Magic Wand failsafe');
-	}
-
 	async function meterFullAutoCalStartPost3dPolish(lutStatus){
 	 if(!meterFullAutoCalRunning) return false;
 	 meterFullAutoCalMergeCleanupConfigFromStatus(lutStatus);
-	 const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
 	 const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	 const post3dPostCommitVerifyEnabled=false;
 	 if(!post3dPostCommitPolishEnabled){
-	  if(magicWandEnabled) return meterAutoCalStartMagicWand(lutStatus,{fullWorkflow:true});
 	  return false;
 	 }
  meterFullAutoCalResults.lut3d=lutStatus||null;
@@ -29276,10 +32655,11 @@ function meterFullAutoCalTouchupTargetY(){
   const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
   const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
   const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+  const ccssOverride=(typeof getCcssOverride==='function')?getCcssOverride():'';
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-  meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
+  meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
   meterReadings=[];
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
@@ -29294,6 +32674,9 @@ function meterFullAutoCalTouchupTargetY(){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Pass the active CCSS override through to the committed-polish worker
+    // so a custom profile survives the post-3D pass unchanged.
+    ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -29339,9 +32722,8 @@ function meterFullAutoCalTouchupTargetY(){
     full_workflow:true,
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'post-3d-polish',
-    full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
-    full_autocal_magic_wand:magicWandEnabled,
-    low_light:meterLowLightReadState(),
+     full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
+     low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
   let r=null;
@@ -29432,10 +32814,11 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 	  const touchupPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	  const touchupPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
 	  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+  const ccssOverride=(typeof getCcssOverride==='function')?getCcssOverride():'';
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-  meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
+  meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
   meterReadings=[];
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
@@ -29450,6 +32833,9 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Full AutoCal touchup pass: same CCSS override contract as the
+    // committed-polish pass — the wizard's tech+CCSS choices carry over.
+    ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -29499,7 +32885,6 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'touchup-greyscale',
     full_autocal_post_commit_polish:touchupPostCommitPolishEnabled,
-    full_autocal_magic_wand:meterFullAutoCalMagicWandEnabled(),
     low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
@@ -29542,6 +32927,9 @@ function meterFullAutoCalComplete(touchupStatus,options){
  const startedAt=Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults.first||{}).started_at)||Number(touchupStatus&&touchupStatus.started_at)||null;
  const runId=(touchupStatus&&(touchupStatus.full_autocal_run_id||touchupStatus.run_id))||meterFullAutoCalRunId||meterFullAutoCalNewRunId();
  meterFullAutoCalRunId=runId;
+ // Guard against reusing a stale/foreign report object (resume/adopt path that
+ // never ran beginReportData) before we stamp+archive the completion.
+ meterFullAutoCalEnsureReportRun(runId,startedAt);
  const status={
   ...(touchupStatus||{}),
   full_autocal:true,
@@ -29555,7 +32943,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
 	  touchup_skipped:skipTouchup,
 	  phase:'complete',
 	  current_name:'Full Auto Cal complete',
-		  message:(touchupStatus&&touchupStatus.full_autocal_post_series_adjust)?'Greyscale, 3D LUT, and Magic Wand complete.':(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.')),
+		  message:(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.')),
   first_greyscale:meterFullAutoCalResults.first,
   lut3d:meterFullAutoCalResults.lut3d,
 	  touchup:(skipTouchup&&!post3dPolish)?null:(touchupStatus||null)
@@ -29572,6 +32960,12 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterAutoCalPhase='complete';
  meterAutoCalRunning=true;
  meterAutoCalSetOverlay(true,status);
+ // The last profiling/touch-up patch (often a saturated node, e.g. blue) used
+ // to linger on the TV until the operator closed this complete modal (only
+ // meterAutoCalCloseCompleteAction posted a pattern stop). The standalone 3D
+ // path clears on its terminal branch; the full workflow returns before that,
+ // so clear here too the moment the completion modal appears.
+ meterClearDisplayPattern();
  toast('Full Auto Cal complete');
  // The greyscale autocal calibrates the 1D DPG against a 2.2 curve, so the
  // Target Gamma control sits at 2.2 during the run. Once the full workflow is
@@ -29596,7 +32990,7 @@ async function meterPollAutoCal(options){
 	 const recover=!!(options&&options.recover);
 	 const timeoutMs=Number((options&&options.timeoutMs)||0)|| (initial?15000:8000);
 	 const setupOverlayActiveBeforeFetch=meterAutoCalSetupOverlayActive();
-		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand'));
+		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'));
 	 const fullGreyscaleBackendActive=!!(fullGreyscalePhase&&(meterAutoCalPolling||meterAutoCalPhase==='running'));
 	 if(setupOverlayActiveBeforeFetch&&!fullGreyscaleBackendActive) return;
 	 meterAutoCalPollInFlight=true;
@@ -29656,18 +33050,7 @@ async function meterPollAutoCal(options){
 	   meterActionPending=false;
 	   meterAutoCalRunning=false;
 	   meterAutoCalPendingConfig=null;
-	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-	   else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
-	   return;
-	  }
-	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
-	   meterActionPending=false;
-	   meterAutoCalRunning=false;
-	   meterAutoCalPendingConfig=null;
-	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
+	   await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 	   return;
 	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
@@ -29679,7 +33062,7 @@ async function meterPollAutoCal(options){
 	   return;
 	  }
 	  const backendGreyscaleActive=!!(r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running');
-		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
+		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
 	  const localAutoCalActive=!!(backendGreyscaleActive||fullGreyscaleActive);
 	  if(initial&&r.status!=='running'&&!localAutoCalActive){
 	   meterAutoCalRunning=false;
@@ -29718,40 +33101,10 @@ async function meterPollAutoCal(options){
 			    if(meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
 			     meterAutoCalRunning=false;
 			     meterAutoCalPendingConfig=null;
-			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-			     else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
+			     await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 			     return;
 			    }
-				    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPendingConfig=null;
-				     if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-					     else if(meterAutoCalMagicWandStatusAlreadyFinal(r)) meterFullAutoCalMarkCompletionHandled(r);
-					     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
-				     return;
-				    }
-			    if(r.full_autocal_post_series_adjust&&meterAutoCalMagicWandActive&&!meterAutoCalMagicWandFullWorkflow){
-			     meterAutoCalRunning=false;
-			     meterAutoCalPendingConfig=null;
-			     await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:false});
-			     return;
-			    }
-				    if(!r.full_workflow&&meterAutoCalStandaloneMagicWandEnabled&&!meterAutoCalMagicWandActive){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPendingConfig=null;
-				     meterAutoCalStandaloneMagicWandEnabled=false;
-				     await meterAutoCalStartMagicWand(r,{fullWorkflow:false});
-				     return;
-				    }
-				    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
-				     meterAutoCalRunning=false;
-				     meterAutoCalPhase='';
-				     meterAutoCalPendingConfig=null;
-				     meterAutoCalSetOverlay(false,r);
-				     return;
-				    }
-				   // Success popup only when this browser was actively
+			   // Success popup only when this browser was actively
 				   // tracking the run. A cancelled cal (or a cancel race
 				   // that left status=complete) must not open "Auto Cal
 				   // complete" on the next poll or page refresh.
@@ -29808,7 +33161,7 @@ let completeStatus=r;
 	  }
  }catch(e){
   const backendGreyscaleActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
-	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
+	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
   const active=!!(backendGreyscaleActive||fullGreyscaleActive);
   if(active){
    meterAutoCalPollErrors++;
@@ -29900,10 +33253,6 @@ async function meterStartAutoCal(options){
 	 meterAutoCalPhase='disclaimer';
 	 meterAutoCalSetupReading=null;
 	 meterAutoCalPendingConfig=null;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
 			 meterAutoCalCapturedTargetY=0;
 		 meterAutoCalResetPanelLightState();
 		 meterAutoCalLuminanceReadBusy=false;
@@ -29940,13 +33289,17 @@ async function meterStartAutoCal(options){
  const wp=meterTargetWhitePoint();
  meterAutoCalPendingConfig={
   dtype,
+  // Snapshot the CCSS override at run start. The wizard's Display Type step
+  // may overwrite this (meterAutoCalDisplayTypeContinue stamps both fields
+  // onto the pending config), but a normal / non-wizard start uses the
+  // current main-control value as the source of truth.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():'',
   patternSignalRange,
 	  wp,
 	  adjustable,
 	  whiteStep,
 	  fullWorkflow:fullWorkflow,
 	  postCommitPolishEnabled:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():true,
-	  magicWandEnabled:false,
 	  // Snapshot the meter port that was active when the operator kicked off
 	  // the autocal. If the SELECT drifted (e.g. saved port changed, a meter
 	  // reconnected, the user toggled to Auto) while the run was in flight,
@@ -29982,7 +33335,9 @@ async function meterStartAutoCal(options){
 const METER_AUTOCAL_USECASE_OUTPUT={
  pc:{color_format:'0',rgb_quant_range:'2',max_bpc:'10'},
  tv:{color_format:'1',rgb_quant_range:'1',max_bpc:'10'},
- console:{color_format:'0',rgb_quant_range:'1',max_bpc:'10'}
+ // Game console: RGB Full 10-bit (not Limited). PGenerator is not bit-perfect
+ // in RGB Limited, so console use-case matches PC Full transport.
+ console:{color_format:'0',rgb_quant_range:'2',max_bpc:'10'}
 };
 const METER_AUTOCAL_USECASE_GAMMA={pc:'2.2',tv:'bt1886',console:'2.2'};
 async function meterAutoCalUseCaseContinue(){
@@ -30048,23 +33403,45 @@ function meterAutoCalDisplayTypeIsOled(value,label){
  const s=(String(value||'')+' '+String(label||'')).toLowerCase();
  return /oled|wrgb/.test(s);
 }
-// The Display Type select is cloned from the operator-facing meterDisplayType
-// at phase entry so the wizard copy includes the latest display-specific CCSS
-// entries that may have been populated asynchronously after page load.
-function meterAutoCalDisplayTypePopulate(){
+// The wizard Display Type step now mirrors the split main settings:
+// a #meterAutoCalDisplayTypeSelect (panel technology) and a
+// #meterAutoCalCcssProfile (meter CCSS, may be on "Auto"). Both clone from
+// the main controls at phase entry, and the previous bug where the wizard's
+// choice never reached the run config is fixed by writing both into
+// meterAutoCalPendingConfig in Continue.
+async function meterAutoCalDisplayTypePopulate(){
  const src=document.getElementById('meterDisplayType');
  const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
  if(!src||!dst) return;
+ // Clone the technology dropdown's children (generic optgroup only — CCSS
+ // entries moved out of this select in the spec).
  dst.innerHTML='';
  for(const node of src.children){
-  // cloneNode preserves optgroup + option nodes; setting dst.value after
-  // appending children resolves the option regardless of which optgroup it
-  // lives in (select.value matches against any <option> descendant).
   dst.appendChild(node.cloneNode(true));
  }
  dst.value=src.value;
  if(dst.selectedIndex<0) dst.selectedIndex=0;
  dst.onchange=meterAutoCalDisplayTypeUpdateSummary;
+ // Ensure the CCSS catalog is loaded before building the wizard select.
+ // Full AutoCal can reach this step before the page-init /api/ccss/all
+ // promise settles (or after a failed legacy append crashed the loader).
+ try{
+  if(!Array.isArray(meterCcssLibrary)||!meterCcssLibrary.length){
+   await refreshMeterCcssCatalog();
+  }else{
+   populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+  }
+ }catch(e){
+  try{ populateMeterCcssProfileSelect('meterAutoCalCcssProfile'); }catch(e2){}
+ }
+ const mainCcss=document.getElementById('meterCcssProfile');
+ const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+ if(mainCcss&&wizardCcss){
+  wizardCcss.dataset.pendingValue=String(mainCcss.value||'');
+  wizardCcss.value=String(mainCcss.value||'');
+  if(wizardCcss.value===String(mainCcss.value||'')) delete wizardCcss.dataset.pendingValue;
+ }
+ meterBindWizardDisplayTypeHandlers();
  meterAutoCalDisplayTypeUpdateSummary();
 }
 function meterAutoCalDisplayTypeUpdateSummary(){
@@ -30078,15 +33455,22 @@ function meterAutoCalDisplayTypeUpdateSummary(){
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
 }
 function meterAutoCalDisplayTypeContinue(){
- const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
- if(dst&&dst.value){
-  // Mirror the wizard selection back to the main meterDisplayType dropdown
-  // so the rest of the wizard / worker / chart pipeline reads from a single
-  // source of truth.
+ const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
+ const ccssSel=document.getElementById('meterAutoCalCcssProfile');
+ if(techSel&&techSel.value){
+  // Mirror BOTH wizard selections back to the main controls. This is the
+  // single source-of-truth update: meterSave() / saveMeterSettings() picks
+  // up the new values, the autocal start payload reads from them, and the
+  // pendingConfig snapshot is taken immediately so the worker's tech/CCSS
+  // survives even if the main controls drift before the run starts.
   const src=document.getElementById('meterDisplayType');
-  if(src) src.value=dst.value;
-  const opt=dst.options[dst.selectedIndex];
-  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
+  if(src) src.value=techSel.value;
+  const mainCcss=document.getElementById('meterCcssProfile');
+  if(mainCcss&&ccssSel) mainCcss.value=String(ccssSel.value||'');
+  // The OLED-vs-LCD patch/insertion heuristics only key off the TECHNOLOGY,
+  // not the CCSS override. The CCSS is independent of patch geometry.
+  const opt=techSel.options[techSel.selectedIndex];
+  const oled=meterAutoCalDisplayTypeIsOled(techSel.value,opt?opt.textContent:'');
   const ps=document.getElementById('meterPatchSize');
   if(ps&&ps.value!==(oled?'10':'apl_10')){
    ps.value=oled?'10':'apl_10';
@@ -30098,6 +33482,14 @@ function meterAutoCalDisplayTypeContinue(){
   if(ins&&ins.checked!==oled){
    ins.checked=oled;
    try{ ins.dispatchEvent(new Event('change')); }catch(e){}
+  }
+  // Stamp BOTH fields onto the run config. Without ccss_override here the
+  // start payload would lose the operator's chosen CCSS as soon as the main
+  // settings got re-saved before the run, because the snapshot below reads
+  // from these two attributes (and falls back to the DOM if unset).
+  if(typeof meterAutoCalPendingConfig==='object'&&meterAutoCalPendingConfig){
+   meterAutoCalPendingConfig.dtype=techSel.value;
+   meterAutoCalPendingConfig.ccss_override=ccssSel?String(ccssSel.value||''):'';
   }
   if(typeof saveMeterSettings==='function') saveMeterSettings();
  }
@@ -30247,17 +33639,7 @@ async function meterAutoCalConfirmAndStart(){
 		 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 		 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
 		 const postCommitVerifyEnabled=false;
-		 // Gated off 2026-06-29: the Magic Wand experimental feature is
-		 // no longer used. Force magicWandEnabled to false so a stale
-		 // captured option cannot re-enable the post-series-adjust /
-		 // meterAutoCalStartMagicWand path. The Magic Wand checkbox was
-		 // removed from both the greyscale and full autocal wizards; this
-		 // is the JS gate that prevents the feature from running even if
-		 // some serialized config still carries magicWandEnabled=true.
-		 const magicWandEnabled=false;
 		 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
-		 meterAutoCalPendingConfig.magicWandEnabled=magicWandEnabled;
-		 meterAutoCalStandaloneMagicWandEnabled=magicWandEnabled;
 	 if(!hdrWorkflow&&Number.isFinite(targetY)&&targetY>0) meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
  const dtype=meterAutoCalPendingConfig.dtype;
  const patternSignalRange=meterAutoCalPendingConfig.patternSignalRange;
@@ -30313,6 +33695,13 @@ async function meterAutoCalConfirmAndStart(){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Stamp the wizard-captured CCSS override (set in
+    // meterAutoCalDisplayTypeContinue) onto the run payload. Empty string
+    // => server uses the technology default. Passing the explicit value
+    // (rather than letting meterMeasurementSignalContext re-read the live
+    // control) keeps the worker pinned to the wizard choice even if the
+    // operator flips the dropdown AFTER clicking Continue.
+    ccss_override:(meterAutoCalPendingConfig&&typeof meterAutoCalPendingConfig.ccss_override==='string')?meterAutoCalPendingConfig.ccss_override:undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -30340,7 +33729,6 @@ async function meterAutoCalConfirmAndStart(){
 		    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
 		    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
 		    full_autocal_post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalPostCommitPolishEnabled():undefined,
-		    full_autocal_magic_wand:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalMagicWandEnabled():undefined,
 		    post_commit_polish:postCommitPolishEnabled,
 		    post_commit_verify:postCommitVerifyEnabled,
 		    post_commit_body_polish:postCommitPolishEnabled?undefined:false,
@@ -30455,10 +33843,6 @@ async function meterStopAutoCal(){
 	 meterAutoCalCapturedMeasurementLabel='';
 	 meterAutoCalSetupReading=null;
 	 meterAutoCalLevelPreflight=null;
-	 meterAutoCalMagicWandActive=false;
-	 meterAutoCalMagicWandBaseStatus=null;
-	 meterAutoCalMagicWandFullWorkflow=false;
-	 meterAutoCalStandaloneMagicWandEnabled=false;
  if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
  meterAutoCalRunning=false;
  meterActionPending=true;
@@ -30482,7 +33866,17 @@ function meterLg3dAutoCalSummary(status){
  if(!status) return '';
  const bits=[];
  if(status.method) bits.push(String(status.method).toUpperCase());
- if(status.phase) bits.push(String(status.phase).replace(/_/g,' '));
+ const phase=String(status.phase||'').replace(/_/g,' ');
+ if(phase){
+  if(String(status.phase||'').toLowerCase()==='drift_anchor'){
+   bits.push('WRGB drift re-anchor (not a profile patch)');
+  } else {
+   bits.push(phase);
+  }
+ }
+ // NOTE: the patch counter (current_step/total_steps) is already appended to
+ // the progress label by meterWorkflowStepText() in meterSetWorkflowProgress,
+ // so do NOT repeat it here -- that produced "... | 4/63 patches 4/63".
  if(status.export&&status.export.cube_path) bits.push('export ready');
  if(status.upload_verified) bits.push('upload verified');
  else if(status.upload_supported===false) bits.push('upload unavailable');
@@ -30520,7 +33914,7 @@ function meterLg3dPostCheckStep(rd){
 
 function meterLg3dApplyPostCheckStatus(status){
  const readings=meterLg3dPostCheckReadings(status);
- if(!readings.length) return;
+ if(!readings.length) return false;
 	 meterActiveSeriesType='colors';
 	 meterActiveSeriesPoints=readings.length;
 	 meterActiveSeriesKey='lg-3d-post-check';
@@ -30535,18 +33929,691 @@ function meterLg3dApplyPostCheckStatus(status){
  }
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
- document.getElementById('meterCharts').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
  const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
  meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(readings[readings.length-1]));
  drawAllCharts(readings);
  meterUpdateDeltaEFormControl();
+ return true;
+}
+
+// Matrix 3D LUT profiling reads a 5-point W/R/G/B/K matrix series (against a
+// reset/unity 3D LUT) BEFORE the cube is solved and the post-check begins.
+// Those live reads land in status.readings tagged phase!='post_check'. Without
+// plotting them the chart just leaves the previous colour/ColorChecker run on
+// screen during the whole profile phase; plot the matrix series being read
+// (measured native primaries vs the target-gamut primary targets) instead.
+// ---- Standalone 3D LUT AutoCal start modal (profiling choice) ----
+// Toolbar only has the Start button; method/lattice/import live in the modal.
+// Full Auto Cal still uses its own wizard profiling select.
+// Calman HDR only supports a matrix 3D LUT — when signal mode is HDR10, hide
+// hybrid/skeleton/lattice choices and force matrix (imported upload still OK).
+let meterLg3dActiveLatticeSeriesId=0;
+let meterLg3dModalLastSource='hybrid3';
+
+function meterLg3dHdrMatrixOnly(){
+ try{
+  const sm=String(
+   (typeof meterLgAutoCalRequestedSignalMode==='function')
+    ? meterLgAutoCalRequestedSignalMode()
+    : ((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')
+  ).toLowerCase();
+  return sm==='hdr10';
+ }catch(e){ return false; }
+}
+
+// Show/hide <option>s when HDR is matrix-only (Calman parity).
+// Matrix remains available for SDR always. Under HDR10, hide hybrid /
+// skeleton / lattice (and imported unless allowImported).
+function meterLg3dGateProfilingSelectOptions(selectEl,opts){
+ if(!selectEl||!selectEl.options) return;
+ const hdr=meterLg3dHdrMatrixOnly();
+ const allowImported=!!(opts&&opts.allowImported);
+ Array.from(selectEl.options).forEach(opt=>{
+  const v=String(opt.value||'').toLowerCase();
+  let show=true;
+  if(hdr){
+   // HDR: matrix only (+ optional imported upload). Matrix is still valid on SDR too.
+   if(v==='matrix') show=true;
+   else if(v==='imported'&&allowImported) show=true;
+   else show=false;
+  } else {
+   // SDR: every option stays available, including matrix.
+   show=true;
+  }
+  opt.hidden=!show;
+  opt.disabled=!show;
+ });
+ if(hdr){
+  const hasMatrix=Array.from(selectEl.options).some(o=>String(o.value).toLowerCase()==='matrix'&&!o.disabled);
+  if(hasMatrix){
+   try{ selectEl.value='matrix'; }catch(e){}
+  } else if(allowImported){
+   try{ selectEl.value='imported'; }catch(e){}
+  }
+ }
+}
+
+function meterLg3dProfileSourceValue(){
+ const el=document.getElementById('meterLg3dModalProfileSource');
+ let v=el?String(el.value||meterLg3dModalLastSource||'hybrid3').toLowerCase():String(meterLg3dModalLastSource||'hybrid3').toLowerCase();
+ if(meterLg3dHdrMatrixOnly()&&v!=='imported') v='matrix';
+ if(v==='matrix'||v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice'||v==='imported') return v;
+ return meterLg3dHdrMatrixOnly()?'matrix':'hybrid3';
+}
+
+// Map UI source -> worker method + optional builtin series id.
+function meterLg3dResolveProfilingChoice(source,latticeSeriesId){
+ const src=String(source||'hybrid3').toLowerCase();
+ if(src==='imported') return {method:'imported',series:null};
+ if(src==='matrix') return {method:'matrix',series:null};
+ if(src==='skeleton') return {method:'skeleton',series:meterCustomSeriesById(920)};
+ if(src==='hybrid3') return {method:'hybrid',series:meterCustomSeriesById(923)};
+ if(src==='hybrid5') return {method:'hybrid',series:meterCustomSeriesById(925)};
+ if(src==='hybrid9') return {method:'hybrid',series:meterCustomSeriesById(929)};
+ if(src==='lattice'){
+  const latEl=document.getElementById('meterLg3dModalLatticeSeries')||document.getElementById('meterFullAutoCalLatticeSeries');
+  const series=meterCustomSeriesById(latticeSeriesId!=null?latticeSeriesId:(latEl&&latEl.value)||905)
+   ||meterCustomSeriesById(905);
+  return {method:'lattice',series:series};
+ }
+ if(src==='hybrid'||src==='skeleton'||src==='lattice'){
+  const series=meterCustomSeriesById(latticeSeriesId);
+  return {method:src,series:series};
+ }
+ return {method:'matrix',series:null};
+}
+
+function meterLg3dIsVolumeMethod(method){
+ const m=String(method||'').toLowerCase();
+ return m==='lattice'||m==='skeleton'||m==='hybrid';
+}
+
+function meterLg3dLatticeSeriesChoices(){
+ const customs=meterCustomSeriesForMode('color').filter(s=>s&&s.kind==='lattice');
+ return METER_BUILTIN_CUBE_SERIES.concat(customs);
+}
+
+function meterLg3dPopulateLatticeSeries(){
+ const sel=document.getElementById('meterLg3dModalLatticeSeries');
+ if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const prev=String(sel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ sel.innerHTML=list.map(s=>{
+  const count=meterProfilingSeriesPatchCount(s);
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
+ else if(list.some(s=>String(s.id)==='905')) sel.value='905';
+}
+
+// Volume methods always use per-node residual corrections (no toolbar toggle).
+function meterLg3dLatticeResidualsEnabled(){
+ return true;
+}
+
+function meterLg3dProfilingExplain(source){
+ const src=String(source||'hybrid3').toLowerCase();
+ // Patch counts are exact for default skeleton levels
+ // [0,5,10,20,30,40,50,60,70,80,90,100] and default lattice params
+ // (size N, no grey ramp, no threshold). Hybrid = skeleton∪volume by name.
+ const map={
+  matrix:'Matrix (5-point) — exactly 5 profile patches\n\nMeasures white, red, green, blue, and black at 100%/0% only. Solves a white-preserving 3×3 gamut matrix, then synthesises the full 33³ upload LUT (35,937 nodes).\n\nFastest. Good quick primary/gamut correction after greyscale. Does not measure mid-level primaries or interior mixes. Greyscale diagonal in the LUT is forced to identity so 1D greyscale stays in charge.',
+  skeleton:'Skeleton (multi-level WRGB) — exactly 45 profile patches\n\nBlack once, then white/red/green/blue at each of 11 levels (5,10,20,30,40,50,60,70,80,90,100%): 1 + 11×4 = 45. No full cube interiors.\n\nBuilds a full 33³ upload LUT. Residual corrections use the multi-level edge samples. Tracks how primaries change with level without a dense cube. Does not measure mid-saturation interiors (e.g. 50/50/0 yellow mixes) unless they fall on a pure axis. Greyscale diagonal remains identity.',
+  hybrid3:'Hybrid 3³ (recommended) — exactly 63 profile patches\n\nSkeleton WRGB (45) plus a 3×3×3 volume cube (27 nodes on axes 0/50/100%). Nine nodes appear in both sets and are measured once, so 45 + 27 − 9 = 63.\n\nEdges give multi-level primaries; the volume adds real interior mixes for residual corrections. Full 33³ upload still. Greyscale diagonal remains identity. Best default balance of time vs interior colour sampling.',
+  hybrid5:'Hybrid 5³ — exactly 161 profile patches\n\nSkeleton WRGB (45) plus a 5×5×5 volume cube (125 nodes). After name-dedupe against the skeleton: 45 + 125 − 9 = 161.\n\nMore interior samples than Hybrid 3³ (axes at 0/25/50/75/100%). Longer run; use when 3³ still leaves mid-sat error. Full 33³ upload; greyscale diagonal identity.',
+  hybrid9:'Hybrid 9³ — exactly 765 profile patches\n\nSkeleton WRGB (45) plus a 9×9×9 volume cube (729 nodes). After name-dedupe: 45 + 729 − 9 = 765.\n\nDense volume sampling. Slow (on the order of a full 9³ lattice plus the skeleton). Prefer when maximum measured interior detail matters more than time. Full 33³ upload; greyscale diagonal identity.',
+  lattice:'Lattice series (full volume only)\n\nMeasures an N×N×N RGB cube only — no multi-level WRGB skeleton. Built-in sizes: 3³ = 27, 5³ = 125, 9³ = 729, 17³ = 4,913 patches (plus any custom lattice you created). Choose the series below.\n\nPure volume profile. Level-dependent pure-primary behaviour must be inferred from the cube nodes alone. Full 33³ upload; greyscale diagonal identity when residuals are on (default).',
+  imported:'Imported .cube — 0 profile patches (upload only)\n\nNo meter, no profile, no solve. Resamples a .cube from LUT Tools (or the live import preview) to the LG 33³ 12-bit payload and uploads it to the active picture mode.\n\nUse when you already have a finished LUT file and only need to push it to the TV.'
+ };
+ return map[src]||map.hybrid3;
+}
+
+function meterLg3dModalProfileSourceChanged(){
+ const src=meterLg3dProfileSourceValue();
+ meterLg3dModalLastSource=src;
+ const latRow=document.getElementById('meterLg3dModalLatticeRow');
+ const impRow=document.getElementById('meterLg3dModalImportedRow');
+ if(latRow){
+  latRow.style.display=(src==='lattice')?'block':'none';
+  if(src==='lattice') meterLg3dPopulateLatticeSeries();
+ }
+ if(impRow){
+  impRow.style.display=(src==='imported')?'block':'none';
+  if(src==='imported') meterLg3dPopulateImportedLuts();
+ }
+ const explain=document.getElementById('meterLg3dModalExplain');
+ if(explain) explain.textContent=meterLg3dProfilingExplain(src);
+ const countEl=document.getElementById('meterLg3dModalCount');
+ if(countEl){
+  try{
+   const resolved=meterLg3dResolveProfilingChoice(src,null);
+   if(resolved.method==='matrix') countEl.textContent='Profile measurements: 5 patches. Output: full 33³ LUT upload.';
+   else if(resolved.method==='imported') countEl.textContent='Profile measurements: 0. Output: resample + upload only.';
+   else if(resolved.series){
+    const n=meterLg3dLatticePatchesForStart(resolved.series).length;
+    countEl.textContent='Profile measurements: '+n+' patches (exact expand). Output: full 33³ LUT upload after solve.';
+   } else countEl.textContent='';
+  }catch(e){ countEl.textContent=''; }
+ }
+}
+
+function meterOpenLg3dAutoCalModal(){
+ if(meterActionPending||meterLg3dAutoCalRunning||meterAutoCalRunning||meterFullAutoCalRunning){
+  toast('Meter operation already in progress',true);
+  return;
+ }
+ const modal=document.getElementById('meterLg3dStartModal');
+ if(!modal){
+  // No modal: HDR falls through to matrix-only start.
+  meterStartLg3dAutoCal(meterLg3dHdrMatrixOnly()?{method:'matrix',skipConfirm:false}:undefined);
+  return;
+ }
+ const srcSel=document.getElementById('meterLg3dModalProfileSource');
+ // HDR: Calman parity — matrix only (plus imported upload). No hybrid/lattice picker.
+ meterLg3dGateProfilingSelectOptions(srcSel,{allowImported:true});
+ if(srcSel){
+  if(meterLg3dHdrMatrixOnly()){
+   try{ srcSel.value='matrix'; }catch(e){}
+   meterLg3dModalLastSource='matrix';
+  } else if(meterLg3dModalLastSource){
+   try{ srcSel.value=meterLg3dModalLastSource; }catch(e){}
+  }
+ }
+ meterLg3dModalProfileSourceChanged();
+ modal.style.display='flex';
+ try{
+  const btn=document.getElementById('meterLg3dModalStartBtn');
+  if(btn) btn.focus();
+ }catch(e){}
+}
+
+function meterCloseLg3dAutoCalModal(){
+ const modal=document.getElementById('meterLg3dStartModal');
+ if(modal) modal.style.display='none';
+}
+
+async function meterConfirmLg3dAutoCalModal(){
+ let src=meterLg3dProfileSourceValue();
+ // HDR: never start a volume profile — force matrix (imported still allowed).
+ if(meterLg3dHdrMatrixOnly()&&src!=='imported') src='matrix';
+ meterLg3dModalLastSource=src;
+ const latSel=document.getElementById('meterLg3dModalLatticeSeries');
+ const resolved=meterLg3dResolveProfilingChoice(src,latSel&&latSel.value);
+ let method=resolved.method;
+ let latticeSeriesId=(resolved.series&&resolved.series.id!=null)?resolved.series.id:undefined;
+ if(meterLg3dHdrMatrixOnly()&&method!=='imported'){
+  method='matrix';
+  latticeSeriesId=undefined;
+  src='matrix';
+ }
+ meterCloseLg3dAutoCalModal();
+ const opts={
+  skipConfirm:true,
+  method:method,
+  latticeSeriesId:latticeSeriesId,
+  profileSource:src
+ };
+ // Imported path reads meterLg3dModalImportedLut via meterLg3dImportedLutValue().
+ await meterStartLg3dAutoCal(opts);
+}
+
+// ---- Non-autocal "Select 3D LUT series" modal (measure-only) ----
+// Replaces the old per-lattice quick buttons with one picker that reuses the
+// standalone AutoCal method chooser + descriptions. Confirm LOADS the chosen
+// profiling series into the charts for measurement (meterSelectSeries) — it does
+// NOT solve or upload a LUT. Imported (upload only) is AutoCal-only. Matrix is
+// available on SDR and HDR; under HDR10 Calman only supports matrix so volume
+// methods are hidden and confirm installs the matrix chart shell.
+let meterLg3dSelSeriesLastSource='hybrid3';
+function meterLg3dSelectSeriesSourceValue(){
+ const el=document.getElementById('meterLg3dSelSeriesSource');
+ let v=el?String(el.value||'').toLowerCase():'';
+ if(meterLg3dHdrMatrixOnly()) return 'matrix';
+ if(v==='matrix'||v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice') return v;
+ return 'hybrid3';
+}
+function meterLg3dPopulateSelectLatticeSeries(){
+ const sel=document.getElementById('meterLg3dSelSeriesLattice');
+ if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const prev=String(sel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ sel.innerHTML=list.map(s=>{
+  const count=meterProfilingSeriesPatchCount(s);
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
+ else if(list.some(s=>String(s.id)==='905')) sel.value='905';
+}
+function meterLg3dSelectSeriesChanged(){
+ const src=meterLg3dSelectSeriesSourceValue();
+ meterLg3dSelSeriesLastSource=src;
+ const latRow=document.getElementById('meterLg3dSelSeriesLatticeRow');
+ if(latRow){
+  latRow.style.display=(src==='lattice')?'block':'none';
+  if(src==='lattice') meterLg3dPopulateSelectLatticeSeries();
+ }
+ const explain=document.getElementById('meterLg3dSelSeriesExplain');
+ if(explain){
+  if(src==='matrix'&&meterLg3dHdrMatrixOnly()){
+   explain.textContent='HDR10 matrix only — Calman supports matrix for HDR 3D LUTs (matrix remains available for SDR too).\n\nMatrix measures white/red/green/blue/black (5 patches) and solves a white-preserving 3×3 gamut matrix into a full 33³ upload LUT. Hybrid / skeleton / lattice are not offered under HDR.\n\nUse 3D LUT AutoCal to measure and solve; this picker installs the matrix chart context.';
+  } else {
+   explain.textContent=meterLg3dProfilingExplain(src);
+  }
+ }
+ const countEl=document.getElementById('meterLg3dSelSeriesCount');
+ if(countEl){
+  try{
+   if(src==='matrix'){ countEl.textContent='Profile measurements: 5 patches (matrix)'; return; }
+   const latSel=document.getElementById('meterLg3dSelSeriesLattice');
+   const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
+   const n=resolved.series?meterProfilingSeriesPatchCount(resolved.series):0;
+   countEl.textContent=n?(n+' patches'):'';
+  }catch(e){ countEl.textContent=''; }
+ }
+}
+function meterOpenLg3dSelectSeriesModal(){
+ if(meterActionPending||meterLg3dAutoCalRunning||meterAutoCalRunning||meterFullAutoCalRunning||meterSeriesRunning){
+  toast('Meter operation already in progress',true);
+  return;
+ }
+ const modal=document.getElementById('meterLg3dSelectSeriesModal');
+ if(!modal) return;
+ const srcSel=document.getElementById('meterLg3dSelSeriesSource');
+ // HDR: only matrix. SDR: keep matrix + hybrid/skeleton/lattice all available.
+ meterLg3dGateProfilingSelectOptions(srcSel,{allowImported:false});
+ if(srcSel){
+  if(meterLg3dHdrMatrixOnly()){
+   try{ srcSel.value='matrix'; }catch(e){}
+   meterLg3dSelSeriesLastSource='matrix';
+  } else if(meterLg3dSelSeriesLastSource){
+   try{ srcSel.value=meterLg3dSelSeriesLastSource; }catch(e){}
+  } else {
+   try{ srcSel.value='hybrid3'; }catch(e){}
+  }
+ }
+ meterLg3dSelectSeriesChanged();
+ modal.style.display='flex';
+ try{ const b=document.getElementById('meterLg3dSelSeriesLoadBtn'); if(b) b.focus(); }catch(e){}
+}
+function meterCloseLg3dSelectSeriesModal(){
+ const modal=document.getElementById('meterLg3dSelectSeriesModal');
+ if(modal) modal.style.display='none';
+}
+async function meterConfirmLg3dSelectSeries(){
+ let src=meterLg3dSelectSeriesSourceValue();
+ if(meterLg3dHdrMatrixOnly()) src='matrix';
+ meterLg3dSelSeriesLastSource=src;
+ // Matrix has no multi-patch series — install the matrix chart shell on the 3D LUT tab.
+ if(src==='matrix'){
+  meterCloseLg3dSelectSeriesModal();
+  if(typeof meterNormalizeSeriesTab==='function'&&meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') meterSeriesTab='3dlut';
+  try{ meterLg3dPrepareChartContext({method:'matrix',clearReadings:true}); }catch(e){}
+  try{ meterSync3dLutTabChartVisibility(); }catch(e){}
+  try{ meterUpdateReadButtons(); }catch(e){}
+  if(meterLg3dHdrMatrixOnly()){
+   toast('HDR 3D LUT uses matrix profiling only — use 3D LUT AutoCal to measure and solve');
+  } else {
+   toast('Matrix profile selected — use 3D LUT AutoCal to measure and solve');
+  }
+  return;
+ }
+ const latSel=document.getElementById('meterLg3dSelSeriesLattice');
+ const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
+ if(!resolved.series||resolved.series.id==null){ toast('No measurable series for that choice',true); return; }
+ meterCloseLg3dSelectSeriesModal();
+ // Ensure charts reappear under the 3D LUT tab for the chosen series.
+ if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') meterSeriesTab='3dlut';
+ await meterSelectSeries('colors',resolved.series.id,{force:true,preserveTab:true});
+ try{ meterSync3dLutTabChartVisibility(); }catch(e){}
+ try{ meterUpdateReadButtons(); }catch(e){}
+}
+
+// Upload-only picker for the start modal (and any legacy callers).
+async function meterLg3dPopulateImportedLuts(){
+ const sel=document.getElementById('meterLg3dModalImportedLut');
+ if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const prev=String(sel.value||'');
+ const opts=[];
+ const pv=meterLastCubePreview;
+ if(pv&&pv.parsed&&pv.parsed.ok&&pv.text){
+  opts.push({value:'__preview__',label:'Imported preview: '+String(pv.filename||'.cube')+' ('+pv.parsed.size+'³)'});
+ }
+ try{
+  const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  ((r&&r.luts)||[]).forEach(l=>{ if(l&&l.name) opts.push({value:l.name,label:l.name}); });
+ }catch(e){}
+ sel.innerHTML=opts.length
+  ? opts.map(o=>'<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>').join('')
+  : '<option value="">No .cube available — import one in LUT Tools</option>';
+ if(prev&&opts.some(o=>o.value===prev)) sel.value=prev;
+}
+
+function meterLg3dSelectedLatticeSeries(){
+ const sel=document.getElementById('meterLg3dModalLatticeSeries')||document.getElementById('meterFullAutoCalLatticeSeries');
+ return meterCustomSeriesById(sel&&sel.value?sel.value:905)||METER_BUILTIN_CUBE_SERIES[0];
+}
+
+function meterLg3dImportedLutValue(){
+ const sel=document.getElementById('meterLg3dModalImportedLut');
+ return sel?String(sel.value||''):'';
+}
+
+// Percent triplets for the worker volume-step builders (lattice/skeleton/hybrid).
+// Grey-ramp "G n%" entries are skipped. Worker computes wire codes from the
+// live range/bit-depth, so only names travel.
+function meterLg3dLatticePatchesForStart(series){
+ let patches=[];
+ try{ patches=meterCustomSeriesPatches(series)||[]; }catch(e){ patches=[]; }
+ return patches
+  .filter(p=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((p&&p.name)||'')))
+  .map(p=>({name:p.name}));
+}
+
+// Resolve the lattice/skeleton/hybrid step the worker is currently measuring.
+// Prefer status.current_name (exact percent triplet), then profile_current index.
+// Drift-anchor WRGB re-reads are not series steps — return null so thumbs do
+// not keep the last black/dark patch highlighted while full-code WRGB is on screen.
+function meterLg3dLatticeCurrentStep(status,steps){
+ if(!status||!Array.isArray(steps)||!steps.length) return null;
+ const phase=String(status.phase||'').toLowerCase();
+ if(phase==='drift_anchor'||phase==='unity_reset'||phase==='building'||phase==='solving'||phase==='uploading') return null;
+ const curName=String(status.current_name||'').trim();
+ if(curName&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(curName)){
+  const byName=steps.find(s=>String((s&&s.name)||'')===curName);
+  if(byName) return byName;
+ }
+ // profile_current is 1-based index into the worker step list (same order as UI steps).
+ const idx=Number(status.profile_current);
+ if(Number.isFinite(idx)&&idx>=1&&idx<=steps.length) return steps[idx-1];
+ const stepIdx=Number(status.current_step);
+ if(Number.isFinite(stepIdx)&&stepIdx>=1&&stepIdx<=steps.length) return steps[stepIdx-1];
+ return null;
+}
+
+// Chart the live volume profile (lattice / skeleton / hybrid) like a series read.
+// Pair each reading to its series step by name so targets / codes / detail panel
+// match the patch actually measured — not a lagging "last completed" guess.
+function meterLg3dApplyLatticeProfileStatus(status){
+ const m=String((status&&status.method)||'').toLowerCase();
+ if(m!=='lattice'&&m!=='skeleton'&&m!=='hybrid') return false;
+ const phase=String((status&&status.phase)||'').toLowerCase();
+ // Show the series once profiling (or drift re-anchor around it) is underway —
+ // even with zero completed readings yet (start WRGB anchors, first black).
+ if(phase&&phase!=='profile'&&phase!=='drift_anchor'&&phase!=='building'&&phase!=='solving'){
+  // Keep thumbs/charts for terminal-adjacent phases that still carry profile readings.
+  if(phase!=='uploading'&&phase!=='complete'&&phase!=='post_check') return false;
+ }
+ const raw=meterLg3dMatrixProfileReadings(status);
+ const series=meterCustomSeriesById(meterLg3dActiveLatticeSeriesId)||meterLg3dSelectedLatticeSeries();
+ if(!series) return false;
+ let steps=[];
+ try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
+ steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
+ if(!steps.length) return false;
+ // Allow empty readings only during early drift/profile so thumbs appear before
+ // the first lattice node is stored.
+ if(!raw.length&&phase!=='profile'&&phase!=='drift_anchor') return false;
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints=series.id;
+ meterActiveSeriesKey='lg-3d-lattice-profile-'+series.id;
+ meterSetActiveSeriesChartContext(status);
+ meterShow3dLutAutoCalContext();
+ meterResetSeriesButtons();
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ meterSeriesSteps=steps;
+ // Drop prior ColorChecker / sat-sweep selection so detail + Delta-E cannot
+ // keep grading the previous series against hybrid thumbs.
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ // Stamp target_x/y/Yn + wire codes from the matching series step so CIE/Delta-E
+ // detail Target swatches and live RGB bars grade the right patch.
+ const readings=typeof meterAttachSeriesMeta==='function'
+  ? meterAttachSeriesMeta(raw.map(rd=>Object.assign({},rd)))
+  : raw.map(rd=>{
+   const step=steps.find(s=>String((s&&s.name)||'')===String((rd&&rd.name)||''));
+   return step&&typeof meterStampReadingStepMeta==='function'
+    ? meterStampReadingStepMeta(Object.assign({},rd),step)
+    : Object.assign({},rd);
+  });
+ meterReadings=readings;
+ const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd))
+  ||readings.find(rd=>String(rd.name||'')==='100/100/100'&&meterReadingHasLuminance(rd));
+ // Never keep a previous series white ref once the volume profile owns the UI.
+ if(whiteRd) meterWhiteReading=whiteRd;
+ else if(!readings.length||phase==='drift_anchor') meterWhiteReading=null;
+ document.getElementById('chartsGreyscaleWrap').style.display='none';
+ document.getElementById('chartsColorWrap').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
+ document.getElementById('meterExportRow').style.display='';
+ meterSetThumbsVisible(true);
+ // Hide ColorChecker-style Delta-E section before hybrid thumbs widen its scroller
+ // (otherwise a prior ColorChecker canvas is CSS-stretched across 63 slots).
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ const stepKeys=new Set(steps.map(s=>meterStepNameKey(s)));
+ const completed=new Set(readings.map(rd=>meterStepNameKey(rd)).filter(k=>k&&stepKeys.has(k)));
+ const currentStep=meterLg3dLatticeCurrentStep(status,steps);
+ const currentKey=currentStep?meterStepNameKey(currentStep):null;
+ if(currentStep){
+  meterCurrentPatchStep=currentStep;
+  try{ meterSelectedThumbIre=currentKey; }catch(e){}
+ } else if(phase==='drift_anchor'){
+  // WRGB drift is not a lattice node — clear selection so black thumbs are not
+  // left pulsing while full-code W/R/G/B is on the panel.
+  meterCurrentPatchStep=null;
+  try{ meterSelectedThumbIre=null; }catch(e){}
+ }
+ meterBuildPatchThumbs(meterSeriesSteps,completed,currentKey);
+ const restoreLiveThumb=()=>{
+  if(!currentKey) return;
+  const container=document.getElementById('meterPatchThumbs');
+  if(container) meterUpdateThumbStyles(container,completed,currentKey);
+ };
+ const blankStaleColorUi=()=>{
+  // Wipe prior series off CIE / Delta-E canvases and the detail card.
+  try{ drawAllChartsPreset(steps); }catch(e){}
+  try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+  try{
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+  }catch(e){}
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  const tableWrap=document.getElementById('colorReadingsTableWrap');
+  if(tableWrap) tableWrap.style.display='none';
+ };
+ const clearLiveMeters=()=>{
+  try{
+   document.getElementById('meterLum').textContent='--';
+   document.getElementById('meterCCT').textContent='--';
+   document.getElementById('meterCIEx').textContent='--';
+   document.getElementById('meterCIEy').textContent='--';
+   meterUpdateLiveReadingTargets(null);
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+  }catch(e){}
+ };
+ if(readings.length){
+  drawAllCharts(readings);
+  const curRd=currentStep?meterFindReadingForStep(currentStep):null;
+  if(curRd){
+   showColorReadingDetail(curRd,{pin:false});
+   updateLiveReading(curRd);
+  } else if(currentStep){
+   const pending={
+    name:currentStep.name,
+    ire:currentStep.ire,
+    r:currentStep.r,g:currentStep.g,b:currentStep.b,
+    r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
+    target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn,
+    signal_r_pct:currentStep.signal_r_pct,signal_g_pct:currentStep.signal_g_pct,signal_b_pct:currentStep.signal_b_pct
+   };
+   showColorReadingDetail(pending,{pin:false});
+   meterClearLiveReading(currentStep);
+  } else if(phase==='drift_anchor'){
+   // Mid-run WRGB re-anchor: keep the profile CIE cloud, clear stale detail.
+   showColorReadingDetail(null,{pin:false});
+   const liveLabel=document.getElementById('meterLiveReadingLabel');
+   if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift re-anchor');
+   document.getElementById('meterLiveReading').style.display='';
+   clearLiveMeters();
+  } else {
+   const liveRd=readings[readings.length-1];
+   if(liveRd){
+    showColorReadingDetail(liveRd,{pin:false});
+    updateLiveReading(liveRd);
+   }
+  }
+  restoreLiveThumb();
+ } else {
+  // Zero profile readings: start WRGB drift, or first profile node not stored.
+  blankStaleColorUi();
+  if(currentStep){
+   const pending={
+    name:currentStep.name,
+    ire:currentStep.ire,
+    r:currentStep.r,g:currentStep.g,b:currentStep.b,
+    r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
+    target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn
+   };
+   showColorReadingDetail(pending,{pin:false});
+   meterClearLiveReading(currentStep);
+  } else {
+   const liveLabel=document.getElementById('meterLiveReadingLabel');
+   if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift re-anchor');
+   document.getElementById('meterLiveReading').style.display='';
+   clearLiveMeters();
+  }
+  restoreLiveThumb();
+ }
+ meterUpdateDeltaEFormControl();
+ return true;
+}
+
+// ---- Standalone run target-context switch ----
+// A standalone 3D LUT AutoCal pins the Target Colorspace / Target Gamma
+// dropdowns to the run's actual solve domain so the live charts grade
+// against what the worker is solving — HDR10 cal mode linearizes the panel
+// to gamma 2.2 in the BT.2020 container (identity 3x3 uploaded), so PQ/P3
+// chart targets would mis-grade every profile read. The operator's own
+// selections are snapshotted (localStorage, so a mid-run refresh still
+// restores) and put back when the run reaches any terminal state. Full
+// AutoCal manages its own context and never triggers this.
+const METER_LG3D_TARGET_RESTORE_KEY='pgen.meter.lg3dTargetRestore';
+
+function meterLg3dApplyTargetDropdowns(gamut,gamma){
+ const gEl=document.getElementById('meterTargetGamut');
+ const mEl=document.getElementById('meterTargetGamma');
+ let changed=false;
+ if(gEl&&gamut&&String(gEl.value)!==String(gamut)){ gEl.value=gamut; changed=true; }
+ if(mEl&&gamma&&String(mEl.value)!==String(gamma)){ mEl.value=gamma; changed=true; }
+ if(changed){ try{ meterOnGreyRefChange(); }catch(e){} }
+ return changed;
+}
+
+function meterLg3dSwitchTargetsForRun(signalMode,targetGamut,targetGamma){
+ const gEl=document.getElementById('meterTargetGamut');
+ const mEl=document.getElementById('meterTargetGamma');
+ if(!gEl||!mEl) return;
+ const want=(String(signalMode).toLowerCase()==='hdr10')
+  ? {gamut:'bt2020',gamma:'2.2'}
+  : {gamut:targetGamut,gamma:targetGamma};
+ const prev={gamut:String(gEl.value||''),gamma:String(mEl.value||'')};
+ if(prev.gamut===String(want.gamut||'')&&prev.gamma===String(want.gamma||'')) return;
+ try{ localStorage.setItem(METER_LG3D_TARGET_RESTORE_KEY,JSON.stringify(prev)); }catch(e){}
+ meterLg3dApplyTargetDropdowns(want.gamut,want.gamma);
+ try{ toast('Targets switched to '+(want.gamut||'')+' / '+(want.gamma||'')+' for the 3D LUT AutoCal (restored when it finishes)'); }catch(e){}
+}
+
+function meterLg3dRestoreTargetsAfterRun(){
+ let prev=null;
+ try{ prev=JSON.parse(localStorage.getItem(METER_LG3D_TARGET_RESTORE_KEY)||'null'); }catch(e){ prev=null; }
+ if(!prev) return;
+ try{ localStorage.removeItem(METER_LG3D_TARGET_RESTORE_KEY); }catch(e){}
+ meterLg3dApplyTargetDropdowns(prev.gamut,prev.gamma);
+}
+
+function meterLg3dMatrixProfileReadings(status){
+ const list=(status&&Array.isArray(status.readings))?status.readings:[];
+ return list.filter(rd=>rd&&String(rd.phase||'')!=='post_check'&&meterReadingHasLuminance(rd));
+}
+
+// Target-gamut primary target (chromaticity + relative luminance) for one
+// matrix profile patch, keyed off its kind (white/red/green/blue/black). Reuses
+// the same primary/white-point machinery the ColorChecker series uses so the
+// targets track the active signal mode's gamut (BT.709 SDR / BT.2020 HDR10).
+function meterLg3dMatrixProfileTarget(rd){
+ const kind=String(rd&&rd.kind||'').toLowerCase();
+ const level=Number((rd&&rd.level!=null)?rd.level:((rd&&rd.ire!=null)?rd.ire:0))||0;
+ if(kind==='white'||kind==='black'){
+  const wp=meterTargetWhitePoint();
+  return {target_x:wp.x,target_y:wp.y,target_Yn:(kind==='black')?0:1};
+ }
+ const colorName=(kind==='red')?'Red':(kind==='green')?'Green':(kind==='blue')?'Blue':null;
+ if(colorName){
+  const target=meterBuildSaturationTargetStepMeta(colorName,level||100);
+  return Object.assign({series_color:colorName,sat_pct:level||100},target);
+ }
+ return {};
+}
+
+function meterLg3dMatrixProfileStep(rd){
+ const kind=String(rd&&rd.kind||'').toLowerCase();
+ const level=Number((rd&&rd.level!=null)?rd.level:((rd&&rd.ire!=null)?rd.ire:0))||0;
+ const step={
+  name:rd.name||('Matrix '+(kind||'patch')),
+  ire:(rd.ire!=null)?rd.ire:level,
+  r:(rd.r_code!=null)?rd.r_code:rd.r,
+  g:(rd.g_code!=null)?rd.g_code:rd.g,
+  b:(rd.b_code!=null)?rd.b_code:rd.b
+ };
+ return Object.assign(step,meterLg3dMatrixProfileTarget(rd));
+}
+
+function meterLg3dApplyProfileStatus(status){
+ // Only the matrix method profiles a small W/R/G/B/K series; the ramp method
+ // reads dozens of intermediate primaries that are not a 5-point matrix.
+ if(String((status&&status.method)||'').toLowerCase()!=='matrix') return false;
+ const raw=meterLg3dMatrixProfileReadings(status);
+ if(!raw.length) return false;
+ // Enrich each reading with its target so the colour CIE charts resolve
+ // reading.target_x/y/Yn directly (matches the post-check reading shape).
+ const readings=raw.map(rd=>Object.assign({},rd,meterLg3dMatrixProfileTarget(rd)));
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints=readings.length;
+ meterActiveSeriesKey='lg-3d-matrix-profile';
+ meterSetActiveSeriesChartContext(status);
+ meterShow3dLutAutoCalContext();
+ meterResetSeriesButtons();
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ meterSeriesSteps=readings.map(meterLg3dMatrixProfileStep);
+ meterReadings=readings;
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
+ if(whiteRd) meterWhiteReading=whiteRd;
+ document.getElementById('chartsGreyscaleWrap').style.display='none';
+ document.getElementById('chartsColorWrap').style.display='';
+ if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
+ document.getElementById('meterExportRow').style.display='';
+ meterSetThumbsVisible(true);
+ const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
+ meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(readings[readings.length-1]));
+ drawAllCharts(readings);
+ meterUpdateDeltaEFormControl();
+ return true;
 }
 
 function meterLg3dApplyStatus(status){
  if(!status) return;
- meterLg3dApplyPostCheckStatus(status);
+ // Post-check readings take over once they exist; before that, plot the live
+ // profile being read (lattice series or 5-point matrix W/R/G/B/K) instead of
+ // leaving the previous colour/ColorChecker run on the chart.
+ if(!meterLg3dApplyPostCheckStatus(status)&&!meterLg3dApplyLatticeProfileStatus(status)) meterLg3dApplyProfileStatus(status);
  const summary=meterLg3dAutoCalSummary(status);
  const labelText=(status.current_name||status.message||'LG 3D LUT AutoCal')+(summary?' | '+summary:'');
  if(status.status==='running') meterSetWorkflowProgress(status,{workflow:meterFullAutoCalRunning?'full':'3d-lut',label:labelText});
@@ -30616,16 +34683,17 @@ async function meterPollLg3dAutoCal(options){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
    meterActionPending=false;
    meterLg3dAutoCalRunning=false;
+   // Put the operator's Target Colorspace / Target Gamma back (no-op when
+   // no standalone run switched them — full workflow never snapshots).
+   try{ meterLg3dRestoreTargetsAfterRun(); }catch(_e){}
 	   if(r.status==='complete'){
 	    if(meterFullAutoCalEnsureStatusPhase(r,'3d-lut')){
 	     await meterFullAutoCalStartTouchup(r);
 	     return;
 	    }
-	    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
-	     meterAutoCalPhase='';
-	     meterAutoCalSetOverlay(false,r);
-	     return;
-	    }
+	    // Standalone run truly finished: clear the last profiling patch off
+	    // the display now (it used to linger until the complete modal closed).
+	    meterClearDisplayPattern();
 	    // Same cancel/refresh guard as greyscale: do not open the
 	    // success popup unless this browser was tracking the run.
 	    if(!localActive||meterAutoCalStopRequested){
@@ -30635,14 +34703,19 @@ async function meterPollLg3dAutoCal(options){
 	     return;
 	    }
 	    meterAutoCalPhase='complete';
+	    // Clear again when the complete modal opens (in case a late pattern
+	    // write raced the first clear, or full-workflow touch-up left a patch).
+	    meterClearDisplayPattern();
 	    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'complete'});
     toast('LG 3D LUT AutoCal complete');
    }else if(r.status==='error'){
+    meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalPhase='error';
     meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'running',current_name:r.current_name||'LG 3D LUT AutoCal error',message:r.message||'3D LUT AutoCal failed'});
     toast(r.message||'LG 3D LUT AutoCal failed',true);
    }else if(r.status==='cancelled'){
+    meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalSetOverlay(false,null);
     toast('LG 3D LUT AutoCal stopped');
@@ -30695,16 +34768,88 @@ async function meterStartLg3dAutoCal(options){
   return false;
  };
  if(meterActionPending||meterLg3dAutoCalRunning||(!fullWorkflow&&(meterAutoCalRunning||meterFullAutoCalRunning))) return fail('Meter operation already in progress');
- if(!(await meterEnsureDetected())) return fail('No meter detected');
+ // Profiling method: full workflow / start modal pass options.method
+ // (+ latticeSeriesId). Direct call without options falls back to modal fields.
+ let method='matrix';
+ let latticeSeries=null;
+ if(options&&options.method){
+  const m=String(options.method).toLowerCase();
+  if(m==='matrix'||m==='ramp'||m==='lattice'||m==='skeleton'||m==='hybrid'||m==='imported') method=m;
+  if(meterLg3dIsVolumeMethod(method)){
+   latticeSeries=(options.latticeSeriesId!=null)?meterCustomSeriesById(options.latticeSeriesId):null;
+   if(!latticeSeries&&method==='skeleton') latticeSeries=meterCustomSeriesById(920);
+   if(!latticeSeries&&method==='hybrid') latticeSeries=meterCustomSeriesById(923);
+   if(!latticeSeries&&method==='lattice') latticeSeries=meterLg3dSelectedLatticeSeries();
+  }
+ } else {
+  const resolved=meterLg3dResolveProfilingChoice(meterLg3dProfileSourceValue(),null);
+  method=resolved.method||'matrix';
+  latticeSeries=resolved.series||null;
+ }
+ if(!(method==='matrix'||method==='ramp'||method==='lattice'||method==='skeleton'||method==='hybrid'||method==='imported')) method='matrix';
+ // HDR10: Calman matrix-only — demote volume/ramp profiles (imported upload still OK).
+ if(signalMode==='hdr10'&&method!=='imported'&&method!=='matrix'){
+  method='matrix';
+  latticeSeries=null;
+ }
+ if(method!=='imported'&&!(await meterEnsureDetected())) return fail('No meter detected');
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
- const method=signalMode==='hdr10'?'matrix':(String((options&&options.method)||'matrix').toLowerCase()==='ramp'?'ramp':'matrix');
  if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
- if(signalMode==='hdr10'&&String((options&&options.method)||'matrix').toLowerCase()==='ramp') return fail('HDR10 3D LUT AutoCal is matrix-only in this version');
+ if(signalMode==='hdr10'&&method!=='matrix'&&method!=='imported') return fail('HDR10 3D LUT AutoCal is matrix-only (Calman parity)');
+ // Volume profiling: expand the chosen series to percent triplets now.
+ let latticePatches=null;
+ if(meterLg3dIsVolumeMethod(method)){
+  if(!latticeSeries) return fail('Select a profiling series');
+  latticePatches=meterLg3dLatticePatchesForStart(latticeSeries);
+  if(!latticePatches.length) return fail('Selected profiling series has no patches');
+  meterLg3dActiveLatticeSeriesId=latticeSeries.id;
+ }
+ // Wipe ColorChecker (or any prior series) off the charts before the worker
+ // starts — 3D LUT profile UI is a separate chart context with no Delta-E.
+ try{
+  if(meterLg3dIsVolumeMethod(method)&&latticeSeries) meterLg3dPrepareChartContext({series:latticeSeries,method:method,clearReadings:true});
+  else if(method==='matrix'||method==='ramp') meterLg3dPrepareChartContext({method:'matrix',clearReadings:true});
+ }catch(_e){}
+ // Imported upload: validate the choice before confirming; the file is only
+ // saved to the generator after the operator accepts.
+ let importedChoice='';
+ if(method==='imported'){
+  importedChoice=(typeof meterLg3dImportedLutValue==='function')?meterLg3dImportedLutValue():'';
+  if(importedChoice==='__preview__'){
+   const pv=meterLastCubePreview;
+   if(!pv||!pv.parsed||!pv.parsed.ok||!pv.text) return fail('Import a valid .cube in LUT Tools first');
+  } else if(!/^[A-Za-z0-9._-]+\.cube$/.test(importedChoice)){
+   return fail('Choose a .cube to upload (import one in LUT Tools first)');
+  }
+ }
  if(!(options&&options.skipConfirm)){
-  const accepted=window.confirm((signalMode==='hdr10'?'HDR10 matrix':'LG 3D LUT')+' AutoCal assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
+  const message=method==='imported'
+   ? 'Upload the selected .cube to the TV as-is? It is resampled to the LG 33-point payload — no measurement, no solve. This replaces the current 3D LUT for the active picture mode.'
+   : (signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '
+     +(meterLg3dIsVolumeMethod(method)?'profiles '+latticePatches.length+' patches ('+String(latticeSeries&&latticeSeries.name||method)+') and ':'')
+     +'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?';
+  const accepted=window.confirm(message);
   if(!accepted) return false;
+ }
+ // Save the preview .cube on the generator now (post-confirm) and resolve
+ // the worker-side path.
+ let importedCubePath='';
+ if(method==='imported'){
+  if(importedChoice==='__preview__'){
+   const pv=meterLastCubePreview;
+   let saved=null;
+   try{
+    saved=await fetchJSON('/api/3d-lut/import?name='+encodeURIComponent(pv.filename||'lut'),{
+     method:'POST',headers:{'Content-Type':'text/plain'},body:pv.text,_timeoutMs:30000
+    });
+   }catch(e){}
+   if(!saved||saved.status!=='ok'||!saved.path) return fail((saved&&saved.message)||'Could not save the imported .cube on the generator');
+   importedCubePath=saved.path;
+  } else {
+   importedCubePath='/var/lib/PGenerator/lg/luts/'+importedChoice;
+  }
  }
  const upload=(options&&Object.prototype.hasOwnProperty.call(options,'upload'))?!!options.upload:true;
  const dtype=getEffectiveDisplayType();
@@ -30713,10 +34858,20 @@ async function meterStartLg3dAutoCal(options){
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
  const skipPreprofileUnityReset=!!(fullWorkflow&&preflightLut3d&&preflightLut3d.upload_verified===true&&(!preflightPictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
- const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
- const rawTargetGamma=meterAutoCalTargetGammaValue();
- const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
- const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
+ // HDR 3D: force ST.2084 (PQ) for the cube solve. Greyscale HDR AutoCal
+ // still uses 2.2 via meterLgAutoCalGreyscaleTargetGammaValue() — that is
+ // intentional (1D DPG vs 3D target space).
+ // SDR 3D: honor the same UI gamma/gamut as greyscale. Do NOT force BT.1886 /
+ // BT.709 just because this is a full-workflow stage.
+ const rawTargetGamma=(typeof meterLgAutoCalGreyscaleTargetGammaValue==='function')
+  ? meterLgAutoCalGreyscaleTargetGammaValue()
+  : meterAutoCalTargetGammaValue();
+ const targetGamma=signalMode==='hdr10'
+  ? 'st2084'
+  : (String(rawTargetGamma||'').toLowerCase()==='st2084' ? 'bt1886' : rawTargetGamma);
+ const targetGamut=signalMode==='hdr10'
+  ? ((typeof meterHdrMetadataGamut==='function')?meterHdrMetadataGamut():'p3d65')
+  : meterAutoCalTargetGamutValue();
  // Committed (applied) quant range — same source as meterMeasurementSignalContext.
  // Dropdown-only getVal('rgb_quant_range') can lag Apply & Restart and wrongly
  // profile a Full link with limited 16-235 / 64-940 codes (or the reverse).
@@ -30733,6 +34888,11 @@ async function meterStartLg3dAutoCal(options){
   method:method,
   type:'lg-3d-lut',
   display_type:dtype,
+  // 3D LUT AutoCal: the WRGB gate (driven by display_type) and the CCSS
+  // matrix file are independent. Send the override explicitly so a custom
+  // profile the operator picked survives the upload even if the dropdown
+  // drifts after the snapshot.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   delay_ms:meterDelayMs(),
   patch_size:getMeterPatchSize(),
   signal_range:transportRange,
@@ -30759,13 +34919,21 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // which on a 10-bit link land at ~23% of full signal and crush the
   // stimulus range (same bug the greyscale worker fixed in 79b2c2c9).
   max_bpc:getVal('max_bpc'),
+  // Volume profiling: percent triplets only — the worker computes wire codes
+  // from the run's live range/bit-depth (build_*_steps).
+  lattice_patches:meterLg3dIsVolumeMethod(method)?latticePatches:undefined,
+  // Per-node corrections OFF -> volume is measured but solved from the
+  // corner matrix only (A/B lever for the residual layer).
+  solve_matrix_only:(meterLg3dIsVolumeMethod(method)&&!meterLg3dLatticeResidualsEnabled())?true:undefined,
+  // Imported upload: the .cube saved on the generator; the worker resamples
+  // it to the 33-point payload and skips profiling entirely.
+  imported_cube_path:method==='imported'?importedCubePath:undefined,
   upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
-  full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
-  full_autocal_magic_wand:fullWorkflow?fullMagicWand:undefined,
-  // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
+   full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
+   // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
   // Presence of this key in the payload makes the server-side conf merge
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
@@ -30798,13 +34966,13 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // worker moves past the preflight. Mirrors the meterRunSeries fix
   // (commit fac59852) and the autocal-wizard fix at
   // meterAutoCalConfirmAndStart.
- if(meterSelectedMeasurementRequiresReady()){
+ if(method!=='imported'&&meterSelectedMeasurementRequiresReady()){
   meterLg3dAutoCalSpectroSetupActive=true;
   meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
  }
  meterActionPending=true;
  meterLg3dAutoCalRunning=true;
- meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:5),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(meterLg3dIsVolumeMethod(method)?(latticePatches?latticePatches.length:1):(method==='imported'?1:5))),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
  meterUpdateReadButtons();
  try{
   await meterStopContinuous();
@@ -30820,17 +34988,33 @@ refresh_rate:getMeterRefreshRate()||undefined,
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r&&r.message)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
-  }
-  if(!r||r.status!=='started'){
-   meterLg3dAutoCalRunning=false;
-   meterActionPending=false;
-   meterHideWorkflowProgress();
-   if(meterLg3dAutoCalSpectroSetupActive){
-    meterLg3dAutoCalSpectroSetupActive=false;
-    meterSpectroSetupApply(null);
    }
-   return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
-  }
+   if(!r||r.status!=='started'){
+    // The start handler always spawns the worker before returning 'started',
+    // but the handler runs meter-stop / conf-reload work and (for SDR with
+    // max_bpc<10) a full renderer restart (webui_meter_lg_autocal_ensure_10b)
+    // BEFORE spawning. That work can outlive a transient fetch abort/timeout,
+    // so the POST can come back null/error while the worker is in fact
+    // running -- the operator then sees "unable to start" followed by
+    // "already running" on the next click for the same run. Probe the live
+    // status once: if a 3D autocal is running, adopt it and fall through into
+    // the normal polling path instead of erroring.
+    let _probe=null;
+    try{ _probe=await fetchJSON('/api/meter/lg-3d-autocal/status',{_quiet:true,_timeoutMs:8000}); }catch(_e){}
+    if(_probe&&_probe.status==='running'){
+     r={status:'started',message:_probe.current_name||'LG 3D LUT AutoCal already running',max_bpc_promoted:false};
+    }
+   }
+   if(!r||r.status!=='started'){
+    meterLg3dAutoCalRunning=false;
+    meterActionPending=false;
+    meterHideWorkflowProgress();
+    if(meterLg3dAutoCalSpectroSetupActive){
+     meterLg3dAutoCalSpectroSetupActive=false;
+     meterSpectroSetupApply(null);
+    }
+    return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
+   }
  // Reflect a server-side max_bpc auto-promotion in the UI dropdown
  // (see webui_meter_lg_autocal_ensure_10b in webui.pm). Without this
  // refresh the dropdown keeps showing 8 even though the patches and
@@ -30845,6 +35029,12 @@ refresh_rate:getMeterRefreshRate()||undefined,
     if(typeof checkSettingsChanged==='function') checkSettingsChanged();
    }
   }catch(_e){}
+ }
+ // Standalone runs pin the Target dropdowns to the run's solve domain
+ // (restored at any terminal status in meterPollLg3dAutoCal). Imported
+ // uploads read nothing, so there is nothing to chart or switch.
+ if(!fullWorkflow&&method!=='imported'){
+  try{ meterLg3dSwitchTargetsForRun(signalMode,targetGamut,targetGamma); }catch(_e){}
  }
  meterActionPending=false;
   meterLg3dAutoCalPollErrors=0;
@@ -30908,11 +35098,61 @@ function meterClearSeriesRunUiState(){
  meterSharedSeriesId=null;
  const btn=document.getElementById('meterReadSeriesBtn');
  if(btn){
-  btn.innerHTML='&#9654; Read Series';
+  btn.innerHTML=meterReadSeriesButtonLabel();
   btn.classList.add('btn-secondary');
   btn.classList.remove('btn-success');
  }
  meterUpdateReadButtons();
+}
+
+// 3D LUT tab volume series (lattice / hybrid / skeleton): primary action is
+// Build 3D LUT (format modal -> measure -> solve -> download). Other series
+// keep Read Series.
+function meterSeriesIs3dLutBuild(){
+ return !!(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries());
+}
+function meterReadSeriesButtonLabel(){
+ return meterSeriesIs3dLutBuild()?'&#9881; Build 3D LUT':'&#9654; Read Series';
+}
+function meterReadSeriesPrimaryAction(){
+ if(meterSeriesIs3dLutBuild()) return meterBuild3dLutSeries();
+ return meterRunSeries();
+}
+
+// Pending Build 3D LUT options chosen in the pre-measure modal.
+let meterBuild3dLutPending=null;
+
+// Build 3D LUT: pick export format (+ greyscale policy), measure the series,
+// solve, then download the chosen format.
+async function meterBuild3dLutSeries(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return false;}
+ if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
+ const series=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+ if(!series){toast('Select a 3D LUT profiling series first',true);return false;}
+ const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toUpperCase();
+ const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
+ const ok=await meterShowChoiceModal({
+  title:'Build 3D LUT',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the TV — the LUT is exported for host apps (Resolve, madVR, etc.).',
+  acceptLabel:'Start measurement',
+  cancelLabel:'Cancel',
+  radios:[{
+   id:'lut_format',
+   label:'Output format',
+   options:[
+    {value:'cube',label:'.cube — Resolve, madVR, LUT boxes',checked:true},
+    {value:'3dl',label:'.3dl — Autodesk Lustre / Flame'}
+   ]
+  }],
+  checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
+ });
+ if(!ok) return false;
+ const fmt=(ok&&typeof ok==='object'&&ok.lut_format)?String(ok.lut_format):'cube';
+ const includeGrey=!(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale'))||!!ok.include_greyscale;
+ meterBuild3dLutPending={format:(fmt==='3dl'?'3dl':'cube'),includeGreyscale:includeGrey};
+ const started=await meterRunSeries();
+ if(!started) meterBuild3dLutPending=null;
+ return started;
 }
 
 // Run full automated series (Read Series button)
@@ -30945,7 +35185,7 @@ async function meterRunSeries(){
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterProgressLabel').textContent='Connecting to meter...';
- document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
+ document.getElementById('meterReadSeriesBtn').innerHTML=meterBuild3dLutPending?'&#9209; Building 3D LUT…':'&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
  // Raise the shared spectro setup modal in 'Working…' mode immediately so
@@ -30966,8 +35206,22 @@ async function meterRunSeries(){
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
   const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
- meterBuildPatchThumbs(sortedSteps,new Set(),null);
- drawAllChartsPreset(sortedSteps);
+ const uiCaps=meterSeriesUiCaps(sortedSteps.length);
+ if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,new Set(),null);
+ meterSetThumbsVisible(uiCaps.thumbs);
+ drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
+ if(uiCaps.confirmStart){
+  const estimate=meterLatticeFormatDuration(meterLatticeEstimateSeconds(meterSeriesSteps.length));
+  const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+meterSeriesSteps.length+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
+  if(!proceed){
+   meterSeriesRunning=false;
+   meterBuild3dLutPending=null;
+   document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
+   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+   return false;
+  }
+ }
  meterClearLiveReading();
  showColorReadingDetail(null,{pin:false});
  meterActionPending=true;
@@ -30985,7 +35239,7 @@ async function meterRunSeries(){
     meterSetActiveSeriesChartContext(s);
     meterSharedSeriesId=String(s.series_id);
     if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
+    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
     await meterPollSeries();
     return true;
    }
@@ -30993,7 +35247,16 @@ async function meterRunSeries(){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+		  if(meterActiveSeriesIsCustom()&&Array.isArray(meterSeriesSteps)){
+		   _seriesBody.custom_series=true;
+		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
+		   if(_activeCustom&&_activeCustom.kind==='lattice'){
+		    _seriesBody.lattice_params=meterLatticeSanitizeParams(_activeCustom.params);
+		   } else {
+		    _seriesBody.custom_steps=meterSeriesSteps.map(step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits}));
+		   }
+		  }
 	  // Pass the calibration-card low-light handler through to the
 	  // server so series reads honor the same gear as autocal/single.
 	  // Without this, the series start body has no low_light field and
@@ -31009,7 +35272,7 @@ async function meterRunSeries(){
 	   meterSeriesRunning=false;
 	   meterSeriesAwaitingReady=false;
 	   meterReadySignalPending=false;
-   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+   document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
    return false;
@@ -31018,7 +35281,7 @@ async function meterRunSeries(){
 	  meterSetActiveSeriesChartContext(r);
 	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
+  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
 	  await meterPollSeries();
 	  return true;
  }catch(e){
@@ -31029,7 +35292,7 @@ async function meterRunSeries(){
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
   meterSpectroSetupApply(null);
-  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
   return false;
@@ -31060,8 +35323,15 @@ async function meterPollSeries(){
 		 meterSeriesSpectroSetupApplyFromStatus(r);
 		 meterSetActiveSeriesChartContext(r);
 		 if(Array.isArray(r.steps)&&r.steps.length>0){
+		  const _activeLattice=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+		  if(_activeLattice&&_activeLattice.kind==='lattice'&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===r.steps.length){
+		   // Lattice steps are expanded identically client/server (locked by the
+		   // parity regressions); keep the client copy — it carries the chart
+		   // target_x/y/Yn fields the server expansion does not compute.
+		  } else {
 	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
 	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
+		  }
 	 }
  if(r.white_reading&&r.white_reading.luminance!=null){
   meterWhiteReading=r.white_reading;
@@ -31135,7 +35405,9 @@ async function meterPollSeries(){
  }
 
  if(r.total_steps>0){
-  const label=r.current_name||('Step '+r.current_step+'/'+r.total_steps);
+  // Always show the patch counter next to the name (e.g. "75/0/50 (12/125)").
+  const stepCounter=(r.current_step!=null&&r.total_steps)?(' ('+r.current_step+'/'+r.total_steps+')'):'';
+  const label=r.current_name?(r.current_name+stepCounter):('Step '+r.current_step+'/'+r.total_steps);
   if(meterInternalSeriesWorkflow&&meterInternalSeriesWorkflow.workflow){
    meterSetWorkflowProgress(r,{workflow:meterInternalSeriesWorkflow.workflow,label:meterInternalSeriesWorkflow.label||label});
   }else{
@@ -31178,9 +35450,14 @@ async function meterPollSeries(){
     meterGreyscaleLowEndPinned=false;
     meterGreyscaleLastCurrentKey=null;
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
-  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  // Always clear the last series patch (often a saturated colour / blue) so
+  // the TV does not sit on it during complete-modal / idle (burn-in + drift).
+  // Worker should also blank, but lattice/custom series and racey completes
+  // have left a solid colour on screen until the operator closed the UI.
+  try{ if(typeof meterClearDisplayPattern==='function') meterClearDisplayPattern(); }catch(e){}
   // On completion the series worker blanks the panel to black (a "stop"
   // pattern) so no bright patch is left burning into an emissive display.
   // Match that in the UI: deselect every thumbnail and clear the live readout
@@ -31191,6 +35468,24 @@ async function meterPollSeries(){
    meterCurrentPatchStep=null;
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
+   // Build 3D LUT flow: after measurement, solve with the pre-selected format
+   // and greyscale policy, then download. Clear pending on cancel/error paths
+   // is handled in the solve helpers.
+   try{
+    if(meterBuild3dLutPending&&typeof meterGenerateLutFromLattice==='function'){
+     const pending=meterBuild3dLutPending;
+     setTimeout(function(){
+      try{
+       meterGenerateLutFromLattice({
+        auto:true,
+        includeGreyscale:!!pending.includeGreyscale,
+        downloadFormat:pending.format||'cube',
+        fromBuildFlow:true
+       });
+      }catch(e){}
+     },400);
+    }
+   }catch(e){}
   }
   // Clear the "currently reading" pulse (selection was cleared above on complete).
   if(meterSeriesSteps){
@@ -31308,7 +35603,7 @@ function meterSeriesThumbContentWidth(sortedSteps,row){
 }
 
 function meterGreyscaleScrollTargets(){
- const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller'];
+ const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller','meterColorDeltaEScroller'];
  return ids.map(id=>document.getElementById(id)).filter(Boolean);
 }
 
@@ -31561,6 +35856,51 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
  meterUpdateThumbScrollButtons();
 }
 
+// Colour-series ΔE chart scroll layout: when a colour series has more patches
+// than fit, the thumbnails scroll — the ΔE bar chart must widen to the SAME
+// content width and follow the thumb scroll ratio, exactly like the greyscale
+// >64-step chart suite. The scroller is a member of the shared scroll-sync
+// group; scrolling the thumbs drives it (and vice versa via the shared ratio).
+function meterUpdateColorDeltaEScrollLayout(sortedSteps){
+ const scroller=document.getElementById('meterColorDeltaEScroller');
+ const canvas=document.getElementById('chartColorDE');
+ if(!scroller||!canvas) return;
+ const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ const steps=Array.isArray(sortedSteps)?sortedSteps:[];
+ // Only LONG series scroll-sync with the thumbnails. Short series —
+ // ColorChecker (30), Sat Sweep (~28), Cube 3³ (27), every post-cal report
+ // set — always fit-to-width so every bar is visible: engaging the wide
+ // canvas for them clipped the report ΔE charts to the visible scroll
+ // window. 40 bars still render legibly in a normal viewport; real lattices
+ // (125+) and long customs are what the scroll exists for.
+ const needsScroll=steps.length>40;
+ const row=meterGreyscaleScrollSource();
+ const viewport=Math.max(320,Math.round(scroller.clientWidth||((row&&row.clientWidth)||0)||800));
+ const content=(isColor&&needsScroll)?meterSeriesThumbContentWidth(steps,scroller):0;
+ const prev=canvas.style.width;
+ // Pin the CSS height: the canvas carries width/height ATTRIBUTES (800x180),
+ // so setting only a (huge) CSS width lets the browser scale the height
+ // proportionally — a 10000px-wide series drew a ~2400px-tall dE chart.
+ canvas.style.height='180px';
+ if(isColor&&needsScroll&&content>viewport+4){
+  canvas.style.width=content+'px';
+  canvas.style.minWidth=content+'px';
+ } else {
+  canvas.style.width='100%';
+  canvas.style.minWidth='100%';
+  scroller.scrollLeft=0;
+ }
+ scroller.style.overflowX='hidden';
+ if(canvas.style.width!==prev){
+  // Repaint at the new width so the bars/labels spread out like the thumbs.
+  try{ if(Array.isArray(meterReadings)&&meterReadings.length) drawColorDeltaE2000Chart([...meterReadings]); }catch(e){}
+ }
+ meterBindGreyscaleScrollSync();
+ meterGreyscaleScrollSyncing=true;
+ meterSetGreyscaleScrollRatio(scroller,meterGreyscaleScrollRatio);
+ meterGreyscaleScrollSyncing=false;
+}
+
 function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
@@ -31618,6 +35958,10 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  }
  meterUpdateThumbStyles(container,completedIres,currentIre);
  meterUpdateThumbScrollButtons();
+ // Keep the colour ΔE chart width + scroll in step with the thumb strip.
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  try{ meterUpdateColorDeltaEScrollLayout(visibleSteps); }catch(e){}
+ }
  if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
 }
 function meterUpdateThumbStyles(container,completedIres,currentIre){
@@ -32073,6 +36417,18 @@ function drawTwoPointCharts(gs,allSteps){
 }
 
 function drawAllChartsPreset(sortedSteps){
+ // 3D LUT tab with no profiling series selected: never re-open leftover charts.
+ if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+  return;
+ }
+ try{
+  const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
+   ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+   ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries());
+  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!is3dLut);
+ }catch(e){}
+ try{ meterUpdateHdrConfigVisibility(); }catch(e){}
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(sortedSteps));
   if(gsSteps.length===0) return;
@@ -32090,7 +36446,13 @@ function drawAllChartsPreset(sortedSteps){
   drawGammaPreset(gsSteps);
  } else {
   drawCIEChartPreset(sortedSteps);
-  drawColorDeltaE2000Preset(sortedSteps);
+  // 3D LUT volume/matrix profile is characterization — no Delta-E chart.
+  const hideDe=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext());
+  if(!hideDe) drawColorDeltaE2000Preset(sortedSteps);
+  else {
+   const deSec=document.getElementById('meterColorDeltaESection');
+   if(deSec) deSec.style.display='none';
+  }
   const wrap=document.getElementById('colorReadingsTableWrap');
   if(wrap) wrap.style.display='none';
   const avgWrap=document.getElementById('colorSeriesAveragesWrap');
@@ -32387,25 +36749,70 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
- if(!readings||readings.length===0) return;
+ if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+  return;
+ }
+ try{
+  const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
+   ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+   ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries());
+  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!is3dLut);
+ }catch(e){}
  meterUpdateHdrConfigVisibility();
+ // Only chart samples that belong to the active series steps.
+ if(Array.isArray(readings)&&readings.length&&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'||meterActiveSeriesType==='greyscale')){
+  try{ readings=meterFilterReadingsForCurrentSteps(readings,meterActiveSeriesType); }catch(e){}
+ }
+ if(!readings||readings.length===0){
+  // No in-series measurements: still draw colour presets when steps exist.
+  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+   drawAllChartsPreset(meterSeriesSteps);
+  }
+  return;
+ }
  meterEnsureDeltaECache(readings);
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
-  // Color/saturation series — CIE chromaticity + color ΔE + readings table
+  // Color/saturation series — CIE chromaticity + color ΔE + readings table.
+  // 3D LUT volume/matrix profile: CIE cloud only (no Delta-E / no ColorChecker table).
   const cr=readings.filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r));
+  const is3dProfile=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext());
+  // Prefer live current step name so CIE inset / detail do not stick on the
+  // last completed reading while the worker is already on the next patch.
+  if(meterCurrentPatchStep&&meterCurrentPatchStep.name&&!_colorDetailPinned){
+   _selectedColorReadingName=String(meterCurrentPatchStep.name);
+  }
   if(cr.length>0){
    drawCIEChart(cr);
-   drawColorDeltaE2000Chart(cr);
-   drawColorReadingsTable(cr);
-   colorChartRegisterInteraction(cr);
-   if(_colorDetailPinned&&_selectedColorReadingName){
-    const sel=cr.find(r=>r.name===_selectedColorReadingName);
-    if(sel) showColorReadingDetail(sel,{pin:true});
-    else showColorReadingDetail(cr[cr.length-1],{pin:false});
+   if(!is3dProfile){
+    drawColorDeltaE2000Chart(cr);
+    drawColorReadingsTable(cr);
    } else {
+    const deSec=document.getElementById('meterColorDeltaESection');
+    if(deSec) deSec.style.display='none';
+    const wrap=document.getElementById('colorReadingsTableWrap');
+    if(wrap) wrap.style.display='none';
+    const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+    if(avgWrap) avgWrap.style.display='none';
+   }
+   colorChartRegisterInteraction(cr);
+   if(is3dProfile&&meterCurrentPatchStep){
+    const curRd=typeof meterFindReadingForStep==='function'?meterFindReadingForStep(meterCurrentPatchStep):null;
+    if(curRd&&meterReadingIsRealMeasurement(curRd)) showColorReadingDetail(curRd,{pin:false});
+    else showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
+   } else if(_colorDetailPinned&&_selectedColorReadingName){
+    const sel=cr.find(r=>r&&r.name===_selectedColorReadingName&&meterReadingIsRealMeasurement(r));
+    if(sel) showColorReadingDetail(sel,{pin:true});
+    else if(meterCurrentPatchStep) showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:true});
+    // Do NOT fall back to cr[last] — that re-shows a previous patch's measured values.
+   } else if(cr.length&&meterReadingIsRealMeasurement(cr[cr.length-1])){
     showColorReadingDetail(cr[cr.length-1],{pin:false});
    }
+  } else if(is3dProfile&&meterCurrentPatchStep){
+   // Profile running but first reading not in yet — still draw empty CIE with inset target.
+   try{ drawCIEChart([]); }catch(e){}
+   showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
   }
   return;
  }
@@ -33450,7 +37857,11 @@ let _colorDetailPinned=false;
 function meterFocusColorReading(rd,opts){
  showColorReadingDetail(rd,opts);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterReadings)&&meterReadings.length){
-  drawAllCharts(meterReadings);
+  const filtered=(typeof meterFilterReadingsForCurrentSteps==='function')
+   ?meterFilterReadingsForCurrentSteps(meterReadings,meterActiveSeriesType)
+   :meterReadings;
+  if(filtered&&filtered.length) drawAllCharts(filtered);
+  else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
  }
 }
 function showColorReadingDetail(rd,opts){
@@ -33463,51 +37874,72 @@ function showColorReadingDetail(rd,opts){
   return;
  }
  const pin=!(opts&&opts.pin===false);
- _selectedColorReadingName=rd.name||null;
+ // If a step shell was passed (or a non-sample object), force the unread
+ // target-only view so Measured can never be filled from codes / stale data.
+ const isUnread=!!(rd._unreadStep||rd._presetStep||!meterReadingIsRealMeasurement(rd));
+ const view=isUnread?(meterColorUnreadDetailFromStep(rd)||rd):rd;
+ _selectedColorReadingName=view.name||null;
  _colorDetailPinned=pin&&!!_selectedColorReadingName;
- updateLiveReading(rd);
- const colorRefMode=meterColorRefMode();
- const colorInclLum=(colorRefMode==='eotf');
- const colorForm=meterColorDeltaEForm();
- const deLabel=meterDeltaEFormLabel(colorForm);
- const hasMeasuredXYZ=!!meterReadingXYZ(rd);
- const hasChroma=hasMeasuredXYZ&&meterReadingHasChromaticity(rd);
- const targetXYZ=meterTargetXYZForReading(rd);
- const lumInfo=meterColorLuminanceInfo(rd);
- const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
- const targetColor=meterPreviewColorForReading(rd,'target');
- const measuredColor=meterPreviewColorForReading(rd,'measured');
- const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
- const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+ if(isUnread){
+  meterClearLiveReading(view);
+  // Force side charts empty (clear can race with a redraw).
+  try{
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+   drawRGBBars(null);
+  }catch(e){}
+ } else {
+  updateLiveReading(view);
+ }
+ const colorInclLum=(meterColorRefMode()==='eotf');
+ const deLabel=meterDeltaEFormLabel(meterColorDeltaEForm());
+ const targetXYZ=meterTargetXYZForReading(view);
+ const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterTargetChromaticityForReading(view):null;
+ // Measured fields: ONLY from a real sample. Never fall through to targets.
+ const hasMeasuredXYZ=!isUnread&&!!meterReadingXYZ(view);
+ const hasChroma=!isUnread&&hasMeasuredXYZ&&meterReadingHasChromaticity(view);
+ let lumInfo={measuredY:null,targetY:null,deltaY:null,deltaPct:null};
+ if(!isUnread){
+  lumInfo=meterColorLuminanceInfo(view);
+ } else if(targetXYZ&&targetXYZ.Y>0){
+  lumInfo.targetY=targetXYZ.Y;
+ } else if(meterXyzIsBlack(targetXYZ)){
+  lumInfo.targetY=0;
+ }
+ const targetColor=meterPreviewColorForReading(view,'target');
+ const measuredColor=hasMeasuredXYZ?meterPreviewColorForReading(view,'measured'):'#14141c';
+ const mx=hasChroma?Number(view.x):null;
+ const my=hasChroma?Number(view.y):null;
+ const dx=(mx!=null&&tgt)?(mx-tgt.x):null;
+ const dy=(my!=null&&tgt)?(my-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
- const de=meterColorDeltaE2000(rd,colorRefMode);
+ const de=(!isUnread&&hasMeasuredXYZ)?meterColorDeltaE2000(view,meterColorRefMode()):NaN;
  const hasDe=Number.isFinite(de);
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
  let h='<div style="margin-bottom:10px;text-align:center">';
  h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
- h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(rd.name||'')+'</span></div>';
+ h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(view.name||'')+'</span></div>';
  h+='<div style="display:flex;gap:8px;margin-bottom:10px;justify-content:center">';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
- h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured</div></div></div>';
+ h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(my!=null?my.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394y</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
- // Highlight corresponding thumb and table row by name
- colorHighlightThumb(rd.name);
- colorHighlightTableRow(rd.name);
+ colorHighlightThumb(view.name);
+ colorHighlightTableRow(view.name);
 }
 function colorHighlightThumb(name){
  const container=document.getElementById('meterPatchThumbs');
@@ -33558,10 +37990,16 @@ function colorChartRegisterInteraction(readings){
    if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
    _colorChartHitZones.push({canvasId:'chartCIE',cx:g.toX(rd.x),cy:g.toY(rd.y),radius:12,reading:rd});
   });
-  cieCanvas.onmousemove=function(e){colorChartHandleHover(e,'chartCIE');};
+  // Hover via property handlers; click is handled by cie2d mouseup (so pan
+  // drag does not also select). Wheel/pan bound in cie2dBindHandlers.
+  cieCanvas.onmousemove=function(e){
+   if(_cie2d&&_cie2d.dragging) return;
+   colorChartHandleHover(e,'chartCIE');
+  };
   cieCanvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
-  cieCanvas.onclick=function(e){colorChartHandleClick(e,'chartCIE');};
-  cieCanvas.style.cursor='crosshair';
+  cieCanvas.onclick=null;
+  cieCanvas.style.cursor=(_cie2d&&_cie2d.scale>1.001)?'grab':'crosshair';
+  try{ cie2dBindHandlers(cieCanvas); }catch(e){}
  } else if(cieCanvas&&meterCie3dViewEnabled()){
   // Clear any leftover 2D property handlers so they don't fight orbit controls.
   cieCanvas.onmousemove=null;
@@ -33610,19 +38048,22 @@ function colorChartHandleHover(e,canvasId){
  const tip=document.getElementById('chartTooltip');
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
- const hasChroma=meterReadingHasChromaticity(rd);
+ const unread=!!(rd&&(rd._presetStep||rd._unreadStep||!meterReadingIsRealMeasurement(rd)));
+ const hasChroma=!unread&&meterReadingHasChromaticity(rd);
  const targetXYZ=meterTargetXYZForReading(rd);
  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
- const lumInfo=meterColorLuminanceInfo(rd);
+ const lumInfo=unread
+  ?{measuredY:null,targetY:(targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y:null,deltaY:null,deltaPct:null}
+  :meterColorLuminanceInfo(rd);
  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  let html='<b>'+(rd.name||'')+'</b><br>';
  html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
  html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
  html+='\u0394x: '+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+' &nbsp;\u0394y: '+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'<br>';
- html+='Target Y: '+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='Measured Y: '+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%)');
+ html+='Target Y: '+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='Measured Y: '+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%)');
  tip.innerHTML=html;
  tip.style.display='block';
  const tx=e.clientX+14, ty=e.clientY-10;
@@ -33633,10 +38074,12 @@ function colorChartHandleClick(e,canvasId){
  const hit=colorChartFindHit(e,canvasId);
  if(!hit||meterSeriesRunning) return;
  document.getElementById('chartTooltip').style.display='none';
- const step=meterCanonicalSeriesStep(hit.reading);
- if(step) meterSelectPatchFromInteraction(step,hit.reading,{pin:true});
- else {
-  meterFocusColorReading(hit.reading,{pin:true});
+ const rd=hit.reading;
+ const step=meterCanonicalSeriesStep(rd);
+ const measured=(rd&&meterReadingIsRealMeasurement(rd))?rd:null;
+ if(step) meterSelectPatchFromInteraction(step,measured,{pin:true});
+ else if(measured){
+  meterFocusColorReading(measured,{pin:true});
   meterUpdateReadButtons();
  }
 }
@@ -33648,19 +38091,145 @@ function meterSelectedCIETargetColor(rd,baseColor){
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
 }
 
-// 2D CIE layout: full plot area, x grid 0..1.0, y 0..0.9.
+// 2D CIE view: wheel zoom + drag pan (independent of the per-patch zoom inset).
+// scale=1 shows the full x 0..1 / y 0..0.9 plot; pan is centre offset in xy.
+const CIE2D_WORLD={xMin:0,xMax:1.0,yMin:0,yMax:0.9};
+const CIE2D_SCALE_MIN=1,CIE2D_SCALE_MAX=25;
+let _cie2d={
+ scale:1,panX:0,panY:0,
+ dragging:false,lastX:0,lastY:0,moved:false,handlersBound:false,
+ lastReadings:null,lastPreset:false
+};
+function cie2dResetView(){
+ _cie2d.scale=1; _cie2d.panX=0; _cie2d.panY=0;
+}
+function meterCie2dViewport(){
+ const defW=CIE2D_WORLD.xMax-CIE2D_WORLD.xMin;
+ const defH=CIE2D_WORLD.yMax-CIE2D_WORLD.yMin;
+ const scale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+ const vw=defW/scale, vh=defH/scale;
+ let cx=0.5+(Number(_cie2d.panX)||0);
+ let cy=0.45+(Number(_cie2d.panY)||0);
+ // Keep the viewport inside the world when zoomed; full view is locked.
+ const halfW=vw/2, halfH=vh/2;
+ if(scale<=1.0001){ cx=0.5; cy=0.45; _cie2d.panX=0; _cie2d.panY=0; }
+ else {
+  cx=Math.max(CIE2D_WORLD.xMin+halfW,Math.min(CIE2D_WORLD.xMax-halfW,cx));
+  cy=Math.max(CIE2D_WORLD.yMin+halfH,Math.min(CIE2D_WORLD.yMax-halfH,cy));
+  _cie2d.panX=cx-0.5; _cie2d.panY=cy-0.45;
+ }
+ return {xMin:cx-halfW,xMax:cx+halfW,yMin:cy-halfH,yMax:cy+halfH,scale:scale,cx:cx,cy:cy};
+}
+function meterCie2dNiceStep(range){
+ const r=Math.max(1e-6,Number(range)||0.1);
+ if(r<=0.04) return 0.005;
+ if(r<=0.08) return 0.01;
+ if(r<=0.2) return 0.02;
+ if(r<=0.45) return 0.05;
+ return 0.1;
+}
+// 2D CIE layout: full plot area with optional zoom/pan viewport.
 // Zoom inset is drawn over the top-right of the plot (not a side gutter).
 function meterCie2dGeom(cw,ch){
  const pad={t:15,r:15,b:35,l:45};
- const xMin=0,xMax=1.0,yMin=0,yMax=0.9;
+ const vp=meterCie2dViewport();
+ const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
  const w=Math.max(1,cw-pad.l-pad.r);
  const h=Math.max(1,ch-pad.t-pad.b);
+ const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
  return {
-  pad,w,h,xMin,xMax,yMin,yMax,
+  pad,w,h,xMin,xMax,yMin,yMax,scale:vp.scale,
   plotRight:pad.l+w,
-  toX:v=>pad.l+(v-xMin)/(xMax-xMin)*w,
-  toY:v=>pad.t+h-(v-yMin)/(yMax-yMin)*h
+  toX:v=>pad.l+(v-xMin)/xSpan*w,
+  toY:v=>pad.t+h-(v-yMin)/ySpan*h,
+  fromX:px=>xMin+((px-pad.l)/w)*xSpan,
+  fromY:py=>yMin+((pad.t+h-py)/h)*ySpan
  };
+}
+function meterCie2dRedraw(){
+ const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ if(!isColor) return;
+ if(Array.isArray(meterReadings)&&meterReadings.length){
+  drawCIEChart(meterReadings);
+ } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  drawCIEChartPreset(meterSeriesSteps);
+ }
+}
+function cie2dBindHandlers(canvas){
+ if(!canvas||canvas._cie2dBound) return;
+ canvas._cie2dBound=true;
+ const onDown=(e)=>{
+  if(meterCie3dViewEnabled()) return;
+  if(e.button!=null&&e.button!==0) return;
+  _cie2d.dragging=true; _cie2d.moved=false;
+  _cie2d.lastX=e.clientX; _cie2d.lastY=e.clientY;
+  canvas.style.cursor='grabbing';
+ };
+ const onMove=(e)=>{
+  if(!_cie2d.dragging||meterCie3dViewEnabled()) return;
+  const dx=e.clientX-_cie2d.lastX, dy=e.clientY-_cie2d.lastY;
+  if(Math.abs(dx)+Math.abs(dy)<2&&!_cie2d.moved) return;
+  _cie2d.moved=true;
+  _cie2d.lastX=e.clientX; _cie2d.lastY=e.clientY;
+  const rect=canvas.getBoundingClientRect();
+  const g=meterCie2dGeom(rect.width,rect.height);
+  // Drag moves the world under the cursor (natural map pan).
+  const xSpan=g.xMax-g.xMin, ySpan=g.yMax-g.yMin;
+  _cie2d.panX-=(dx/Math.max(1,g.w))*xSpan;
+  _cie2d.panY+=(dy/Math.max(1,g.h))*ySpan;
+  meterCie2dRedraw();
+ };
+ const onUp=(e)=>{
+  if(!_cie2d.dragging) return;
+  const wasDrag=_cie2d.moved;
+  _cie2d.dragging=false;
+  canvas.style.cursor=(_cie2d.scale>1.001)?'grab':'crosshair';
+  // Click without drag = existing point-select behaviour.
+  if(!wasDrag&&e&&e.type==='mouseup'){
+   try{ colorChartHandleClick(e,'chartCIE'); }catch(err){}
+  }
+ };
+ const onWheel=(e)=>{
+  if(meterCie3dViewEnabled()) return;
+  e.preventDefault();
+  const rect=canvas.getBoundingClientRect();
+  const g0=meterCie2dGeom(rect.width,rect.height);
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  // Only zoom when pointer is over the plot area.
+  if(mx<g0.pad.l||mx>g0.pad.l+g0.w||my<g0.pad.t||my>g0.pad.t+g0.h) return;
+  const xy={x:g0.fromX(mx),y:g0.fromY(my)};
+  const factor=e.deltaY<0?1.12:1/1.12;
+  const oldScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+  const newScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,oldScale*factor));
+  if(Math.abs(newScale-oldScale)<1e-6) return;
+  _cie2d.scale=newScale;
+  if(newScale<=1.0001){ cie2dResetView(); }
+  else {
+   // Keep the CIE point under the cursor fixed.
+   const g1=meterCie2dGeom(rect.width,rect.height);
+   const xAfter=g1.fromX(mx), yAfter=g1.fromY(my);
+   _cie2d.panX+=(xy.x-xAfter);
+   _cie2d.panY+=(xy.y-yAfter);
+  }
+  canvas.style.cursor=(_cie2d.scale>1.001)?'grab':'crosshair';
+  meterCie2dRedraw();
+ };
+ const onDbl=()=>{
+  if(meterCie3dViewEnabled()) return;
+  cie2dResetView();
+  canvas.style.cursor='crosshair';
+  meterCie2dRedraw();
+ };
+ canvas.addEventListener('mousedown',onDown);
+ window.addEventListener('mousemove',onMove);
+ window.addEventListener('mouseup',onUp);
+ canvas.addEventListener('wheel',onWheel,{passive:false});
+ canvas.addEventListener('dblclick',onDbl);
+ canvas._cie2dHandlers={onDown,onMove,onUp,onWheel,onDbl};
+}
+function cie2dUnbindHandlers(canvas){
+ // Handlers stay bound once; mode checks gate behaviour. No-op cleanup.
+ if(!canvas) return;
 }
 
 // CIE ΔY% luminance-error ring. Only drawn when Include luminance error is on.
@@ -33685,7 +38254,7 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 
 // ── CIE xyY 3D view ──────────────────────────────────────────────────────────
 // Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
-// Right-drag orbit, left-drag pan, wheel zoom, double-click reset.
+// Drag rotates (orbit), wheel zooms, double-click resets — matches the cube view.
 const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
@@ -33708,16 +38277,26 @@ function meterUpdateCie3dLabel(){
  if(!lab) return;
  lab.textContent=meterCie3dViewEnabled()?'CIE xyY (3D)':'CIE 1931 Chromaticity';
 }
-// Expand CIE into free row width when 3D is on; restore fixed 450² for 2D.
+// CIE layout: 3D uses free row width; expand (2D or 3D) fills the card.
 function meterApplyCie3dLayout(){
  const layout=document.getElementById('colorTopLayout');
  const canvas=document.getElementById('chartCIE');
  if(!layout||!canvas) return;
- layout.classList.toggle('cie-3d-layout',meterCie3dViewEnabled());
+ const is3d=meterCie3dViewEnabled();
+ layout.classList.toggle('cie-3d-layout',is3d);
+ // Keep expand state across 2D/3D toggle; re-assert class from flag.
+ layout.classList.toggle('cie-expanded',!!meterChartExpanded.cie);
+ const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
+ if(cieExpandBtn){
+  cieExpandBtn.style.display='flex';
+  cieExpandBtn.innerHTML=meterChartExpanded.cie?'↖':'↘';
+  cieExpandBtn.title=meterChartExpanded.cie?'Collapse':'Expand to full width';
+ }
  void canvas.offsetWidth; // reflow before getChartCtx measures the box
 }
 function meterOnCie3dViewChange(){
  try{ meterSaveColorPrefs(); }catch(e){}
+ try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('cie_3d',meterCie3dViewEnabled()); }catch(e){}
  meterUpdateCie3dLabel();
  meterApplyCie3dLayout();
  const canvas=document.getElementById('chartCIE');
@@ -33742,6 +38321,253 @@ function cie3dResetCamera(){
  _cie3d.panY=CIE3D_DEFAULT.panY;
  _cie3d.scale=CIE3D_DEFAULT.scale;
 }
+// CIE chart display options (2D + 3D views). Persisted per-browser — these
+// are view preferences, not measurement settings.
+const METER_CIE_VIEW_OPTS_KEY='pgen.meter.cieViewOpts';
+let meterCieViewOpts={targets:true,dropLines:true,gamut:true,locus:true,lumRings:true};
+
+function meterCieViewOptsLoad(){
+ try{
+  const raw=localStorage.getItem(METER_CIE_VIEW_OPTS_KEY);
+  if(raw){
+   const parsed=JSON.parse(raw);
+   ['targets','dropLines','gamut','locus','lumRings'].forEach(key=>{
+    if(typeof parsed[key]==='boolean') meterCieViewOpts[key]=parsed[key];
+   });
+  }
+ }catch(e){}
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus',lumRings:'meterCieOptLumRings'};
+ Object.keys(map).forEach(key=>{
+  const el=document.getElementById(map[key]);
+  if(el) el.checked=meterCieViewOpts[key];
+ });
+}
+
+function meterCieViewOptChange(){
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus',lumRings:'meterCieOptLumRings'};
+ Object.keys(map).forEach(key=>{
+  const el=document.getElementById(map[key]);
+  if(el) meterCieViewOpts[key]=!!el.checked;
+ });
+ try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
+ try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('targets',!!meterCieViewOpts.targets); }catch(e){}
+ const isColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ if(Array.isArray(meterReadings)&&meterReadings.length){
+  drawAllCharts(isColorSeries?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
+ } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  drawAllChartsPreset(isColorSeries?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps));
+ }
+}
+
+// ---- RGB cube view (lattice series) ----
+// Plots lattice nodes at their SIGNAL RGB positions (R->x, G->up, B->depth),
+// which is the only space where a cube lattice actually looks like a cube.
+// Hollow node = not measured yet, filled = measured; the cube fills in as a
+// series run progresses.
+let _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2};
+let meterCubeViewLast=null;
+
+function meterActiveLatticeSeries(){
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ return (series&&series.kind==='lattice')?series:null;
+}
+
+// Lattice / skeleton / hybrid volume profiling is characterization, not a
+// ColorChecker-style verification series. Hide Delta-E averages for all three.
+function meterActiveVolumeProfileSeries(){
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ if(!series) return null;
+ const k=String(series.kind||'');
+ return (k==='lattice'||k==='skeleton'||k==='hybrid')?series:null;
+}
+
+function cubeViewProject(fr,fg,fb,layout){
+ const px=fr-0.5,py=fg-0.5,pz=fb-0.5;
+ const cy=Math.cos(_cube3d.yaw),sy=Math.sin(_cube3d.yaw);
+ const cp=Math.cos(_cube3d.pitch),sp=Math.sin(_cube3d.pitch);
+ const x1=px*cy-pz*sy,z1=px*sy+pz*cy,y1=py;
+ const y2=y1*cp+z1*sp,z2=-y1*sp+z1*cp;
+ const persp=_cube3d.dist/(_cube3d.dist+z2);
+ const base=Math.min(layout.w,layout.h)*0.36*_cube3d.scale;
+ return {sx:layout.cx+x1*base*persp,sy:layout.cy-y2*base*persp,z:z2,persp:persp};
+}
+
+function cubeViewBindHandlers(canvas){
+ if(!canvas||canvas._cubeBound) return;
+ canvas._cubeBound=true;
+ let drag=null;
+ canvas.addEventListener('mousedown',e=>{
+  if(!meterActiveLatticeSeries()) return;
+  drag={x:e.clientX,y:e.clientY};
+  canvas.style.cursor='grabbing';
+  e.preventDefault();
+ });
+ window.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  _cube3d.yaw+=(e.clientX-drag.x)*0.01;
+  _cube3d.pitch=Math.max(-1.2,Math.min(1.2,_cube3d.pitch+(e.clientY-drag.y)*0.01));
+  drag={x:e.clientX,y:e.clientY};
+  meterRedrawCubeView();
+ });
+ window.addEventListener('mouseup',()=>{ drag=null; canvas.style.cursor='grab'; });
+ canvas.addEventListener('wheel',e=>{
+  if(!meterActiveLatticeSeries()) return;
+  e.preventDefault();
+  _cube3d.scale=Math.max(0.3,Math.min(4,_cube3d.scale*(e.deltaY<0?1.1:0.9)));
+  meterRedrawCubeView();
+ },{passive:false});
+ canvas.addEventListener('dblclick',()=>{ _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterRedrawCubeView(); });
+}
+
+// Lattice (3D LUT profiling) series are CHARACTERIZATION, not verification:
+// measurements plot on the CIE charts as a gamut cloud (3D xyY view defaults
+// on so neutral-ratio nodes separate by luminance), and there is NO target
+// grading — a node whose signal encodes more light than the panel can make
+// (e.g. 100/75/25 requests ~10:1 R:G in linear light) has no reachable
+// reference, so ΔE bars/averages against one are meaningless and alarming.
+// The ΔE chart + series averages are therefore hidden for lattice series;
+// the RGB cube never renders measurements (LUT Tools owns the cube visual).
+function meterUpdateColorChartMode(isLattice){
+ // Restore each element's ORIGINAL inline display value — colorTopLayout is
+ // an inline flex row and the option labels are inline-flex; clearing to ''
+ // dropped them to block and stacked the colour charts vertically.
+ const set=(id,vis,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?shown:'none'; };
+ set('colorTopLayout',true,'flex');
+ set('meterColorDeltaESection',!isLattice,'');
+ // Averages are ΔE-based: force-hide for lattice; for other series the
+ // averages renderer manages visibility (it only shows when rows exist).
+ if(isLattice){ const avg=document.getElementById('colorSeriesAveragesWrap'); if(avg) avg.style.display='none'; }
+ set('chartCIELabel',true,'');
+ set('meterCie3dViewLabel',true,'inline-flex');
+ set('meterCieOptDropLinesLabel',true,'inline-flex');
+ set('meterCieOptGamutLabel',true,'inline-flex');
+ set('meterCieOptLocusLabel',true,'inline-flex');
+ set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
+}
+
+function meterRedrawCubeView(){
+ if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
+}
+
+// Expand toggle for RGB cube + CIE (2D or 3D). Collapsed = fixed ~600px;
+// expanded = full card width (side panels hidden), taller canvas.
+let meterChartExpanded={cie:false,cube:false};
+function meterToggleChartExpand(which){
+ meterChartExpanded[which]=!meterChartExpanded[which];
+ meterApplyChartExpand(which);
+}
+function meterApplyChartExpand(which){
+ const expanded=!!meterChartExpanded[which];
+ const glyph=expanded?'↖':'↘';
+ if(which==='cube'){
+  const box=document.getElementById('chartCubeViewBox');
+  const canvas=document.getElementById('chartCubeView');
+  const btn=document.getElementById('chartCubeExpandBtn');
+  if(box) box.style.display=expanded?'block':'inline-block';
+  if(canvas){ canvas.style.width=expanded?'100%':'600px'; canvas.style.height=expanded?'min(78vh,760px)':'450px'; }
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  meterRedrawCubeView();
+ } else {
+  // Class-driven layout (works for 2D and 3D CIE); hides RGB/XyY/detail.
+  const layout=document.getElementById('colorTopLayout');
+  const btn=document.getElementById('chartCIEExpandBtn');
+  if(layout) layout.classList.toggle('cie-expanded',expanded);
+  if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
+  const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+  if(Array.isArray(meterReadings)&&meterReadings.length){
+   drawAllCharts(isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
+  } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+   drawAllChartsPreset(isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps));
+  }
+ }
+}
+
+function meterDrawCubeView(items,isPreset){
+ const wrap=document.getElementById('meterCubeViewWrap');
+ if(!wrap) return;
+ const series=meterActiveLatticeSeries();
+ meterUpdateColorChartMode(!!series);
+ if(!series){ wrap.style.display='none'; meterCubeViewLast=null; return; }
+ wrap.style.display='';
+ meterCubeViewLast={items:items,isPreset:!!isPreset};
+ // Paint on the NEXT frame: the surrounding chart pass resizes/clears shared
+ // canvases synchronously after this hook runs, which wiped a same-frame
+ // paint. Deferring also lets the first-show layout settle.
+ if(!meterDrawCubeView._raf){
+  meterDrawCubeView._raf=true;
+  requestAnimationFrame(()=>{ meterDrawCubeView._raf=false; meterDrawCubeViewNow(); });
+ }
+}
+
+function meterDrawCubeViewNow(){
+ if(!meterCubeViewLast) return;
+ const items=meterCubeViewLast.items;
+ const isPreset=meterCubeViewLast.isPreset;
+ const series=meterActiveLatticeSeries();
+ if(!series) return;
+ const ctx=getChartCtx('chartCubeView');
+ if(!ctx||!(ctx.w>10)) return;
+ cubeViewBindHandlers(document.getElementById('chartCubeView'));
+ ctx.setTransform(1,0,0,1,0,0);
+ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+ const dpr=window.devicePixelRatio||1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
+ const markerScale=Math.max(0.35,Math.min(3,_cube3d.scale));
+ // wireframe
+ const corners=[[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]].map(c=>cubeViewProject(c[0],c[1],c[2],layout));
+ const edges=[[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+ ctx.strokeStyle='rgba(132,148,178,0.45)';ctx.lineWidth=1;
+ edges.forEach(e=>{
+  ctx.beginPath();ctx.moveTo(corners[e[0]].sx,corners[e[0]].sy);ctx.lineTo(corners[e[1]].sx,corners[e[1]].sy);ctx.stroke();
+ });
+ ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle='#ff7a7a';ctx.fillText('R',corners[1].sx+8,corners[1].sy+4);
+ ctx.fillStyle='#7aff9b';ctx.fillText('G',corners[2].sx-8,corners[2].sy-6);
+ ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
+ ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
+ // nodes from the expanded lattice patches; sampled above 4096 for draw speed
+ let patches=meterCustomSeriesPatches(series).filter(p=>Number.isFinite(p.frac_r)&&Number.isFinite(p.frac_g)&&Number.isFinite(p.frac_b));
+ const total=patches.length;
+ if(patches.length>4096&&typeof meterSampleSteps==='function') patches=meterSampleSteps(patches,4096);
+ const measuredMap=new Map();
+ if(!isPreset&&Array.isArray(items)){
+  items.forEach(rd=>{ if(rd&&rd.name) measuredMap.set(rd.name,rd); });
+ }
+ const showTargets=meterCieViewOpts.targets;
+ let nodes=patches.map(p=>{
+  const pt=cubeViewProject(p.frac_r,p.frac_g,p.frac_b,layout);
+  const rd=measuredMap.get(p.name)||null;
+  return {pt:pt,p:p,done:!!rd};
+ });
+ // With targets off, show only the measured markers (hide the lattice grid).
+ if(!showTargets) nodes=nodes.filter(n=>n.done);
+ nodes.sort((a,b)=>b.pt.z-a.pt.z);
+ nodes.forEach(n=>{
+  const sq=Math.max(1,2.6*n.pt.persp*markerScale);
+  const col='rgb('+n.p.r8+','+n.p.g8+','+n.p.b8+')';
+  if(!n.done){
+   // Unmeasured: hollow target box at the lattice node.
+   ctx.strokeStyle=col;ctx.lineWidth=Math.max(0.6,1*markerScale);
+   ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+   return;
+  }
+  // Measured: filled dot AT the lattice node — the cube shows read PROGRESS
+  // and signal-space structure only. Measured-vs-target analysis lives on the
+  // CIE charts + ΔE table (measurement deviations plotted in signal space were
+  // dominated by legitimate tone-mapping and read as huge errors).
+  const mr=Math.max(1.2,2.8*n.pt.persp*markerScale);
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=0.7;
+  ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.stroke();
+ });
+ ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measuredMap.size+' measured · filled = measured');
+ ctx.fillText(label,8,ctx.h-8);
+}
+
 function cie3dComputeYMax(items,isPreset){
  let maxY=1;
  (items||[]).forEach(it=>{
@@ -33819,10 +38645,25 @@ function drawCIEChart3D(readings,opts){
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  const isPreset=!!(opts&&opts.preset);
- const items=readings||[];
- const yMax=cie3dComputeYMax(items,isPreset);
+ let items=readings||[];
+ // Live mode: unread series targets stay visible as preset-style hollow
+ // boxes for the whole read — only the measured markers arrive per node.
+ let injected=[];
+ if(!isPreset&&meterCieViewOpts.targets&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+    &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
+  const readNames=new Set(items.map(r=>(r&&r.name!=null)?String(r.name):''));
+  injected=meterSeriesSteps
+   .filter(s=>s&&s.name!=null&&!readNames.has(String(s.name)))
+   .map(s=>Object.assign({},s,{_presetStep:true}));
+  if(injected.length) items=items.concat(injected);
+ }
+ const yMax=Math.max(cie3dComputeYMax(readings||[],isPreset), injected.length?cie3dComputeYMax(injected,true):1);
  _cie3d.yMax=yMax;
  const layout=cie3dMakeLayout(ctx,yMax);
+ // Markers keep a constant WORLD size: scale their pixel size with the wheel
+ // zoom so they shrink when zooming out and grow when zooming in (positions
+ // already scale via baseScale; without this the dots stay fixed-size).
+ const markerScale=Math.max(0.35,Math.min(3,_cie3d.scale||1));
  const prims=[]; // {z, draw:fn}
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
@@ -33844,31 +38685,35 @@ function drawCIEChart3D(readings,opts){
   }});
  }
  // Spectral locus on floor
- const locusPts=CIE_LOCUS.map(p=>cie3dProject(p[0],p[1],0,layout));
- prims.push({z:cie3dAvgZ(locusPts), draw:()=>{
-  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;
-  cie3dStrokePoly(ctx,locusPts,true);
- }});
+ if(meterCieViewOpts.locus){
+  const locusPts=CIE_LOCUS.map(p=>cie3dProject(p[0],p[1],0,layout));
+  prims.push({z:cie3dAvgZ(locusPts), draw:()=>{
+   ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;
+   cie3dStrokePoly(ctx,locusPts,true);
+  }});
+ }
  // Gamut triangle
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- const gPts=[
-  cie3dProject(prim.R.x,prim.R.y,0,layout),
-  cie3dProject(prim.G.x,prim.G.y,0,layout),
-  cie3dProject(prim.B.x,prim.B.y,0,layout)
- ];
- prims.push({z:cie3dAvgZ(gPts), draw:()=>{
-  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
-  cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
-  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
-  ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
-  ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
-  ctx.textAlign='right';ctx.fillText('B',gPts[2].sx-4,gPts[2].sy+12);
- }});
+ if(meterCieViewOpts.gamut){
+  const gPts=[
+   cie3dProject(prim.R.x,prim.R.y,0,layout),
+   cie3dProject(prim.G.x,prim.G.y,0,layout),
+   cie3dProject(prim.B.x,prim.B.y,0,layout)
+  ];
+  prims.push({z:cie3dAvgZ(gPts), draw:()=>{
+   ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+   cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
+   ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+   ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
+   ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
+   ctx.textAlign='right';ctx.fillText('B',gPts[2].sx-4,gPts[2].sy+12);
+  }});
+ }
  // D65
  const d65=cie3dProject(0.3127,0.329,0,layout);
  prims.push({z:d65.z, draw:()=>{
-  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText('D65',d65.sx+5,d65.sy+3);
  }});
@@ -33907,10 +38752,10 @@ function drawCIEChart3D(readings,opts){
  items.forEach(rd=>{
   if(!rd||meterIsWhiteReferenceReading(rd)) return;
   let tx=null,ty=null,tY=null,mx=null,my=null,mY=null,deltaPct=null;
-  if(isPreset){
-   const tgt=((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
+  if(isPreset||rd._presetStep){
+   const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
-    : targetChromaticityXY(rd.r,rd.g,rd.b);
+    : targetChromaticityXY(rd.r,rd.g,rd.b));
    if(tgt){ tx=tgt.x; ty=tgt.y; }
    try{
     const tXYZ=meterTargetXYZForReading(rd);
@@ -33922,7 +38767,7 @@ function drawCIEChart3D(readings,opts){
    const targetXYZ=meterTargetXYZForReading(rd);
    const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
    if(!hasMeasuredXY&&!hasTarget) return;
-   const tgt=hasTarget?meterTargetChromaticityForReading(rd):null;
+   const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
    const lum=meterColorLuminanceInfo(rd);
    if(tgt){ tx=tgt.x; ty=tgt.y; tY=(lum.targetY!=null)?lum.targetY:0; }
    if(hasMeasuredXY){ mx=rd.x; my=rd.y; mY=(lum.measuredY!=null)?lum.measuredY:0; }
@@ -33931,34 +38776,35 @@ function drawCIEChart3D(readings,opts){
   // Chroma-only: cancel Y error by plotting target at measured luminance.
   let plotTY=tY, plotMY=mY;
   if(!colorInclLum&&plotTY!=null&&plotMY!=null) plotTY=plotMY;
-  const targetColor=meterBoostPlotColor(isPreset
+  const itemPreset=isPreset||!!rd._presetStep;
+  const targetColor=meterBoostPlotColor(itemPreset
    ? meterPreviewColorForStep(rd)
    : meterPreviewColorForReading(rd,'target'));
-  const measuredColor=isPreset?null:meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const measuredColor=itemPreset?null:meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const selected=meterIsSelectedColorReading(rd);
   const targetStroke=meterSelectedCIETargetColor(rd,targetColor);
 
   if(tx!=null&&ty!=null&&plotTY!=null){
    const p0=cie3dProject(tx,ty,0,layout);
    const pT=cie3dProject(tx,ty,plotTY,layout);
-   prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=1;
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
+    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=Math.max(0.5,1*markerScale);
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
    prims.push({z:pT.z+0.02, draw:()=>{
-    const sq=5.5*pT.persp;
+    const sq=3.2*pT.persp*markerScale;
     ctx.save();
-    ctx.strokeStyle=targetStroke;ctx.lineWidth=selected?2.4:2.0;
+    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(0.5,(selected?1.8:1.4)*markerScale);
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
     ctx.restore();
    }});
-   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:12,reading:rd});
+   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:Math.max(8,12*markerScale),reading:rd});
   }
   if(mx!=null&&my!=null&&plotMY!=null){
    const p0=cie3dProject(mx,my,0,layout);
    const pM=cie3dProject(mx,my,plotMY,layout);
-   prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=1;
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
+    ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=Math.max(0.5,1*markerScale);
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
    }});
    if(tx!=null&&ty!=null&&plotTY!=null){
@@ -33966,7 +38812,7 @@ function drawCIEChart3D(readings,opts){
     // Chromaticity error segment (target → measured at plot heights)
     prims.push({z:(pT.z+pM.z)/2, draw:()=>{
      ctx.save();
-     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
+     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=Math.max(0.6,1.5*markerScale);ctx.setLineDash([4,3]);
      ctx.beginPath();ctx.moveTo(pT.sx,pT.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
      ctx.restore();
     }});
@@ -33974,7 +38820,7 @@ function drawCIEChart3D(readings,opts){
    // Luminance-error visuals (only when Include luminance error is on).
    // Absolute Y is scaled to series peak (often 800+ nits), so a few-% ΔY is
    // invisible as pure height — add screen-space rings + a min-length ΔY stem.
-   if(colorInclLum&&tY!=null&&mY!=null&&(Math.abs(tY-mY)>1e-6||(deltaPct!=null&&Math.abs(deltaPct)>=0.75))){
+   if(meterCieViewOpts.lumRings&&colorInclLum&&tY!=null&&mY!=null&&(Math.abs(tY-mY)>1e-6||(deltaPct!=null&&Math.abs(deltaPct)>=0.75))){
     const pTtrue=cie3dProject(tx!=null?tx:mx,ty!=null?ty:my,tY,layout);
     const pMtrue=cie3dProject(mx,my,mY,layout);
     // Vertical ΔY stem at measured xy between true target Y and measured Y
@@ -34010,28 +38856,28 @@ function drawCIEChart3D(readings,opts){
     if(tx!=null&&ty!=null){
      prims.push({z:(pTtrue.z+pMtrue.z)/2+0.01, draw:()=>{
       ctx.save();
-      ctx.strokeStyle=dYcol;ctx.lineWidth=1.0;ctx.setLineDash([3,2]);
+      ctx.strokeStyle=dYcol;ctx.lineWidth=Math.max(0.5,1.0*markerScale);ctx.setLineDash([3,2]);
       ctx.beginPath();ctx.moveTo(pTtrue.sx,pTtrue.sy);ctx.lineTo(pMtrue.sx,pMtrue.sy);ctx.stroke();
       ctx.restore();
      }});
     }
     // Screen-space ΔY% ring (same language as 2D CIE)
     prims.push({z:pM.z+0.05, draw:()=>{
-     meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,deltaPct!=null?deltaPct:((mY-tY)/Math.max(Math.abs(tY),1e-9)*100),pM.persp);
+     meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,deltaPct!=null?deltaPct:((mY-tY)/Math.max(Math.abs(tY),1e-9)*100),pM.persp*markerScale);
     }});
    }
    prims.push({z:pM.z+0.03, draw:()=>{
-    const r=4.6*pM.persp;
+    const r=2.8*pM.persp*markerScale;
     ctx.save();
     ctx.fillStyle=measuredColor;
     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
     if(selected){
      ctx.strokeStyle='#ffffff';ctx.lineWidth=1.6;
-     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5,0,Math.PI*2);ctx.stroke();
+     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5*markerScale,0,Math.PI*2);ctx.stroke();
     }
     ctx.restore();
    }});
-   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:12,reading:rd});
+   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:Math.max(8,12*markerScale),reading:rd});
   }
  });
  // Painter's algorithm: far (large z) → near (small z)
@@ -34041,7 +38887,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';
- ctx.fillText('3D xyY  ·  right-drag orbit · left-drag pan · wheel zoom',ctx.w-12,28);
+ ctx.fillText('3D xyY  ·  drag rotate · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
@@ -34066,6 +38912,17 @@ function cie3dFindHit(mx,my){
  });
  return best;
 }
+// Drag/wheel redraws coalesce onto animation frames: drawCIEChart3D rebuilds
+// and depth-sorts the whole primitive list per paint (thousands of nodes on a
+// 17-cube lattice), and one synchronous repaint per pointermove event floods
+// the main thread on high-rate mice. One repaint per frame is all the screen
+// can show anyway.
+function cie3dRedrawSoon(){
+ if(cie3dRedrawSoon._raf) return;
+ cie3dRedrawSoon._raf=true;
+ requestAnimationFrame(()=>{ cie3dRedrawSoon._raf=false; cie3dRedraw(); });
+}
+
 function cie3dRedraw(){
  if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return;
  if(meterReadings&&meterReadings.length){
@@ -34084,9 +38941,8 @@ function cie3dOnPointerDown(e){
  _cie3d.moved=false;
  _cie3d.lastX=e.clientX;
  _cie3d.lastY=e.clientY;
- // Left / middle / Shift = pan; right = orbit (reversed from earlier left=orbit).
- const isOrbit=(e.button===2||(e.buttons&2));
- _cie3d.mode=isOrbit?'orbit':'pan';
+ // Match the RGB cube view: any drag rotates, wheel zooms, no pan.
+ _cie3d.mode='orbit';
  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
  e.preventDefault();
 }
@@ -34108,7 +38964,7 @@ function cie3dOnPointerMove(e){
    _cie3d.pitch-=dy*0.01;
    _cie3d.pitch=Math.max(CIE3D_PITCH_MIN,Math.min(CIE3D_PITCH_MAX,_cie3d.pitch));
   }
-  cie3dRedraw();
+  cie3dRedrawSoon();
   const tip=document.getElementById('chartTooltip');
   if(tip) tip.style.display='none';
   e.preventDefault();
@@ -34121,19 +38977,22 @@ function cie3dOnPointerMove(e){
  if(!hit||!hit.reading){ tip.style.display='none'; canvas.style.cursor='grab'; return; }
  canvas.style.cursor='pointer';
  const rd=hit.reading;
- const hasChroma=meterReadingHasChromaticity(rd);
+ const unread=!!(rd&&(rd._presetStep||rd._unreadStep||!meterReadingIsRealMeasurement(rd)));
+ const hasChroma=!unread&&meterReadingHasChromaticity(rd);
  const targetXYZ=meterTargetXYZForReading(rd);
  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
- const lumInfo=meterColorLuminanceInfo(rd);
+ const lumInfo=unread
+  ?{measuredY:null,targetY:(targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y:null,deltaY:null,deltaPct:null}
+  :meterColorLuminanceInfo(rd);
  const dxv=(hasChroma&&tgt)?(rd.x-tgt.x):null;
  const dyv=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  let html='<b>'+(rd.name||'')+'</b><br>';
  html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
  html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
  html+='\u0394x: '+(dxv==null?'--':(dxv>=0?'+':'')+dxv.toFixed(4))+' &nbsp;\u0394y: '+(dyv==null?'--':(dyv>=0?'+':'')+dyv.toFixed(4))+'<br>';
- html+='Target Y: '+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='Measured Y: '+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%)');
+ html+='Target Y: '+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='Measured Y: '+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%)');
  tip.innerHTML=html;
  tip.style.display='block';
  const tx=e.clientX+14, ty=e.clientY-10;
@@ -34153,10 +39012,13 @@ function cie3dOnPointerUp(e){
  const hit=cie3dFindHit(e.clientX-rect.left,e.clientY-rect.top);
  if(!hit||!hit.reading) return;
  document.getElementById('chartTooltip').style.display='none';
- const step=meterCanonicalSeriesStep(hit.reading);
- if(step) meterSelectPatchFromInteraction(step,hit.reading,{pin:true});
- else {
-  meterFocusColorReading(hit.reading,{pin:true});
+ const rd=hit.reading;
+ const step=meterCanonicalSeriesStep(rd)||rd;
+ // Preset / unread target boxes are not measurements — never pass them as readings.
+ const measured=(rd&&!rd._presetStep&&meterReadingIsRealMeasurement(rd))?rd:null;
+ if(step) meterSelectPatchFromInteraction(step,measured,{pin:true});
+ else if(measured){
+  meterFocusColorReading(measured,{pin:true});
   meterUpdateReadButtons();
  }
 }
@@ -34165,7 +39027,7 @@ function cie3dOnWheel(e){
  e.preventDefault();
  const factor=e.deltaY>0?0.92:1.08;
  _cie3d.scale=Math.max(0.35,Math.min(4.5,_cie3d.scale*factor));
- cie3dRedraw();
+ cie3dRedrawSoon();
 }
 function cie3dOnDblClick(e){
  if(!meterCie3dViewEnabled()) return;
@@ -34222,7 +39084,8 @@ function drawCIEChart(readings){
   return;
  }
  const canvas=document.getElementById('chartCIE');
- if(canvas) cie3dUnbindHandlers(canvas);
+ if(canvas){ try{ cie3dUnbindHandlers(canvas); }catch(e){} try{ cie2dBindHandlers(canvas); }catch(e){} }
+ _cie2d.lastReadings=readings; _cie2d.lastPreset=false;
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  // Always wipe the full canvas first so disabling ΔY% halos cannot leave
@@ -34235,43 +39098,51 @@ function drawCIEChart(readings){
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
+ const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- // Chromaticity wash fills the full plot box (no reserved zoom gutter).
- { const dpr=window.devicePixelRatio||1;
+ // Clip plot so locus/points outside the zoomed window stay off-canvas.
+ ctx.save();
+ ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
+ // Chromaticity wash cropped to the current viewport.
+ try{
+  const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
+  if(grad){
+   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
+   const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
+   const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
+   const sh=(yMax-yMin)/(CY_MAX-CY_MIN)*grad.height;
    ctx.save();
    ctx.globalAlpha=0.62;
-   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
+   ctx.drawImage(grad,sx,sy,Math.max(1,sw),Math.max(1,sh),pad.l,pad.t,w,h);
    ctx.restore();
- }
- // Grid
+  }
+ }catch(e){}
+ // Grid (step scales with zoom)
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
- for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
- for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
+ for(let x=x0;x<=xMax+1e-9;x+=xStep){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=y0;y<=yMax+1e-9;y+=yStep){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
  // Axes
  ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
- // Axis labels
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
- for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
- ctx.textAlign='right';
- for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
- // Axis titles
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  // CIE spectral locus
- ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
- CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
- ctx.closePath();ctx.stroke();
+ if(meterCieViewOpts.locus){
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  ctx.closePath();ctx.stroke();
+ }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
- ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
- ctx.setLineDash([]);
- ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
- ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
- ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
- ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ if(meterCieViewOpts.gamut){
+  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
+  ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ }
  // D65 white point
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
@@ -34284,14 +39155,36 @@ function drawCIEChart(readings){
   ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';ctx.textAlign='right';
   ctx.fillText('Chroma only',pad.l+w-2,pad.t+22);
  }
+ // Unread series targets stay on the chart for the whole read — only the
+ // measured dots arrive incrementally. (They used to vanish when the first
+ // reading replaced the preset chart, reappearing one-by-one as nodes read.)
+ if(meterCieViewOpts.targets&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+    &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
+  const readNames=new Set(readings.map(r=>(r&&r.name!=null)?String(r.name):''));
+  meterSeriesSteps.forEach(s=>{
+   if(!s||s.name==null||readNames.has(String(s.name))) return;
+   let tgt=null;
+   try{
+    tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
+     ? meterTargetChromaticityForReading(s)
+     : targetChromaticityXY(s.r,s.g,s.b);
+   }catch(e){ tgt=null; }
+   if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
+   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
+   const sq=3.5;
+   ctx.save();
+   ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
+   ctx.restore();
+  });
+ }
  // Plot target and measured points
- readings.forEach(rd=>{
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   const hasMeasuredXY=!!(rd.x&&rd.y&&rd.x>0&&rd.y>0);
   const targetXYZ=meterTargetXYZForReading(rd);
   const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
   if(!hasMeasuredXY&&!hasTarget) return;
-  const tgt=hasTarget?meterTargetChromaticityForReading(rd):null;
+  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
   const lumInfo=meterColorLuminanceInfo(rd);
   const mx=hasMeasuredXY?rd.x:null, my=hasMeasuredXY?rd.y:null;
   const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
@@ -34307,45 +39200,99 @@ function drawCIEChart(readings){
   }
   // Target: crisp hollow square
   if(tgt){
-   const sq=6;
+   const sq=3.5;
    ctx.save();
-   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
    ctx.restore();
   }
   // Luminance-error ring ONLY when Include luminance error is checked.
-  if(hasMeasuredXY&&colorInclLum){
+  if(meterCieViewOpts.lumRings&&hasMeasuredXY&&colorInclLum){
    meterCieDrawLumErrorHalo(ctx,px,py,lumInfo.deltaPct,1);
   }
   // Measured: solid circle at xy (chroma). Always drawn — not a luminance ring.
   if(hasMeasuredXY){
    ctx.save();
    ctx.fillStyle=measuredColor;ctx.beginPath();
-   ctx.arc(px,py,4.6,0,Math.PI*2);
+   ctx.arc(px,py,2.8,0,Math.PI*2);
    ctx.fill();
    ctx.restore();
   }
  });
+ ctx.restore(); // end plot clip
+ // Axis labels outside the clip so they stay readable at any zoom.
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ const labDec=xStep<0.01?3:(xStep<0.05?2:1);
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ if(g.scale>1.001){
+  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
+ }
  drawCIETargetInset(ctx,readings,g);
+}
+
+// Resolve which color patch the CIE zoom inset should follow. Prefer the live
+// series/3D-LUT current step (meterCurrentPatchStep) so mid-read never freezes
+// on the last completed node (e.g. zoom "0/0/5" while status says "10/10/10").
+function meterCieInsetFocus(readings){
+ const list=Array.isArray(readings)?readings:[];
+ const cur=meterCurrentPatchStep||null;
+ if(cur&&cur.name){
+  const named=list.find(r=>r&&String(r.name||'')===String(cur.name||''));
+  if(named&&named.x>0&&named.y>0) return {focus:named,targetOnly:false};
+  // Mid-read: patch is on the panel but no XYZ yet — focus the step's target.
+  return {
+   focus:{
+    name:cur.name,
+    target_x:cur.target_x,target_y:cur.target_y,target_Yn:cur.target_Yn,
+    r:cur.r,g:cur.g,b:cur.b,
+    r_code:cur.r_code!=null?cur.r_code:cur.r,
+    g_code:cur.g_code!=null?cur.g_code:cur.g,
+    b_code:cur.b_code!=null?cur.b_code:cur.b,
+    signal_r_pct:cur.signal_r_pct,signal_g_pct:cur.signal_g_pct,signal_b_pct:cur.signal_b_pct,
+    series_color:cur.series_color,sat_pct:cur.sat_pct,
+    x:0,y:0,luminance:null
+   },
+   targetOnly:true
+  };
+ }
+ let focus=null;
+ if(_selectedColorReadingName){
+  focus=list.find(r=>r&&r.name===_selectedColorReadingName)||null;
+ }
+ if(focus&&focus.x>0&&focus.y>0) return {focus:focus,targetOnly:false};
+ if(focus){
+  // Selected but unread (or target-only synthetic).
+  return {focus:focus,targetOnly:!(focus.x>0&&focus.y>0)};
+ }
+ for(let i=list.length-1;i>=0;i--){
+  const r=list[i];
+  if(r&&r.x>0&&r.y>0) return {focus:r,targetOnly:false};
+ }
+ return {focus:null,targetOnly:false};
 }
 
 // Zoomed inset for the focused color patch — overlaid top-right on the CIE plot
 // (same placement as original), with a caption box sized to the text width.
 function drawCIETargetInset(ctx,readings,geom){
- if(!readings||!readings.length) return;
+ // Allow target-only inset during mid-read even when readings is empty of the current node.
  const colorInclLum=!!meterColorIncludeLum();
- let focus=null;
- if(_selectedColorReadingName){
-  focus=readings.find(r=>r&&r.name===_selectedColorReadingName)||null;
+ const resolved=meterCieInsetFocus(readings);
+ let focus=resolved.focus;
+ const targetOnly=!!resolved.targetOnly;
+ if(!focus) return;
+ let tgt=null;
+ try{ tgt=meterTargetChromaticityForReading(focus); }catch(e){ tgt=null; }
+ if(!tgt&&focus.target_x!=null&&focus.target_y!=null&&Number(focus.target_y)>0){
+  tgt={x:Number(focus.target_x),y:Number(focus.target_y)};
  }
- if(!focus){
-  for(let i=readings.length-1;i>=0;i--){
-   const r=readings[i];
-   if(r&&r.x>0&&r.y>0){focus=r;break;}
-  }
- }
- if(!focus||!(focus.x>0)||!(focus.y>0)) return;
- const tgt=meterTargetChromaticityForReading(focus);
- if(!tgt) return;
+ if(!tgt||!(tgt.x>0)||!(tgt.y>0)) return;
+ // Target-only mid-read: no measured xy yet — still show the correct patch name.
+ const hasMeasured=!targetOnly&&focus.x>0&&focus.y>0;
  const g=geom||meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad;
  const insetSize=130, margin=8;
@@ -34353,12 +39300,15 @@ function drawCIETargetInset(ctx,readings,geom){
  // Nudge left/down a touch so it sits clear of the gamut legend labels.
  const ix=pad.l+g.w-insetSize-margin-18;
  // Autoscale the zoom to fit the target + measured point of the focused
- // reading. Enforce a minimum half-range so close measurements stay readable.
- const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
- const halfRange=Math.max(0.004,span*1.6);
+ // reading. Enforce a minimum half-range so close measurements stay readable
+ // AND a maximum so the inset is always a real zoom over the main chart —
+ // a large miss used to zoom the inset out to ±0.19 (barely 2x). Beyond the
+ // cap the measured dot pins to the inset edge, connector showing direction.
+ const span=hasMeasured?Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y)):0;
+ const halfRange=Math.max(0.004,Math.min(0.05,hasMeasured?(span*1.6):0.05));
  const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
  // Caption: measure text first so the box hugs the words (width + height).
- const focusLumInfo=meterColorLuminanceInfo(focus);
+ const focusLumInfo=hasMeasured?meterColorLuminanceInfo(focus):{deltaPct:null};
  const labelText='Target: '+(focus.name||'patch')+'  \u00B1'+halfRange.toFixed(3)
   +(colorInclLum&&focusLumInfo.deltaPct!=null?'  \u0394Y '+(focusLumInfo.deltaPct>=0?'+':'')+focusLumInfo.deltaPct.toFixed(1)+'%':'');
  ctx.save();
@@ -34409,10 +39359,19 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.restore();
   }
  }catch(e){}
+ // Mid-read (target only): draw the live patch's target square at the inset centre.
+ if(!hasMeasured){
+  const tColor=meterBoostPlotColor(meterPreviewColorForReading(focus,'target'));
+  const sq=5;
+  ctx.save();
+  ctx.strokeStyle=tColor;ctx.lineWidth=1.8;
+  ctx.strokeRect(ZtoX(tgt.x)-sq,ZtoY(tgt.y)-sq,sq*2,sq*2);
+  ctx.restore();
+ }
  // Plot neighbors; hollow target square only for the focused reading.
- readings.forEach(rd=>{
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
   if(!rd||!(rd.x>0)||!(rd.y>0)) return;
-  const isFocus=(rd===focus);
+  const isFocus=!targetOnly&&((rd===focus)||(focus&&rd.name&&focus.name&&String(rd.name)===String(focus.name)));
   const rt=meterTargetChromaticityForReading(rd);
   const lumInfo=meterColorLuminanceInfo(rd);
   if(!rt) return;
@@ -34421,10 +39380,12 @@ function drawCIETargetInset(ctx,readings,geom){
   const mColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const tInside=rt.x>=xMn&&rt.x<=xMx&&rt.y>=yMn&&rt.y<=yMx;
   const mInside=rd.x>=xMn&&rd.x<=xMx&&rd.y>=yMn&&rd.y<=yMx;
-  if(!tInside&&!mInside) return;
-  if(isFocus&&tInside&&mInside){
+  if(!tInside&&!mInside&&!isFocus) return;
+  const clampX=v=>Math.max(ix+plotPad,Math.min(ix+plotPad+pw,v));
+  const clampY=v=>Math.max(iy+plotPad,Math.min(iy+plotPad+ph,v));
+  if(isFocus&&tInside){
    ctx.strokeStyle=meterColorWithAlpha(tColor,0.85);ctx.lineWidth=1.3;
-   ctx.beginPath();ctx.moveTo(ZtoX(rt.x),ZtoY(rt.y));ctx.lineTo(ZtoX(rd.x),ZtoY(rd.y));ctx.stroke();
+   ctx.beginPath();ctx.moveTo(ZtoX(rt.x),ZtoY(rt.y));ctx.lineTo(clampX(ZtoX(rd.x)),clampY(ZtoY(rd.y)));ctx.stroke();
   }
   if(isFocus&&tInside){
    const sq=5;
@@ -34432,14 +39393,21 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
    ctx.restore();
   }
-  if(isFocus&&colorInclLum&&mInside){
+  if(meterCieViewOpts.lumRings&&isFocus&&colorInclLum&&mInside){
    meterCieDrawLumErrorHalo(ctx,ZtoX(rd.x),ZtoY(rd.y),lumInfo.deltaPct,0.85);
   }
-  if(mInside){
+  if(mInside||isFocus){
+   // Focused reading beyond the zoom window pins to the inset edge so the
+   // miss direction stays visible at full zoom.
+   const mx=clampX(ZtoX(rd.x)), my=clampY(ZtoY(rd.y));
    ctx.save();
    ctx.fillStyle=isFocus?mColor:meterColorWithAlpha(mColor,0.7);
    ctx.beginPath();
-   ctx.arc(ZtoX(rd.x),ZtoY(rd.y),isFocus?4.4:3.2,0,Math.PI*2);ctx.fill();
+   ctx.arc(mx,my,isFocus?4.4:3.2,0,Math.PI*2);ctx.fill();
+   if(isFocus&&!mInside){
+    ctx.strokeStyle='rgba(255,255,255,0.8)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(mx,my,6,0,Math.PI*2);ctx.stroke();
+   }
    ctx.restore();
   }
  });
@@ -34455,57 +39423,89 @@ function drawCIEChartPreset(steps){
   return;
  }
  const canvas=document.getElementById('chartCIE');
- if(canvas) cie3dUnbindHandlers(canvas);
+ if(canvas){ try{ cie3dUnbindHandlers(canvas); }catch(e){} try{ cie2dBindHandlers(canvas); }catch(e){} }
+ _cie2d.lastReadings=null; _cie2d.lastPreset=true;
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
+ const dpr=window.devicePixelRatio||1;
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
+ const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
+ const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- { const dpr=window.devicePixelRatio||1;
+ ctx.save();
+ ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
+ try{
+  const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
+  if(grad){
+   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
+   const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
+   const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
+   const sh=(yMax-yMin)/(CY_MAX-CY_MIN)*grad.height;
    ctx.save();
    ctx.globalAlpha=0.42;
-   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
+   ctx.drawImage(grad,sx,sy,Math.max(1,sw),Math.max(1,sh),pad.l,pad.t,w,h);
    ctx.restore();
- }
+  }
+ }catch(e){}
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
- for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
- for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ for(let x=x0;x<=xMax+1e-9;x+=xStep){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=y0;y<=yMax+1e-9;y+=yStep){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
  ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
- for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
- ctx.textAlign='right';
- for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
- // Locus
- ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
- CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
- ctx.closePath();ctx.stroke();
+ // Locus / gamut honor the same view options as the live 2D chart — the
+ // pre-read preset used to ignore them, leaving the checkboxes dead until
+ // the first measurement arrived.
+ if(meterCieViewOpts.locus){
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  ctx.closePath();ctx.stroke();
+ }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
- ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
- ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
- ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
- ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ if(meterCieViewOpts.gamut){
+  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ }
  // D65
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
- // Target placeholders (hollow squares)
- steps.forEach(s=>{
-  const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
-   ? meterTargetChromaticityForReading(s)
-   : targetChromaticityXY(s.r,s.g,s.b);
+ // Target placeholders (hollow squares) — hidden when Targets is unchecked.
+ if(meterCieViewOpts.targets) (steps||[]).forEach(s=>{
+  if(!s) return;
+  let tgt=null;
+  try{
+   tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
+    ? meterTargetChromaticityForReading(s)
+    : targetChromaticityXY(s.r,s.g,s.b);
+  }catch(e){ tgt=null; }
+  if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
-  const sq=6;
+  const sq=3.5;
   const tx=toX(tgt.x), ty=toY(tgt.y);
   ctx.save();
-  ctx.strokeStyle=pc;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
   ctx.restore();
  });
+ ctx.restore(); // end plot clip
+ const labDec=xStep<0.01?3:(xStep<0.05?2:1);
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ if(g.scale>1.001){
+  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
+ }
+ try{ cie2dBindHandlers(canvas); }catch(e){}
 }
 
 function drawColorDeltaE2000Chart(readings){
@@ -34530,13 +39530,29 @@ function drawColorDeltaE2000Chart(readings){
  let yMaxDE;
  if(deValues.length>0){const mx=Math.max(...deValues);yMaxDE=Math.max(2,Math.ceil(mx*1.2*2)/2);}else{yMaxDE=5;}
  yMaxDE=meterApplyTopYZoom('chartColorDE',yMaxDE,0).max;
- const n=deData.length;
+ // Mid-read the axis spans the FULL series, with each bar at its own series
+ // slot, so bars land under their thumbnails from the first reading. Spreading
+ // only the read patches across the whole (scroll-synced, series-wide) canvas
+ // put the newest bar far right of the thumb scroll window — it looked cut
+ // off until enough bars compressed the spread back into alignment.
+ let axisNames=null, axisIndex=null;
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
+    &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  const steps=meterSeriesSteps.filter(s=>s&&s.name!=null);
+  const idx=new Map();
+  steps.forEach((s,i)=>{ if(!idx.has(String(s.name))) idx.set(String(s.name),i); });
+  if(steps.length>=deData.length&&deData.every(d=>idx.has(String(d.name)))){
+   axisNames=steps.map(s=>String(s.name));
+   axisIndex=idx;
+  }
+ }
+ const n=axisNames?axisNames.length:deData.length;
  const rawW=ctx.w-55-15;
  const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:60,l:55},xInset:estBarW/2+4,
   xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMaxDE)),
-  xLabel:(i)=>i<n?deData[i].name:'',
+  xLabel:(i)=>i<n?(axisNames?axisNames[i]:deData[i].name):'',
   yLabel:(i,nn)=>(yMaxDE*i/nn).toFixed(yMaxDE>5?0:1),
   rotateX:true
  });
@@ -34544,7 +39560,8 @@ function drawColorDeltaE2000Chart(readings){
  if(3/yMaxDE<=1) drawDashedLine(ctx,chart,[[0,3/yMaxDE],[1,3/yMaxDE]],'#ff980080');
  const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
  deData.forEach((d,i)=>{
-  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const pos=axisIndex?axisIndex.get(String(d.name)):i;
+  const cx=chart.toX(n>1?pos/(n-1):0.5);
   const barH=Math.max(0.005,Math.min(d.de/yMaxDE,1));
   const y=chart.pad.t+chart.h-barH*chart.h;
   ctx.fillStyle=d.de<1?'#4caf50':d.de<3?'#ff9800':'#f44';
@@ -34704,6 +39721,11 @@ function chartHandleClick(e,canvasId){
 }
 
 function meterSeriesLabelFromKey(key){
+ const customMatch=String(key||'').match(/^(?:greyscale|colors)-(\d+)$/);
+ if(customMatch){
+  const customSeries=meterCustomSeriesById(parseInt(customMatch[1],10));
+  if(customSeries) return customSeries.name;
+ }
  return {
   'greyscale-2':'Greyscale 2pt',
 	  'greyscale-100':'Greyscale 101pt',
@@ -35250,7 +40272,7 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
  if(meterSeriesSteps&&meterSeriesSteps.length>0){
   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
   const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
-  document.getElementById('meterCharts').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true); else document.getElementById('meterCharts').style.display='';
   meterSetThumbsVisible(true);
   document.getElementById('meterReadSeriesBtn').style.display='';
   meterBuildPatchThumbs(sortedSteps,new Set(),null);
@@ -35395,9 +40417,20 @@ function meterSelectCustomCcssValue(filename){
  meterApplyDisplayTypeSelection('custom');
 }
 
+// Snapshot the custom-CCSS library size BEFORE the editor opens so close-time
+// can detect whether a new profile got uploaded (mtime-based check below
+// also handles the case where the operator replaced an existing file with
+// the same name).
+let _ccssEditorBaseline='';
+function _ccssEditorBaselineKey(){
+ const lib=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const customs=lib.filter(f=>f&&f.source==='custom').map(f=>String(f.name||'')+':'+String(f.mtime||'')).sort().join('|');
+ return customs;
+}
 function meterOpenCustomCcssEditor(){
- const modal=document.getElementById('customCcssEditorModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('customCcssEditorModal'));
  if(!modal) return;
+ _ccssEditorBaseline=_ccssEditorBaselineKey();
  loadCustomCcssList();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -35408,26 +40441,103 @@ function meterOpenCustomCcssEditor(){
  });
 }
 
-function meterCloseCustomCcssEditor(){
+async function meterCloseCustomCcssEditor(){
  const modal=document.getElementById('customCcssEditorModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
+ // Refresh BOTH the main and wizard CCSS-profile dropdowns so the operator's
+ // newly uploaded/imported profile is selectable from the wizard step too.
+ // The spec says: "on editor close, refresh the CCSS dropdown(s) and select
+ // the newest custom profile."
+ try{ await refreshMeterCcssCatalog(); }catch(e){}
+ // Detect whether anything in the custom library changed during the edit
+ // session (upload, delete, or replace). The spec only asks to auto-select
+ // when something changed; if the operator only inspected, leave the
+ // existing selection untouched.
+ const after=_ccssEditorBaselineKey();
+ const changed=(after!==_ccssEditorBaseline);
+ const newestCustom=changed?meterSelectNewestCustomCcss():'';
+ if(newestCustom){
+  meterSetCcssProfileSelection(newestCustom);
+  // Persist immediately so a reload keeps the new selection.
+  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
+ }
+ // Always re-populate the wizard clone (in case the operator opened the
+ // editor from the wizard step). Idempotent if the wizard select doesn't
+ // exist yet (page-init case).
+ const wizardInOverlay=(document.getElementById('meterAutoCalDisplayTypeBox')||{}).style&&
+  (document.getElementById('meterAutoCalDisplayTypeBox').style.display!=='none');
+ try{
+  if(wizardInOverlay){
+   meterAutoCalDisplayTypePopulate();
+   // Force the wizard's CCSS dropdown to mirror the new selection.
+   const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+   const mainCcss=document.getElementById('meterCcssProfile');
+   if(wizardCcss&&mainCcss){
+    wizardCcss.dataset.pendingValue=String(mainCcss.value||'');
+    wizardCcss.value=String(mainCcss.value||'');
+    if(wizardCcss.value===String(mainCcss.value||'')) delete wizardCcss.dataset.pendingValue;
+   }
+  }
+ }catch(e){}
 }
 
 const meterDisplayTypeEl=document.getElementById('meterDisplayType');
 meterDisplayTypeEl.dataset.lastStableValue=meterDisplayTypeEl.value||'lcd';
+// Display Type is technology-only. CCSS Editor lives on #meterCcssProfile.
+// A stale custom_editor token on this select is ignored and restored.
 meterDisplayTypeEl.addEventListener('change',function(){
  const v=this.value;
  if(v==='custom_editor'){
   const stable=this.dataset.lastStableValue||'lcd';
   this.value=stable;
   meterApplyDisplayTypeSelection(stable);
-  meterOpenCustomCcssEditor();
+  try{ meterOpenCustomCcssEditor(); }catch(e){}
   return;
  }
  this.dataset.lastStableValue=v;
  meterApplyDisplayTypeSelection(v,{patchSizeDefault:true});
+ // Display Type owns calibration path (OLED/LCD/WRGB). Selecting a type
+ // resets Meter Profile (CCSS) to Auto so the generic built-in for that
+ // technology is used; the operator can then pick a custom/display CCSS.
+ try{
+  const ccss=document.getElementById('meterCcssProfile');
+  if(ccss){
+   ccss.value='';
+   ccss.dataset.lastStableValue='';
+   delete ccss.dataset.pendingValue;
+  }
+  const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+  if(wizardCcss){
+   wizardCcss.value='';
+   wizardCcss.dataset.lastStableValue='';
+   delete wizardCcss.dataset.pendingValue;
+  }
+  meterRefreshCcssAutoLabel('meterAutoCalCcssProfile');
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ }catch(e){
+  try{ meterRefreshCcssAutoLabel(); }catch(e2){}
+ }
 });
+
+// Mirror the technology change handler on the wizard clone. The wizard builds
+// the clone at phase entry via meterAutoCalDisplayTypePopulate(); bind the
+// handler there so the clone's "Auto" label tracks the clone's technology.
+function meterBindWizardDisplayTypeHandlers(){
+ const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
+ const ccssSel=document.getElementById('meterAutoCalCcssProfile');
+ if(techSel&&!techSel.dataset.boundRefresh){
+  techSel.addEventListener('change',function(){
+   meterRefreshCcssAutoLabel('meterAutoCalCcssProfile');
+  });
+  techSel.dataset.boundRefresh='1';
+ }
+ if(ccssSel&&!ccssSel.dataset.bound){
+  // Selecting a non-empty CCSS profile in the wizard does NOT auto-flip
+  // the technology; the operator may want a custom CCSS on a generic tech.
+  ccssSel.dataset.bound='1';
+ }
+}
 
 // Custom CCSS file input
 document.getElementById('ccssFileInput').addEventListener('change',function(){
@@ -35466,7 +40576,12 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
    document.getElementById('ccssName').value='';
     await refreshMeterCcssCatalog();
     await loadCustomCcssList();
-    meterSelectCustomCcssValue(r.filename);
+    // Post-split: selecting a custom CCSS goes through the new
+    // #meterCcssProfile dropdown (NOT the legacy combined display_type
+    // select). The technology dropdown stays on whatever the operator
+    // already had selected; the custom profile attaches to the new CCSS
+    // profile control without affecting WRGB / y-flag.
+    meterSetCcssProfileSelection('custom_'+r.filename);
     await ccssPreviewLoadByValue('custom\t'+r.filename,false);
     meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
     saveMeterSettings();
@@ -35513,7 +40628,9 @@ async function selectCustomCcss(filename){
   else if(v && v.ok && v.description){ toast('CCSS: '+v.description); }
  }catch(e){}
  customCcssFile=filename;
-   meterSelectCustomCcssValue(filename);
+   // Post-split: select the custom profile on the new meter-profile
+   // dropdown, not the legacy combined display_type.
+   meterSetCcssProfileSelection('custom_'+filename);
  ccssPreviewLoadByValue('custom\t'+filename,true);
  loadCustomCcssList();
  saveMeterSettings();
@@ -35936,47 +41053,233 @@ async function refreshMeterCcssCatalog(){
  await meterCcssOptionsPromise;
 }
 
+// --- Panel technology / CCSS split helpers -----------------------------------
+// The single dropdown was split so that WRGB compensation (driven by display_type)
+// and the CCSS profile (the correction matrix) can be picked independently.
+// `getDisplayTechnology()` returns the current tech key (always one of the
+// generic keys: oled_generic/qdoled/lcd_wled/...). `getCcssOverride()` returns
+// the operator-selected CCSS token (ccss_<file> or custom_<file>), or "" when
+// they're tracking the technology's built-in default. These are the source of
+// truth for everything downstream — single reads, series, autocal, 3D LUT,
+// wizard — and replace the old `getEffectiveDisplayType()` which conflated the
+// two into one token (the previous behavior dropped WRGB force whenever a
+// specific CCSS was picked).
+
+// Resolve the panel-technology dropdown value to a real tech key. Falls back
+// to `oled_generic` only when the dropdown is missing (page init race).
+function getDisplayTechnology(){
+ const sel=document.getElementById('meterDisplayType');
+ return sel?String(sel.value||'oled_generic'):'oled_generic';
+}
+
+// Resolve the meter-profile (CCSS) dropdown value. The "" option means "track
+// the technology default"; the server falls back to $_dtype_info's CCSS
+// whenever this token is empty.
+function getCcssOverride(){
+ const sel=document.getElementById('meterCcssProfile');
+ if(!sel) return '';
+ const v=String(sel.value||'');
+ if(v==='custom_editor') return '';
+ return v;
+}
+
+// Backwards-compat alias used by every existing call site. Now ALWAYS returns
+// the technology key (a real tech token), never a ccss_<file> / custom_<file>
+// token. The CCSS path is sent separately via the new ccss_override field.
+function getEffectiveDisplayType(){
+ return getDisplayTechnology();
+}
+
+// Resolve the technology's built-in CCSS profile label (e.g. "WRGB_OLED_LG").
+// Used to re-label the "" option on the meterCcssProfile dropdown so the
+// operator can see what "Auto" will pick without inspecting $_dtype_info.
+function meterTechnologyDefaultCcssLabel(){
+ const tech=getDisplayTechnology();
+ if(tech==='oled_generic') return 'WRGB OLED (built-in)';
+ if(tech==='qdoled') return 'QD-OLED (built-in)';
+ if(tech==='lcd_wled') return 'W-LED family (built-in)';
+ if(tech==='lcd_ccfl') return 'CCFL family (built-in)';
+ if(tech==='lcd_wgccfl') return 'Wide gamut CCFL (built-in)';
+ if(tech==='lcd_rgbled') return 'RGB LED family (built-in)';
+ if(tech==='plasma') return 'Plasma (built-in)';
+ if(tech==='projector_ccss') return 'Projector family (built-in)';
+ if(tech==='crt') return 'CRT (built-in)';
+ if(tech==='lcd') return 'None (no correction)';
+ return 'technology default';
+}
+
+// Re-label the "" option on the CCSS profile dropdown(s) to reflect the
+// current technology's built-in default. The wizard clone uses a separate
+// dropdown id; pass it in to update that one too.
+function meterRefreshCcssAutoLabel(wizardId){
+ const label=meterTechnologyDefaultCcssLabel();
+ const ids=['meterCcssProfile'];
+ if(wizardId) ids.push(wizardId);
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  const autoOpt=sel.querySelector('option[value=""]');
+  if(autoOpt) autoOpt.textContent='Auto ('+label+')';
+ }
+}
+
+// Populate the new #meterCcssProfile dropdown (and the wizard clone's
+// #meterAutoCalCcssProfile) from the cached meterCcssLibrary. Skips the
+// generic/system entries — those are the technology defaults and the
+// operator already has them via the "Auto" option. The "value" matches the
+// existing ccss_<file> / custom_<file> token contract so the backend's
+// resolve_ccss_override() resolves it without further translation.
+function populateMeterCcssProfileSelect(wizardId){
+ const ids=wizardId?['meterCcssProfile',wizardId]:['meterCcssProfile'];
+ const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const seen=new Set();
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  // Never persist the transient editor sentinel as the selected profile.
+  let prev=String(sel.dataset.pendingValue||sel.value||'');
+  if(prev==='custom_editor') prev=String(sel.dataset.lastStableValue||'');
+  sel.innerHTML='';
+  const editorOpt=document.createElement('option');
+  editorOpt.value='custom_editor';
+  editorOpt.textContent='CCSS Editor…';
+  sel.appendChild(editorOpt);
+  const autoOpt=document.createElement('option');
+  autoOpt.value='';
+  autoOpt.textContent='Auto (technology default)';
+  sel.appendChild(autoOpt);
+  for(const entry of library){
+   if(!entry||!entry.name) continue;
+   const name=String(entry.name);
+   if(!/\.ccss$/i.test(name)) continue;
+   const value=(entry.source==='custom'?'custom_':'ccss_')+name;
+   if(seen.has(value+':'+id)) continue;
+   seen.add(value+':'+id);
+   const opt=document.createElement('option');
+   opt.value=value;
+   opt.textContent=ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
+   sel.appendChild(opt);
+  }
+  if(prev==='custom_editor') prev='';
+  sel.value=prev;
+  if(sel.value!==prev){
+   // pending token not in library yet — keep until next catalog refresh
+   if(prev){ sel.dataset.pendingValue=prev; sel.value=''; }
+  } else {
+   delete sel.dataset.pendingValue;
+  }
+  if(sel.value!=='custom_editor') sel.dataset.lastStableValue=String(sel.value||'');
+  if(!sel.dataset.boundCcssEditor){
+   sel.addEventListener('change',meterOnCcssProfileChange);
+   sel.dataset.boundCcssEditor='1';
+  }
+ }
+ meterRefreshCcssAutoLabel(wizardId);
+}
+
+// CCSS dropdown: top "CCSS Editor…" opens the importer/manager and does not
+// stick as the selected profile. All other values auto-save for reboot.
+function meterOnCcssProfileChange(ev){
+ const sel=ev&&ev.target;
+ if(!sel) return;
+ const v=String(sel.value||'');
+ if(v==='custom_editor'){
+  const stable=(sel.dataset.lastStableValue!=null)?String(sel.dataset.lastStableValue):'';
+  sel.value=stable;
+  if(sel.value!==stable) sel.value='';
+  try{ meterOpenCustomCcssEditor(); }catch(e){}
+  return;
+ }
+ sel.dataset.lastStableValue=v;
+ try{
+  // Keep wizard/main in sync when either changes.
+  const otherId=(sel.id==='meterCcssProfile')?'meterAutoCalCcssProfile':'meterCcssProfile';
+  const other=document.getElementById(otherId);
+  if(other&&other!==sel){
+   other.dataset.pendingValue=v;
+   other.value=v;
+   if(other.value===v) delete other.dataset.pendingValue;
+   other.dataset.lastStableValue=v;
+  }
+ }catch(e){}
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
+}
+
+// Wire the meter-profile dropdown to the persisted state: when a custom CCSS
+// gets uploaded/deleted, refresh BOTH the main and wizard selects. The
+// "newest custom profile wins" rule from the spec lives here.
+function meterSelectNewestCustomCcss(){
+ const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const customs=library.filter(f=>f&&f.source==='custom'&&/\.ccss$/i.test(String(f.name||'')));
+ if(!customs.length) return '';
+ // Most recently created (mtime descending) wins; fall back to last in the list.
+ customs.sort((a,b)=>{
+  const ta=Number(a&&a.mtime)||0;
+  const tb=Number(b&&b.mtime)||0;
+  if(tb!==ta) return tb-ta;
+  return String(b.name||'').localeCompare(String(a.name||''));
+ });
+ return customs[0]?(('custom_'+String(customs[0].name||''))):'';
+}
+
+// Force a particular option into the main + wizard CCSS selects. Used by
+// ccss-upload success handlers and by meterOpenCustomCcssEditor's auto-select
+// on close (the spec's "select the newest custom profile").
+function meterSetCcssProfileSelection(token){
+ if(!token) return;
+ const ids=['meterCcssProfile','meterAutoCalCcssProfile'];
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  sel.dataset.pendingValue=token;
+  sel.value=token;
+  if(sel.value===token) delete sel.dataset.pendingValue;
+ }
+}
+
+// --- /end Panel technology / CCSS split helpers -----------------------------
+
 // Populate the display-specific CCSS optgroup with all .ccss files on the device,
 // sorted alphabetically. Option value is "ccss_FILENAME" (for system) or
 // "custom_FILENAME" (for user-uploaded). The backend's resolve_display_type()
 // handles both prefixes identically.
 async function loadMeterCcssOptions(){
  const r=await fetchJSON('/api/ccss/all',{_quiet:true,_timeoutMs:5000});
+ // CCSS lives on #meterCcssProfile (+ wizard clone), not on the technology
+ // dropdown. The old #meterDtCcss optgroup was removed with the panel/CCSS
+ // split — do not append into it (null append used to abort this loader and
+ // leave AutoCal with only the "Auto" option).
  const grp=document.getElementById('meterDtCcss');
- if(!grp) return;
- grp.innerHTML='';
+ if(grp) grp.innerHTML='';
  meterCcssLibrary=(r&&Array.isArray(r.files))?r.files:[];
- ccssPreviewPopulateOptions(meterCcssLibrary);
+ try{ ccssPreviewPopulateOptions(meterCcssLibrary); }catch(e){}
+ // Always fill main + wizard CCSS selects from the library.
+ populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
  if(!meterCcssLibrary.length) return;
- const sel=document.getElementById('meterDisplayType');
- const prev=sel.value;
- const byLabel=new Map();
- meterCcssLibrary.forEach(f=>{
-  if(f.source==='system'&&ccssIsGenericProfile(f)) return;
-  const label=ccssFormatDropdownLabel(f);
-  if(!label) return;
-  const score=(f.source==='custom'?1000:0)
-   +(ccssLegacyTechFirstName(f.name)?0:100)
-   +((f.display&&f.technology)?20:0)
-   +(String(f.name||'').length>0?Math.min(String(f.name).length,50):0);
-  const current=byLabel.get(label);
-  if(!current||score>current.score){
-   byLabel.set(label,{entry:f,label:label,score:score});
-  }
- });
- [...byLabel.values()].sort((a,b)=>a.label.localeCompare(b.label)).forEach(item=>{
-  const f=item.entry;
-  const prefix=f.source==='custom'?'custom_':'ccss_';
-  const opt=document.createElement('option');
-  opt.value=prefix+f.name;
-  opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
-  grp.appendChild(opt);
- });
- // restore previous or pending selection if still present
- const restore=sel.dataset.pendingValue||prev;
- if(restore){
-  sel.value=restore;
-  if(sel.value===restore) delete sel.dataset.pendingValue;
+ // Optional legacy optgroup fill (only if the anchor still exists).
+ if(grp){
+  const byLabel=new Map();
+  meterCcssLibrary.forEach(f=>{
+   if(f.source==='system'&&ccssIsGenericProfile(f)) return;
+   const label=ccssFormatDropdownLabel(f);
+   if(!label) return;
+   const score=(f.source==='custom'?1000:0)
+    +(ccssLegacyTechFirstName(f.name)?0:100)
+    +((f.display&&f.technology)?20:0)
+    +(String(f.name||'').length>0?Math.min(String(f.name).length,50):0);
+   const current=byLabel.get(label);
+   if(!current||score>current.score){
+    byLabel.set(label,{entry:f,label:label,score:score});
+   }
+  });
+  [...byLabel.values()].sort((a,b)=>a.label.localeCompare(b.label)).forEach(item=>{
+   const f=item.entry;
+   const prefix=f.source==='custom'?'custom_':'ccss_';
+   const opt=document.createElement('option');
+   opt.value=prefix+f.name;
+   opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
+   grp.appendChild(opt);
+  });
  }
 }
 
@@ -36183,7 +41486,15 @@ function saveMeterSettings(){
  const displayTypeValue=val('meterDisplayType');
  const s={
   display_type:(displayTypeValue==='custom_editor')?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
+  // The technology dropdown no longer carries a CCSS token; the CCSS
+  // override is in its own dropdown. Send the operator's selection (empty
+  // string when on the "Auto" option, which the server resolves to the
+  // $_dtype_info default for the chosen display_type).
+  ccss_override:(()=>{ const v=val('meterCcssProfile'); return (v==='custom_editor')?'':v; })(),
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
+  low_light_enabled:(()=>{ try{ const e=document.getElementById('meterLowLightEnabled'); return !!(e&&e.checked); }catch(e){ return false; } })(),
+  low_light_mode:(()=>{ try{ const e=document.getElementById('meterLowLightMode'); return String((e&&e.value)||'off'); }catch(e){ return 'off'; } })(),
+  low_light_trigger:(()=>{ try{ const e=document.getElementById('meterLowLightTrigger'); const n=Number(e&&e.value); return Number.isFinite(n)?n:5.0; }catch(e){ return 5.0; } })(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
   simulate_spectro:chk('meterSimulateSpectro'),
@@ -36207,6 +41518,13 @@ function saveMeterSettings(){
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
+  // Custom series post ONLY when THIS browser mutated them. Posting a stale
+  // (but non-empty) list from another tab/browser silently clobbered series
+  // created elsewhere; omitting the key preserves the server's stored blob.
+  ...(meterCustomSeriesDirty
+   ? {custom_series_json:JSON.stringify(meterCustomSeriesState)}
+   : {}),
+  custom_series_dirty:!!meterCustomSeriesDirty,
   // Color-science selections
   grey_ref_mode:val('meterGreyRefMode'),
   gray_world:val('meterGrayWorld'),
@@ -36218,22 +41536,31 @@ function saveMeterSettings(){
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
-    xyz_matrix_enabled:chk('meterXyzMatrixEnabled'),
-    xyz_m11:val('meterXyzM11'),
-    xyz_m12:val('meterXyzM12'),
-    xyz_m13:val('meterXyzM13'),
-    xyz_m21:val('meterXyzM21'),
-    xyz_m22:val('meterXyzM22'),
-    xyz_m23:val('meterXyzM23'),
-    xyz_m31:val('meterXyzM31'),
-    xyz_m32:val('meterXyzM32'),
-    xyz_m33:val('meterXyzM33'),
+    // Persist the applied XYZ matrix only — draft edits stay in the DOM until Apply.
+    xyz_matrix_enabled:(window._meterXyzMatrixApplied!=null)?!!window._meterXyzMatrixApplied.enabled:chk('meterXyzMatrixEnabled'),
+    xyz_m11:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][0]):val('meterXyzM11'),
+    xyz_m12:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][1]):val('meterXyzM12'),
+    xyz_m13:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][2]):val('meterXyzM13'),
+    xyz_m21:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][0]):val('meterXyzM21'),
+    xyz_m22:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][1]):val('meterXyzM22'),
+    xyz_m23:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][2]):val('meterXyzM23'),
+    xyz_m31:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][0]):val('meterXyzM31'),
+    xyz_m32:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][1]):val('meterXyzM32'),
+    xyz_m33:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][2]):val('meterXyzM33'),
   sep_lum:chk('meterSeparateLumError'),
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
  };
+ const carriedCustomSeries=!!meterCustomSeriesDirty;
+ if(carriedCustomSeries) meterCustomSeriesBackupWrite(true);
  const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
+ request.then(r=>{
+  if(r&&carriedCustomSeries){
+   meterCustomSeriesDirty=false;
+   meterCustomSeriesBackupWrite(false);
+  }
+ }).catch(()=>{});
  meterSettingsSavePromise=request.catch(()=>null);
  try{ meterSaveColorPrefs(); }catch(e){}
  return meterSettingsSavePromise;
@@ -36259,6 +41586,14 @@ async function loadMeterSettings(){
  if(s.grey_patch_profiles_json){
   try{ meterGreyPatchProfiles=JSON.parse(s.grey_patch_profiles_json); }catch(e){}
  }
+ if(s.custom_series_json){
+  try{ meterCustomSeriesState=JSON.parse(s.custom_series_json); }catch(e){}
+ }
+ meterCustomSeriesNormalizeState();
+ // Recover any locally-backed-up series whose carrying save never landed
+ // (daemon restart / network blip before a refresh) and re-save them.
+ try{ if(meterCustomSeriesRecoverFromBackup()){ saveMeterSettings(); toast('Recovered unsaved custom series'); } }catch(e){}
+ meterRenderCustomSeriesButtons();
  meterMeasurementPort=meterNormalizePortValue(s.measurement_meter_port);
  // Distinct copy of the server-saved value that survives meterPopulateRoleSelects
  // (which overwrites meterMeasurementPort with whatever the SELECT shows, including
@@ -36279,14 +41614,73 @@ async function loadMeterSettings(){
  }
  if(s.ccss_file) customCcssFile=s.ccss_file;
  setChk('meterSimulateSpectro', s.simulate_spectro);
+ // Migration: the legacy `display_type` setting held either a tech key
+ // (`oled_generic`) or a CCSS token (`ccss_<file>` / `custom_<file>` /
+ // bare `custom`). Post-split the technology and CCSS live in two
+ // separate fields. Split the legacy value here so a reload from an
+ // older /api/meter/settings blob doesn't silently drop the CCSS or
+ // silently swap WRGB OLED for a custom profile with auto WRGB.
+ let _migratedDisplayType='';
+ let _migratedCcssOverride='';
  if(s.display_type){
-  const normalizedDisplayType=meterNormalizeStoredDisplayType(s.display_type,s.ccss_file);
-  const sel=document.getElementById('meterDisplayType');
-  sel.dataset.pendingValue=normalizedDisplayType;
-  sel.value=normalizedDisplayType;
-  sel.dataset.lastStableValue=normalizedDisplayType;
-  if(sel.value===normalizedDisplayType) delete sel.dataset.pendingValue;
+  const legacyValue=String(s.display_type);
+  if(/^(?:ccss_|custom_)/.test(legacyValue)||legacyValue==='custom'){
+   // Was a CCSS token. Map the filename to the technology it implies and
+   // keep the token as the CCSS override. Else infer technology from
+   // filename tokens (woled/wrgb -> oled_generic, qd[-_]oled/qdoled ->
+   // qdoled, lcd/wled -> lcd_wled); unknown tech leaves display_type
+   // unset so we preserve today's WRGB state instead of silently changing.
+   const token=(legacyValue==='custom'&&s.ccss_file)?('custom_'+s.ccss_file):legacyValue;
+   const fname=String(token).replace(/^(?:ccss_|custom_)/,'').toLowerCase();
+   let inferred='';
+   if(/woled|wrgb/.test(fname)) inferred='oled_generic';
+   else if(/qd[-_]?oled|qdoled/.test(fname)) inferred='qdoled';
+   else if(/lcd|wled/.test(fname)) inferred='lcd_wled';
+   _migratedDisplayType=inferred;
+   _migratedCcssOverride=token;
+  } else {
+   // Was already a tech key — drop it into the technology slot, leave
+   // the CCSS override on "Auto" (matches pre-split behavior of an empty
+   // override).
+   _migratedDisplayType=legacyValue;
+  }
  }
+ if(_migratedDisplayType){
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=_migratedDisplayType;
+  sel.value=_migratedDisplayType;
+  sel.dataset.lastStableValue=_migratedDisplayType;
+  if(sel.value===_migratedDisplayType) delete sel.dataset.pendingValue;
+ } else if(s.display_type){
+  // Token didn't parse to a known tech. Preserve the legacy behavior
+  // (worker receives the raw token) — better than silently dropping WRGB.
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=String(s.display_type);
+  sel.value=String(s.display_type);
+  sel.dataset.lastStableValue=String(s.display_type);
+  if(sel.value===String(s.display_type)) delete sel.dataset.pendingValue;
+ }
+ // CCSS override: prefer the explicit new field when the server sent one,
+ // else fall back to the migrated token from the legacy display_type.
+ const _ccssOverride=(s.ccss_override!=null)?String(s.ccss_override):_migratedCcssOverride;
+ if(_ccssOverride && _ccssOverride!=='custom_editor'){
+  const ccssSel=document.getElementById('meterCcssProfile');
+  if(ccssSel){
+   ccssSel.dataset.pendingValue=_ccssOverride;
+   ccssSel.dataset.lastStableValue=_ccssOverride;
+   ccssSel.value=_ccssOverride;
+   if(ccssSel.value===_ccssOverride) delete ccssSel.dataset.pendingValue;
+  }
+  const wiz=document.getElementById('meterAutoCalCcssProfile');
+  if(wiz){
+   wiz.dataset.pendingValue=_ccssOverride;
+   wiz.dataset.lastStableValue=_ccssOverride;
+   wiz.value=_ccssOverride;
+   if(wiz.value===_ccssOverride) delete wiz.dataset.pendingValue;
+  }
+ }
+ // Refresh the "Auto" label now that the technology dropdown is populated.
+ meterRefreshCcssAutoLabel();
  if(s.target_gamut!=null){
   const savedTargetGamut=String(s.target_gamut||'auto').toLowerCase();
   document.getElementById('meterTargetGamut').value=(savedTargetGamut==='customd65')?'bt709':savedTargetGamut;
@@ -36349,13 +41743,39 @@ async function loadMeterSettings(){
  setVal('meterXyzM32', s.xyz_m32);
  setVal('meterXyzM33', s.xyz_m33);
  setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
+ meterSnapshotXyzMatrixAppliedFromDom();
  meterUpdateXyzMatrixVisibility();
+ meterUpdateXyzMatrixApplyButton();
  setChk('meterSeparateLumError', (greyMode==='eotf') ? s.sep_lum : false);
  meterUpdateSeparateLumVisibility();
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
  meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
  meterUpdateHdrConfigVisibility();
+ // Low Light Handler: server-side meter_settings survives Pi reboot (localStorage
+ // alone does not when the browser profile is wiped / another client is used).
+ try{
+  if(s.low_light_enabled!=null||s.low_light_mode!=null||s.low_light_trigger!=null){
+   const en=document.getElementById('meterLowLightEnabled');
+   const mode=document.getElementById('meterLowLightMode');
+   const trigger=document.getElementById('meterLowLightTrigger');
+   if(en&&s.low_light_enabled!=null) en.checked=!!(s.low_light_enabled===true||s.low_light_enabled==='1'||s.low_light_enabled===1);
+   if(mode&&s.low_light_mode!=null){
+    let base=String(s.low_light_mode||'off');
+    if(base==='x') base='off';
+    else if(base.indexOf('x_')===0) base=base.slice(2);
+    if(Array.from(mode.options).some(o=>o.value===base)) mode.value=base;
+   }
+   if(trigger&&s.low_light_trigger!=null){
+    const n=Number(s.low_light_trigger);
+    if(Number.isFinite(n)&&n>0) trigger.value=n;
+   }
+   // Mirror into localStorage for offline warm-start.
+   if(typeof meterSetLowLightHandler==='function') meterSetLowLightHandler();
+  } else if(typeof meterRestoreLowLightHandler==='function'){
+   meterRestoreLowLightHandler();
+  }
+ }catch(e){}
  if(meterReadings&&meterReadings.length){
   meterOnGreyRefChange();
   const live=meterFindReadingForStep(meterCurrentPatchStep)||[...meterReadings].reverse().find(rd=>meterReadingHasLuminance(rd));
@@ -36365,12 +41785,14 @@ async function loadMeterSettings(){
  meterSetSeriesTab(meterSeriesTab,true);
 }
 // Add change listeners for auto-save
+// Note: XYZ matrix number cells are deferred — they save only via meterApplyXyzMatrixEdits().
+// The enable checkbox applies immediately via meterApplyXyzMatrixEnableFromDraft().
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
 	 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
 	 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
 	 'meterPatchInsertPatchEvery','meterPatchInsertPatchDuration','meterPatchInsertPatchLevel',
 	 'meterPatchInsertTimeFrequency','meterPatchInsertTimeDuration','meterPatchInsertTimeLevel',
-	 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
+	 'meterSimulateSpectro'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -36425,14 +41847,25 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   const pi=document.getElementById('meterPatchInsert');
   if(pi){const w=gearWrap('meterPatternInsertGear');if(w) w.classList.toggle('is-hidden',!pi.checked);if(!pi.checked&&gears.patternInsert) gears.patternInsert.close();}
   const xy=document.getElementById('meterXyzMatrixEnabled');
-  if(xy){const w=gearWrap('meterXyzGear');if(w) w.classList.toggle('is-hidden',!xy.checked);if(!xy.checked&&gears.xyz) gears.xyz.close();}
+  if(xy){
+   // Keep the gear available while dirty so Apply is reachable after unchecking enable.
+   const showXyz=xy.checked||(typeof meterXyzMatrixDraftDirty==='function'&&meterXyzMatrixDraftDirty());
+   const w=gearWrap('meterXyzGear');
+   if(w) w.classList.toggle('is-hidden',!showXyz);
+   if(!showXyz&&gears.xyz) gears.xyz.close();
+  }
   const d65=document.getElementById('meterCustomD65Enabled');
   if(d65){const w=gearWrap('meterCustomD65Gear');if(w) w.classList.toggle('is-hidden',!d65.checked);if(!d65.checked&&gears.customD65) gears.customD65.close();}
  };
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const xyEl=document.getElementById('meterXyzMatrixEnabled');
- if(xyEl) xyEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();meterRefreshAfterXyzMatrixChange();});
+ if(xyEl) xyEl.addEventListener('change',()=>{
+  // Enable applies immediately (gear, charts, persist); matrix numbers stay deferred.
+  window.meterUpdateGearVisibility();
+  meterUpdateXyzMatrixVisibility();
+  meterApplyXyzMatrixEnableFromDraft();
+ });
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
  try{ meterRelocateProfileControls(); }catch(e){}
@@ -36444,7 +41877,8 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterXyzMatrixEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+// meterXyzMatrixEnabled applies immediately (meterApplyXyzMatrixEnableFromDraft); only cells are deferred.
+['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -36454,6 +41888,11 @@ meterPatternInsertionControlIds().forEach(id=>{
 });
 const meterGreyImportInput=document.getElementById('meterGreyProfileImportInput');
 if(meterGreyImportInput) meterGreyImportInput.addEventListener('change',meterImportGreyProfile);
+const meterImportWizardFileInput=document.getElementById('meterImportWizardFile');
+if(meterImportWizardFileInput) meterImportWizardFileInput.addEventListener('change',meterImportWizardOnFile);
+const meterCubeImportInputEl=document.getElementById('meterCubeImportInput');
+if(meterCubeImportInputEl) meterCubeImportInputEl.addEventListener('change',meterImportCubeFile);
+meterCieViewOptsLoad();
 initMeterGreyCanvasEditing();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
@@ -36463,6 +41902,10 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
+	 if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+	  return;
+	 }
 	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
 	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
 	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
@@ -36591,11 +42034,15 @@ function meterRefreshAfterXyzMatrixChange(){
  if(live) updateLiveReading(live);
 }
 
+// Draft edits only mark the Apply button dirty — charts/live analysis stay on the applied snapshot.
 ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
  const el=document.getElementById(id);
  if(!el) return;
- el.addEventListener('input',meterRefreshAfterXyzMatrixChange);
+ el.addEventListener('input',meterUpdateXyzMatrixApplyButton);
 });
+// Seed applied snapshot from DOM defaults if settings have not loaded yet.
+if(!window._meterXyzMatrixApplied) meterSnapshotXyzMatrixAppliedFromDom();
+meterUpdateXyzMatrixApplyButton();
 
 updateMeterTargetWhitepointVisibility();
 meterUpdateXyzMatrixVisibility();

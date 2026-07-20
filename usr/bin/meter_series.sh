@@ -90,10 +90,45 @@ PY
  return 0
 }
 
+# webui.pm seeds the initial state file with the series identity ("type" +
+# "points"). Custom/lattice colour series (points>=900) ride on type "colors"
+# and are told apart from the stock ColorChecker ONLY by that id. The worker's
+# own state writes below omit type/points, so without carrying them forward
+# every poll/recovery of a running cube read loses the lattice id and the WebUI
+# routes the reads onto the ColorChecker CIE chart. Cache the identity once from
+# the seed (before our first overwrite) and re-splice it into every state write.
+SERIES_META_JSON=""
+SERIES_META_LOADED=""
+load_series_identity_meta() {
+ [[ -n "$SERIES_META_LOADED" ]] && return
+ SERIES_META_LOADED=1
+ [[ -f "$STATE_FILE" ]] || return
+ SERIES_META_JSON=$(python - "$STATE_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(state, dict) or "points" not in state:
+    raise SystemExit(0)
+try:
+    points = int(state.get("points"))
+except Exception:
+    raise SystemExit(0)
+stype = str(state.get("type", "") or "")
+sys.stdout.write('"type":%s,"points":%d' % (json.dumps(stype), points))
+PY
+)
+}
+
 write_state_json() {
  local payload
  payload=$(cat) || return 1
  series_state_claim_lost && return 1
+ load_series_identity_meta
+ if [[ -n "$SERIES_META_JSON" && "$payload" != *'"points"'* && "$payload" == *"}" ]]; then
+  payload="${payload%\}},$SERIES_META_JSON}"
+ fi
  local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
  printf '%s\n' "$payload" > "$tmp" || return 1
  chmod 666 "$tmp" 2>/dev/null || true
@@ -838,7 +873,7 @@ FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
 ZERO_READ_RETRIES=2
-NO_READING_RETRIES=1
+NO_READING_RETRIES=2
 
 daemon_elapsed_sec() {
  local pid
@@ -891,6 +926,61 @@ EOJSON
 # and again before any init retry. Kills every known meter process and
 # removes all stale temp files that could interfere with spotread startup
 # (held USB handles, stale FIFOs, cached port numbers that no longer exist).
+# After a read timeout the persistent spotread session is often WEDGED, not
+# just slow: i1D3-class meters intermittently reset on the USB bus (dmesg
+# shows "reset full-speed USB device"; 261 timeouts logged on one rig) and the
+# in-flight read never returns. Retrying on the dead session burns the retry
+# timeout, and every LATER step then fails the same way to the end of the run.
+# Bounce the session instead: kill the wedged reader, respawn the SAME
+# spotread command (SR_CMD is final once the run starts), wait for the reading
+# prompt. Colorimeters only — a spectro restart would re-prompt for its white
+# tile, which cannot be answered mid-run headlessly.
+restart_spotread_session() {
+ [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 1
+ [[ -z "$SR_CMD" ]] && return 1
+ echo "[$(date '+%H:%M:%S.%3N')] restarting spotread session: step=${STEP_NUM:-?} name=${NAME:-?}" >> /tmp/meter_series_debug.log
+ if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
+  exec 3>&-
+  METER_SERIES_FD_OPEN=0
+ fi
+ [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
+ pkill -9 -x spotread 2>/dev/null
+ sleep 1.5
+ rm -f "$OUTFILE" "$CMDPIPE"
+ touch "$OUTFILE"
+ mkfifo "$CMDPIPE"
+ cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
+ BG_PID=$!
+ exec 3>"$CMDPIPE"
+ METER_SERIES_FD_OPEN=1
+ local waited=0 refresh_done=0 clean=""
+ while (( waited < 80 )); do
+  series_stop_requested && series_cancel_exit
+  clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+  if echo "$clean" | grep -q "to take a reading:"; then
+   echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
+   return 0
+  fi
+  if (( refresh_done == 0 )) && echo "$clean" | grep -qi "calibrate refresh"; then
+   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+   sleep 2
+   printf " " >&3
+   refresh_done=1
+   sleep 2
+   waited=$((waited + 8))
+   continue
+  fi
+  if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart: instrument error" >> /tmp/meter_series_debug.log
+   return 1
+  fi
+  sleep 0.5
+  waited=$((waited + 1))
+ done
+ echo "[$(date '+%H:%M:%S.%3N')] spotread session restart TIMED OUT" >> /tmp/meter_series_debug.log
+ return 1
+}
+
 meter_full_cleanup() {
  # Kill all meter-related processes (wrappers, pipelines, spotread itself)
  pkill -9 -f 'meter_session.sh'          2>/dev/null
