@@ -23,7 +23,10 @@
 ###############################################
 sub resolve_connection_thread (@) {
  &log("Resolve: connection thread started");
+ # Outer eval: an uncaught die in a detached ithread can take down the whole
+ # process (WebUI "offline") on some Perl builds. Never let this thread exit.
  while(1) {
+  eval {
   # Wait until a connection is requested
   {
    lock($resolve_request_ip);
@@ -41,20 +44,28 @@ sub resolve_connection_thread (@) {
    $resolve_request_port="";
   }
   &log("Resolve: connecting to $ip:$port");
-  $calibration_client_ip=$ip;
-  $calibration_client_software="Resolve";
+  # NOTE: the "connected" client state is published INSIDE resolve_connect only
+  # after the socket is truly ESTABLISHED -- not here -- so /api/resolve/status
+  # (and the connect modal's poll) do not flip to connected while still dialing
+  # an unreachable IP, which would slam the modal shut before the operator can
+  # Cancel a mistyped address.
   eval { &resolve_connect($ip,$port); };
   &log("Resolve: session error: $@") if($@);
   &log("Resolve: disconnected from $ip:$port");
   $calibration_client_ip="";
   $calibration_client_software="";
-    &release_source_rgb_quant_range("resolve");
-  {
+  eval { &release_source_rgb_quant_range("resolve"); };
+  eval {
    lock($resolve_last_pattern);
    $resolve_last_pattern="";
-  }
+  };
   # Show black pattern when disconnected
-  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve");
+  eval { &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve"); };
+  };
+  if($@) {
+   &log("Resolve: connection thread recovered from: $@");
+   select(undef,undef,undef,0.5);
+  }
  }
 }
 
@@ -67,9 +78,14 @@ sub resolve_trigger_connect (@) {
  &log("Resolve: trigger connect to $ip:$port");
  # Force-close any existing session first so the thread is free to accept
  # a new connect request (session loop is blocked on interruptible read).
- {
+ # Guard lock: if share() was mis-ordered at boot the lock croaks and the
+ # whole connect path used to abort before queuing the new peer.
+ eval {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=1 if($calibration_client_software eq "Resolve");
+ };
+ if($@) {
+  &log("Resolve: disconnect flag lock failed (shared var?): $@");
  }
  for(my $i=0; $i<30; $i++) {
   last if($calibration_client_software ne "Resolve");
@@ -81,6 +97,7 @@ sub resolve_trigger_connect (@) {
   $resolve_request_port=$port;
   cond_signal($resolve_request_ip);
  }
+ &log("Resolve: connect request queued for $ip:$port");
 }
 
 ###############################################
@@ -91,29 +108,47 @@ sub resolve_connect (@) {
  my $port=shift;
  my $socket;
  # Clear any stale disconnect flag from a previous session
- {
+ eval {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=0;
- }
- # Use alarm-based timeout since IO::Socket::INET Timeout uses non-blocking
- # mode which breaks in threaded Perl on this platform
- eval {
-  local $SIG{ALRM}=sub { die "connect timeout\n"; };
-  alarm(10);
-  $socket=IO::Socket::INET->new(
-   PeerHost=>$ip,
-   PeerPort=>$port,
-   Proto=>'tcp',
-  );
-  alarm(0);
  };
- alarm(0);
- if(!$socket) {
-  my $err=$@||$!;
+ # Connect BLOCKING but BOUNDED. IO::Socket::INET's Timeout param is NOT usable
+ # here: it makes new() do a NON-BLOCKING connect + internal select(), which is
+ # unreliable in threaded Perl on this platform (the kernel completes the
+ # handshake and the calibration PC shows "connected", but new() still returns a
+ # dead/undef socket, so PGenerator reports a false "connection failed"). And
+ # NEVER use alarm()/SIGALRM to bound it: process-global SIGALRM can interrupt
+ # the wrong thread and take the whole daemon down (WebUI offline).
+ # So: create the socket unconnected, arm SO_SNDTIMEO, then do a plain blocking
+ # connect(). SO_SNDTIMEO bounds the connect to ~$connect_timeout s (verified on
+ # this platform) so a mistyped/unreachable IP fails fast instead of the
+ # kernel's ~127s SYN timeout -- that lets the operator Cancel and retry, and
+ # frees this single connection thread for the corrected address.
+ # CAUTION: a SO_SNDTIMEO-timed-out connect() returns TRUE with $!=EINPROGRESS
+ # while the socket is NOT actually connected, so establishment MUST be
+ # confirmed with ->connected (getpeername), never the connect() return value.
+ my $connect_timeout=10;
+ eval {
+  $socket=IO::Socket::INET->new(Proto=>'tcp');
+  if($socket) {
+   $socket->setsockopt(SOL_SOCKET, Socket::SO_SNDTIMEO(), pack('l!l!',$connect_timeout,0));
+   my $ia=Socket::inet_aton($ip);
+   $socket->connect(Socket::pack_sockaddr_in($port,$ia)) if($ia);
+  }
+ };
+ if(!$socket || !$socket->connected) {
+  my $err=$@||$!||"refused/unreachable/timed out";
   &log("Resolve: connection failed to $ip:$port: $err");
+  # Clear any Cancel/disconnect request so it does not carry into the next try.
+  eval { lock($resolve_disconnect_request); $resolve_disconnect_request=0; };
   return;
  }
  &log("Resolve: connected to $ip:$port");
+ # Publish "connected" now that the socket is truly ESTABLISHED (verified via
+ # ->connected above). Until this point status reports disconnected/connecting,
+ # so the WebUI keeps the connect modal (with Cancel) up while dialing.
+ $calibration_client_ip=$ip;
+ $calibration_client_software="Resolve";
  # Arm SO_LINGER so any close path (requested or peer EOF) issues TCP RST.
  # DisplayCAL never reads the socket and only re-arms its wait() popup after
  # a failed sendall; graceful FIN can leave Windows sockets still "connected".

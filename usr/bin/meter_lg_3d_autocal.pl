@@ -2264,24 +2264,37 @@ sub run_solve_only {
    }
   }
  }
- $state->{"message"}="Generating LUT";
- $state->{"current_name"}="Generating 3D LUT";
+ my $cube_size=int($config->{"solve_cube_size"}||33);
+ $cube_size=33 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ $state->{"solve_cube_size"}=$cube_size;
+ $state->{"cube_lut_size"}=$cube_size;
+ $state->{"message"}="Building colour model from ".scalar(@nodes)." profile readings";
+ $state->{"current_name"}="Building model";
+ $state->{"solve_progress_pct"}=20;
  write_state($state);
- # Match AutoCal: 17^3 export cube + 33^3 LG payload. Calling 33 for both
- # roughly doubles generate time with no upload benefit.
- my $cube_size=int($config->{"solve_cube_size"}||17);
- $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ # Offline / standalone solve: host-app export only (.cube for Resolve, madVR,
+ # etc.). No LG TV payload — that is AutoCal upload language and wastes time
+ # generating a 33³ binary nobody downloads from this path.
+ $state->{"message"}="Generating ${cube_size}³ export cube (".($cube_size**3)." nodes)";
+ $state->{"current_name"}="Generating ${cube_size}³ cube";
+ $state->{"solve_progress_pct"}=45;
+ write_state($state);
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
- my $payload_u16=generate_lut_lg_payload($model,33);
  $model->{"method"}="cube";
- my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
+ $state->{"message"}="Writing ${cube_size}³ .cube export";
+ $state->{"current_name"}="Writing .cube";
+ $state->{"solve_progress_pct"}=90;
+ write_state($state);
+ # undef payload → export_lut writes .cube + .json only (no LG .bin).
+ my $export=export_lut($cube_u16,undef,$model,$config,$cube_size);
  $state->{"status"}="complete";
- $state->{"message"}="3D LUT solved";
- $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." lattice readings";
+ $state->{"message"}="3D LUT solved (${cube_size}³ export)";
+ $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." profile readings";
+ $state->{"solve_progress_pct"}=100;
  $state->{"export"}=$export;
  $state->{"solve_report"}=$solve_report;
  $state->{"cube_lut_size"}=$cube_size;
- $state->{"payload_lut_size"}=33;
+ $state->{"payload_lut_size"}=0;
  $state->{"lattice_nodes"}=scalar(@nodes);
  $state->{"signal_mode"}=$model->{"signal_mode"};
  $state->{"target_gamut"}=$model->{"target_gamut"};
@@ -2341,10 +2354,12 @@ sub imported_cube_sample {
 }
 
 sub build_imported_lut {
- my ($config,$state)=@_;
+ my ($config,$state,$cube_size)=@_;
  my $path=$config->{"imported_cube_path"}||"";
  die "Imported .cube path missing\n" if($path eq "");
  die "Imported .cube not found: $path\n" if(!-f $path);
+ $cube_size=int($cube_size||$config->{"solve_cube_size"}||17);
+ $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
  $state->{"current_name"}="Loading imported 3D LUT";
  $state->{"message"}="Parsing ".$path;
  write_state($state);
@@ -2359,10 +2374,10 @@ sub build_imported_lut {
   imported_cube_path => $path,
   imported_cube_size => $cube->{"size"},
  };
- # Export cube (17^3): R-SLOWEST fill to match generate_lut_cube — cube_text
+ # Export cube: R-SLOWEST fill to match generate_lut_cube — cube_text
  # emits through a transposed walk and assumes that memory order.
  my @cube_u16;
- my $csize=17;
+ my $csize=$cube_size;
  for(my $r=0;$r<$csize;$r++) { for(my $g=0;$g<$csize;$g++) { for(my $b=0;$b<$csize;$b++) {
   my $v=imported_cube_sample($cube,$r/($csize-1),$g/($csize-1),$b/($csize-1));
   push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
@@ -2409,9 +2424,19 @@ sub export_lut {
  my $gamut=sanitize_target_gamut($model->{"target_gamut"}||$config->{"target_gamut"},$signal_mode);
  my $gamma=sanitize_target_gamma($model->{"signal_gamma"}||$config->{"target_gamma"},$signal_mode);
  my $base="$dir/${stamp}_".sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
- my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
- my $binary=pack("v*",@{$payload_u16});
- write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
+ my $solve_only=!!(ref($config) eq "HASH" && $config->{"solve_only"});
+ # Offline export is display-agnostic host-app LUT; AutoCal upload keeps the LG title.
+ my $title=$solve_only
+  ? ("PGenerator ".signal_mode_label($signal_mode)." $method ".target_gamut_label($gamut)." ".target_gamma_label($gamma))
+  : ("PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma));
+ my $have_payload=(ref($payload_u16) eq "ARRAY" && scalar(@{$payload_u16})>0) ? 1 : 0;
+ my $binary="";
+ my $payload_size=0;
+ if($have_payload) {
+  $binary=pack("v*",@{$payload_u16});
+  $payload_size=33;
+  write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
+ }
  write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
  write_file("$base.json",$json->encode({
   status => "ok",
@@ -2421,13 +2446,14 @@ sub export_lut {
   target_gamut => $gamut,
   target_gamma => $gamma,
   title => $title,
+  solve_only => json_bool($solve_only),
   lut_size => $cube_size,
   cube_lut_size => $cube_size,
-  payload_lut_size => 33,
-  payload_bits => 12,
-  payload_endianness => "little-endian uint16",
-  payload_axis_order => "R fastest, G middle, B slowest",
-  payload_channel_order => "RGB values per node",
+  payload_lut_size => $payload_size,
+  payload_bits => ($have_payload ? 12 : 0),
+  payload_endianness => ($have_payload ? "little-endian uint16" : undef),
+  payload_axis_order => ($have_payload ? "R fastest, G middle, B slowest" : undef),
+  payload_channel_order => ($have_payload ? "RGB values per node" : undef),
   cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   neutral_axis_source => $model->{"neutral_axis_source"},
   neutral_axis_protection => $model->{"neutral_neighborhood_identity_enabled"}
@@ -2439,10 +2465,10 @@ sub export_lut {
  }),0);
  return {
   cube_path => "$base.cube",
-  payload_path => "$base.bin",
+  payload_path => ($have_payload ? "$base.bin" : undef),
   metadata_path => "$base.json",
   cube_values => scalar(@{$cube_u16}),
-  payload_values => scalar(@{$payload_u16}),
+  payload_values => ($have_payload ? scalar(@{$payload_u16}) : 0),
   payload_bytes => length($binary),
  };
 }
@@ -4426,20 +4452,26 @@ eval {
  # before generate (same idea as greyscale completion pattern cleanup).
  blank_display_for_solve($config,$state);
 
+ # Export cube size is operator-selected (17/33). TV upload payload stays 33³.
+ my $cube_size=int($config->{"solve_cube_size"}||17);
+ $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
+ $state->{"solve_cube_size"}=$cube_size;
+ $state->{"cube_lut_size"}=$cube_size;
+ $state->{"solve_progress_pct"}=10;
  $state->{"message"}=($method eq "ramp")
-  ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
+  ? "Applying drift correction and solving ${cube_size}-point cube plus 33-point LG payload"
   : (is_volume_profile_method($method))
-   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", 17-point cube plus 33-point LG payload"
+   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", ${cube_size}-point cube plus 33-point LG payload"
    : ($method eq "imported")
-    ? "Resampling imported .cube to 17-point cube plus 33-point LG payload"
-    : "Solving matrix 17-point cube plus 33-point LG payload";
+    ? "Resampling imported .cube to ${cube_size}-point cube plus 33-point LG payload"
+    : "Solving matrix ${cube_size}-point cube plus 33-point LG payload";
  write_state($state);
 
  my ($model,$cube_u16,$payload_u16,$preview_nodes);
  if($method eq "imported") {
-  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state);
+  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state,$cube_size);
  } else {
  # Volume profiling (lattice / skeleton / hybrid) uses the same solve as the
  # offline lattice path: white-preserving matrix baseline from W/R/G/B/K
@@ -4499,10 +4531,18 @@ eval {
   };
   log_line("lattice debug dump error: $@") if($@);
  }
- ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
+ $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes) plus 33-point LG payload";
+ $state->{"current_name"}="Generating ${cube_size}³ cube";
+ $state->{"solve_progress_pct"}=40;
+ write_state($state);
+ ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
+ $state->{"message"}="Generating 33-point LG upload payload";
+ $state->{"current_name"}="Generating 33³ payload";
+ $state->{"solve_progress_pct"}=70;
+ write_state($state);
  $payload_u16=generate_lut_lg_payload($model,33);
  }
- my $export=export_lut($cube_u16,$payload_u16,$model,$config);
+ my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
  $state->{"export"}=$export;
  $state->{"signal_mode"}=$model->{"signal_mode"};
  $state->{"target_gamut"}=$model->{"target_gamut"};
@@ -4521,7 +4561,8 @@ eval {
  $state->{"neutral_axis_identity"}=json_bool($model->{"neutral_axis_identity"});
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
  $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
- $state->{"cube_lut_size"}=17;
+ $state->{"cube_lut_size"}=$cube_size;
+ $state->{"solve_cube_size"}=$cube_size;
  $state->{"payload_lut_size"}=33;
  $state->{"payload_bits"}=12;
  $state->{"payload_axis_order"}="R fastest, G middle, B slowest";
