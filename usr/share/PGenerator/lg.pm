@@ -1848,6 +1848,7 @@ my $result=&lg_helper_run({
 	  signal_mode => $payload->{"signal_mode"}||"",
 	  tv_input => &lg_input_from_cec(),
 	  include_current_input => $payload->{"include_current_input"} ? &lg_json_true() : &lg_json_false(),
+	  check_active_picture_mode => $payload->{"check_active_picture_mode"} ? &lg_json_true() : &lg_json_false(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
 	  helper_timeout => int($payload->{"helper_timeout"}||0),
 	  connect_timeout => 5,

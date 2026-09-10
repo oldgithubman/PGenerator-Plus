@@ -1305,7 +1305,8 @@ sub lg_current_input_info (@) {
 }
 
 sub lg_picture_get_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input)=@_;
+ my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input,$check_active_picture_mode)=@_;
+ $check_active_picture_mode=$check_active_picture_mode ? 1 : 0;
  $keys=[] if(ref($keys) ne "ARRAY");
  $requested_picture_mode="" if(!defined($requested_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
@@ -1441,6 +1442,33 @@ sub lg_picture_get_workflow (@) {
  }
  my ($supported_settings,$response)=$get_supported_settings->($keys,$connect_timeout + 2);
  $supported_settings=$merge_scoped_panel_light_settings->($supported_settings,$requested_picture_mode);
+ # Optional active-mode comparison for AutoCal's pre-write gate. The writers
+ # apply whatever mode they are handed (CAL_START and the DDC writes are scoped
+ # to it) and only probe the TV when NO mode was supplied, so a configured mode
+ # that disagreed with the TV used to switch it silently. Both sides go through
+ # the same alias map the writers use, so "dolbyVisionFilmMaker" (WebUI) and
+ # "dolbyHdrCinemaDark" (C2 readback) compare equal. A readback outside the
+ # requested signal family (pre-switch SDR mode, latched input) maps to "" and
+ # is reported without a verdict rather than as a mismatch. Skipped where webOS
+ # will not report pictureMode at all (pre-2022 DDC-only sets).
+ my %active_mode_check=();
+ if($check_active_picture_mode && !$generation->{"picture_mode_read_forbidden"}) {
+  my $active=&lg_current_picture_mode($session,$connect_timeout + 2,"get_active_picture_mode_check");
+  if($active ne "") {
+   $active_mode_check{"active_picture_mode"}=$active;
+   my $have=&map_picture_mode_label_to_ddc_name($active,$signal_mode);
+   # Lets a caller with NO configured mode decide whether the active mode is
+   # even usable for its signal (an HDR run must not adopt "cinema" read
+   # before the HDR signal reached the TV).
+   $active_mode_check{"active_picture_mode_in_signal_family"}=&json_bool($have ne "") if($signal_mode ne "");
+   if($requested_picture_mode ne "") {
+    my $want=&map_picture_mode_label_to_ddc_name($requested_picture_mode,$signal_mode);
+    $active_mode_check{"requested_picture_mode"}=$want ne "" ? $want : $requested_picture_mode;
+    $active_mode_check{"picture_mode_matches_active"}=&json_bool(lc($have) eq lc($want)) if($have ne "" && $want ne "");
+   }
+   &diag_log_append("picture_get:active-mode-check",{ ip => $ip, requested_picture_mode => $requested_picture_mode, signal_mode => $signal_mode, %active_mode_check });
+  }
+ }
  &websocket_close($session);
  return &json_error("LG TV did not return picture settings",{ ip => $ip }) if(ref($response) ne "HASH");
  my ($get_failed,$get_failure_message)=&response_is_app_failure($response);
@@ -1467,6 +1495,7 @@ sub lg_picture_get_workflow (@) {
   software_info => $auth->{"software_info"},
  lg_generation => $generation,
  %{$current_input},
+ %active_mode_check,
  });
 }
 
@@ -7724,6 +7753,7 @@ sub main (@) {
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $include_current_input=$request->{"include_current_input"} ? 1 : 0;
+ my $check_active_picture_mode=$request->{"check_active_picture_mode"} ? 1 : 0;
  my $dpg_data=$request->{"dpg_data"};
  my $result;
 
@@ -7734,7 +7764,7 @@ sub main (@) {
  } elsif($action eq "connect" || $action eq "pair") {
   $result=&lg_connect_workflow($ip,$client_key,$connect_timeout,$pair_timeout);
 	 } elsif($action eq "picture_get") {
-	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input);
+	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input,$check_active_picture_mode);
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
