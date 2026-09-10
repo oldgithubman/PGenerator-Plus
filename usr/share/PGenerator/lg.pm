@@ -2903,8 +2903,44 @@ sub _lg_cal_hist_archive_dv {
  });
 }
 
+# Durable 1D snapshot WITHOUT a TV write. The greyscale worker calls this at
+# its final commit so the committed curve outlives the autocal-runs directory
+# (PGAutoCalRun keeps 10 runs and a reflash takes them all). Until now the only
+# durable copy was the one the post-cal SMOOTHING upload archived, and a Dolby
+# Vision full run (greyscale -> DV profile, no smoothing stage) never made one:
+# its curve existed only as a source:run entry and vanished with the run dir.
+sub webui_lg_calibration_history_archive_1d (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ $payload={} if(ref($payload) ne "HASH");
+ my $dpg_data=$payload->{"dpg_data"};
+ return &lg_encode_json({ status => "error", message => "Calibration history archive requires a 3072-value (3 channels x 1024 points) dpg_data array.", expected_count => 3072, received_count => (ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data}) : -1 })
+  if(ref($dpg_data) ne "ARRAY" || @{$dpg_data} != 3072);
+ my @normalized=map { my $i=int(($_||0)+0); $i=0 if($i < 0); $i=65535 if($i > 65535); $i; } @{$dpg_data};
+ my $picture_mode=$payload->{"picture_mode"}||"";
+ my $signal_mode=$payload->{"signal_mode"}||"";
+ my $variant=$payload->{"variant"}||"";
+ my $ok=0;
+ eval {
+  $ok=&_lg_cal_hist_archive_1d(\@normalized,{
+   picture_mode => $picture_mode,
+   signal_mode => $signal_mode,
+   de => $payload->{"de"},
+   run_id => $payload->{"run_id"}||"",
+   variant => $variant,
+   display_model => $payload->{"display_model"}||"",
+  });
+  1;
+ };
+ return &lg_encode_json({ status => "error", message => "Calibration history archive could not be written." }) if(!$ok);
+ return &lg_encode_json({ status => "ok", archived => &lg_json_true(), picture_mode => $picture_mode, signal_mode => $signal_mode, variant => $variant });
+}
+
 sub webui_lg_calibration_history_list (@) {
  my @items;
+ # "<run id>|<variant>" pairs that already have a durable archive entry, so
+ # the same curve is not listed a second time from the run directory.
+ my %archived_runs;
  # Durable archive (preferred — reuploadable snapshots written on successful upload)
  if(opendir(my $dh,"$_lg_cal_hist_dir/1d")) {
   foreach my $f (sort { $b cmp $a } readdir($dh)) {
@@ -2917,6 +2953,7 @@ sub webui_lg_calibration_history_list (@) {
    my $sm=$meta->{"signal_mode"}||"";
    my $variant=$meta->{"variant"}||"";
    my $display_model=$meta->{"display_model"}||"";
+   $archived_runs{($meta->{"source_run"}||"")."|".$variant}=1 if(($meta->{"source_run"}||"") ne "");
    my $label="$1 1D ".($sm||"?")." ".($pm||"");
    $label.=" (".$variant.")" if($variant ne "" && $1!~/\Q$variant\E/);
    $label=~s/\s+$//;
@@ -2979,6 +3016,7 @@ sub webui_lg_calibration_history_list (@) {
    my $display_model=$cfg->{"display_model"} || "";
    my $mtime=(stat("$dir/grey-state.json"))[9] || 0;
    my $smoothed=_lg_cal_hist_run_smoothed($state);
+   next if($archived_runs{$run."|".($smoothed ? "smoothed" : "")});
    my $label=($display_model ne "" ? $display_model." " : "").$run." 1D ".($sm||"?")." ".($pm||"").($smoothed ? " (smoothed)" : "");
    $label=~s/\s+$//;
    push @items,{
@@ -3385,6 +3423,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/calibration-history/reupload" && $method eq "POST") {
   return &webui_lg_calibration_history_reupload($body);
+ }
+ if($path eq "/api/lg/calibration-history/archive" && $method eq "POST") {
+  return &webui_lg_calibration_history_archive_1d($body);
  }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);

@@ -12860,6 +12860,56 @@ sub set_picture_values {
 	 return ($picture,$last_message);
 }
 
+# Durable Calibration History snapshot of the curve this run leaves on the
+# panel. Archiving used to ride on the post-cal SMOOTHING upload only, so a
+# run with no smoothing stage -- every Dolby Vision full AutoCal (greyscale ->
+# DV profile), and any run whose smoothing changed nothing -- left its 1D DPG
+# only in the autocal-runs directory, which keeps 10 runs and is wiped by a
+# reflash. Skipped when this worker already archived the smoothed curve
+# (standalone HDR20/SDR26 shadow smoothing) so a run yields one entry per
+# distinct curve, never a duplicate. Best effort: a history failure must not
+# fail a calibration that is already committed on the TV.
+sub archive_final_1d_dpg_history {
+ my ($config,$state,$picture_mode,$layout)=@_;
+ return 0 unless(ref($state) eq "HASH");
+ $layout=lc($layout||"");
+ my ($dpg,$signal_mode,$de,$already);
+ if($layout eq "sdr26") {
+  $dpg=$state->{"sdr_1d_dpg_data"};
+  $signal_mode="sdr";
+  $de=defined($state->{"sdr_1d_dpg_best_de"}) ? $state->{"sdr_1d_dpg_best_de"} : $state->{"sdr_1d_dpg_final_de"};
+  $already=$state->{"sdr_1d_dpg_low_end_smoothed"} ? 1 : 0;
+ } else {
+  $dpg=$state->{"hdr20_1d_dpg_data"};
+  $signal_mode=lc((ref($config) eq "HASH" && $config->{"signal_mode"}) ? $config->{"signal_mode"} : "hdr10");
+  $de=defined($state->{"hdr20_1d_dpg_best_de"}) ? $state->{"hdr20_1d_dpg_best_de"} : $state->{"hdr20_1d_dpg_final_de"};
+  $already=$state->{"hdr20_1d_dpg_low_end_smoothed"} ? 1 : 0;
+ }
+ return 0 unless(ref($dpg) eq "ARRAY" && @$dpg == 3072);
+ if($already) {
+  log_line("1D DPG history: committed curve already archived as the smoothed variant; not duplicating");
+  return 1;
+ }
+ my $run_id=(ref($config) eq "HASH") ? ($config->{"full_autocal_run_id"}||$config->{"run_id"}||"") : "";
+ my $response=api_json("POST","/api/lg/calibration-history/archive",{
+  dpg_data=>$dpg,
+  picture_mode=>$picture_mode||"",
+  signal_mode=>$signal_mode,
+  de=>$de,
+  run_id=>$run_id,
+  display_model=>((ref($config) eq "HASH") ? ($config->{"display_model"}||"") : ""),
+ },30);
+ my $ok=(ref($response) eq "HASH" && ($response->{"status"}//"") eq "ok") ? 1 : 0;
+ $state->{"final_1d_dpg_history_archived"}=$ok ? JSON::PP::true : JSON::PP::false;
+ $state->{"final_1d_dpg_history_message"}=(ref($response) eq "HASH" && $response->{"message"})
+  ? $response->{"message"}
+  : ($ok ? "archived" : (defined $response ? "unexpected response" : "endpoint unreachable"));
+ log_line("1D DPG history: ".($ok
+  ? "archived committed $signal_mode curve".(($picture_mode||"") ne "" ? " for $picture_mode" : "")
+  : "archive FAILED: ".$state->{"final_1d_dpg_history_message"}));
+ return $ok;
+}
+
 sub commit_final_1d_lut {
 	 my ($config,$state,$picture,$arrays,$picture_mode,$ordered,$calibration_mode_active,$white_y)=@_;
 	 $white_y=0 unless(defined $white_y);
@@ -12884,6 +12934,7 @@ sub commit_final_1d_lut {
 	   $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	   $state->{"calibration_mode"}=JSON::PP::true;
 	   $state->{"sdr_dpg_calibration_mode_held"}=JSON::PP::true;
+	   archive_final_1d_dpg_history($config,$state,$picture_mode,"sdr26");
 	   $state->{"message"}="SDR26 1D DPG greyscale committed; calibration mode HELD for 3D LUT stage (full autocal)";
 	   write_state($state);
 	   return ($picture,undef,1);
@@ -12915,6 +12966,7 @@ sub commit_final_1d_lut {
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
+	  archive_final_1d_dpg_history($config,$state,$picture_mode,"sdr26");
 	  my $commit_msg=$single_socket_committed
 	   ? "SDR26 1D DPG calibration committed on single socket; calibration mode ended"
 	   : "SDR26 1D DPG calibration committed (single-socket commit FAILED: held-session CAL_END was used as fallback)";
@@ -12939,6 +12991,9 @@ sub commit_final_1d_lut {
 	   $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	   $state->{"calibration_mode"}=JSON::PP::true;
 	   $state->{"hdr20_dpg_calibration_mode_held"}=JSON::PP::true;
+	   # This is the curve a Dolby Vision full run leaves on the panel (its next
+	   # stage is the DV profile, not a 3D LUT), so it must be archived here.
+	   archive_final_1d_dpg_history($config,$state,$picture_mode,"hdr20");
 	   # Record the measured 100% peak so the full-autocal handoff carries it to
 	   # the 3D LUT stage. The tone-map upload itself is deferred to the 3D stage
 	   # (which holds the same CAL_START), but the WebUI reads this key from the
@@ -13012,6 +13067,7 @@ sub commit_final_1d_lut {
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
+	  archive_final_1d_dpg_history($config,$state,$picture_mode,"hdr20");
 	  my $commit_msg=$single_socket_committed
 	   ? "HDR20 1D DPG calibration committed on single socket; calibration mode ended"
 	   : "HDR20 1D DPG calibration committed (single-socket commit FAILED: held-session CAL_END was used as fallback)";
