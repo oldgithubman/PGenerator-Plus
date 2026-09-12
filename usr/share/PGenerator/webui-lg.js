@@ -276,6 +276,72 @@ const LG_DISPLAY_CONTROL_ITEMS=[
  {key:'deBlur',label:'De-Blur',type:'number',min:0,max:10,step:1}
 ];
 const LG_DISPLAY_CONTROL_KEYS=LG_DISPLAY_CONTROL_ITEMS.map(item=>item.key);
+
+// Some controls in this list are ones a given TV never reports a value for. A
+// 2021 C1 on webOS 6.5.3 refuses a read of oledLight ("Some keys are not
+// allowed for the request"), and lg_picture_settings reports that back as
+// unsupported_picture_keys; other keys are simply absent for the active
+// picture mode. lgDisplayControlRefresh already stored this in
+// lgDisplayControlCapabilities -- but nothing read it, so a control with no
+// value rendered as a dead slider showing "--" with no explanation and no
+// pointer to the control that IS reporting (on the C1, panel brightness reads
+// back as Backlight, two cells away). Operators reasonably read the dead
+// slider as broken and reach for the TV remote.
+//
+// This annotates WHY a control has no value. It is scoped to exactly that:
+// a read refusal is not a write refusal -- the daemon reaches these keys over
+// several write routes a read cannot see (see lg_picture_apply_settings_payloads
+// and the panel_light scoped-category write in pgenerator-lg), and its own
+// comments are explicit that "a missing read must not block the command." So
+// this never claims a control is unwritable and never changes which controls
+// are enabled: lgDisplayControlSupportState checks hasValue first, so its
+// supported/unsupported verdict is identical to the previous
+// value-presence rule for every input. Only the reason string is new, and it
+// only appears on controls that were already disabled.
+const LG_DISPLAY_CONTROL_EQUIVALENTS={
+ oledLight:'backlight',
+ oledPixelBrightness:'backlight',
+ backlight:'oledLight'
+};
+
+// The control the same panel-light setting IS reporting a live value under, or
+// "" if none. Gated on an actual value, not on the capability list, so the
+// hint is only offered when the partner is demonstrably working right now.
+function lgDisplayControlWorkingEquivalent(key,vals){
+ const partner=LG_DISPLAY_CONTROL_EQUIVALENTS[key];
+ if(!partner) return '';
+ const has=Object.prototype.hasOwnProperty.call(vals,partner)&&vals[partner]!==null&&vals[partner]!==undefined;
+ if(!has) return '';
+ const meta=LG_DISPLAY_CONTROL_ITEMS.find(item=>item.key===partner);
+ return (meta&&meta.label)||partner;
+}
+
+// Whether a control is usable, and if not, why. Pure -- takes the values and
+// capability objects rather than reading module state, so it is testable.
+//
+// hasValue is decided FIRST and always wins: if the TV reported a value the
+// control is usable, whatever any capability list says (the daemon can list a
+// panel-light key as unsupported from an unscoped read yet return a real value
+// from the scoped one). This makes the supported/unsupported verdict identical
+// to the old `value != null` rule; reasons are attached only when there is no
+// value to show.
+function lgDisplayControlSupportState(key,values,caps){
+ const vals=(values&&typeof values==='object')?values:{};
+ const capabilities=(caps&&typeof caps==='object')?caps:{};
+ const unsupported=(capabilities.unsupportedKeys&&typeof capabilities.unsupportedKeys==='object')?capabilities.unsupportedKeys:{};
+ const supportedKeys=Array.isArray(capabilities.supportedKeys)?capabilities.supportedKeys:[];
+ const hasValue=Object.prototype.hasOwnProperty.call(vals,key)&&vals[key]!==null&&vals[key]!==undefined;
+ if(hasValue) return {supported:true,reason:''};
+ // No value. Explain why, in read-only terms, and point at a working sibling.
+ const partnerLabel=lgDisplayControlWorkingEquivalent(key,vals);
+ const knownUnsupported=Object.prototype.hasOwnProperty.call(unsupported,key);
+ const notForThisMode=supportedKeys.length&&supportedKeys.indexOf(key)===-1;
+ let reason;
+ if(knownUnsupported||notForThisMode) reason='This TV did not report a value for this control.';
+ else reason='No value reported for this control.';
+ if(partnerLabel) reason+=' Panel brightness is available as '+partnerLabel+'.';
+ return {supported:false,reason:reason};
+}
 let lgDisplayControlPending=false;
 let lgDisplayControlValues={};
 let lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
@@ -995,10 +1061,16 @@ function lgDisplayControlRender(){
  let html='';
  LG_DISPLAY_CONTROL_ITEMS.forEach(meta=>{
   const value=lgDisplayControlCurrentValue(meta.key);
-  const supported=value!==null&&value!==undefined;
+  const state=lgDisplayControlSupportState(meta.key,lgDisplayControlValues,lgDisplayControlCapabilities);
+  const supported=state.supported;
   const disabled=(!supported||lgDisplayControlPending)?' disabled':'';
   const displayValue=supported?String(value):'--';
-  html+='<div class="lg-display-control-item" data-lg-display-control="'+lgEscapeHtml(meta.key)+'">';
+  // Only annotate once a real load has populated values/capabilities. Before
+  // that (modal just opened, or mid-refresh) every control has no value yet,
+  // and rendering 30 identical notes would be noise that reflows on load.
+  const reason=(!supported&&lgDisplayControlLoaded)?String(state.reason||''):'';
+  const titleAttr=reason?' title="'+lgEscapeHtml(reason)+'"':'';
+  html+='<div class="lg-display-control-item'+(supported?'':' lg-display-control-unavailable')+'" data-lg-display-control="'+lgEscapeHtml(meta.key)+'"'+titleAttr+'>';
   html+='<div class="lg-display-control-top"><div class="lg-display-control-label">'+lgEscapeHtml(meta.label)+'</div><div class="lg-display-control-value" id="lgDcValue_'+lgEscapeHtml(meta.key)+'">'+lgEscapeHtml(displayValue)+'</div></div>';
   html+='<div class="lg-display-control-row">';
   if(meta.type==='number'){
@@ -1009,7 +1081,9 @@ function lgDisplayControlRender(){
   }else{
    html+='<select id="lgDcInput_'+lgEscapeHtml(meta.key)+'" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>'+lgDisplayControlOptionHtml(meta,value)+'</select>';
   }
-  html+='</div></div>';
+  html+='</div>';
+  if(reason) html+='<div class="lg-display-control-note">'+lgEscapeHtml(reason)+'</div>';
+  html+='</div>';
  });
  grid.innerHTML=html;
  lgDisplayControlSetStatus(lgDisplayControlError||(lgDisplayControlLoaded?'Picture controls loaded':'Refresh settings'),!!lgDisplayControlError);
