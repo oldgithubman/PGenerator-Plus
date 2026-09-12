@@ -276,6 +276,60 @@ const LG_DISPLAY_CONTROL_ITEMS=[
  {key:'deBlur',label:'De-Blur',type:'number',min:0,max:10,step:1}
 ];
 const LG_DISPLAY_CONTROL_KEYS=LG_DISPLAY_CONTROL_ITEMS.map(item=>item.key);
+
+// Some picture controls exist in this list but are refused by the TV. A 2021
+// C1 on webOS 6.5.3 answers a read of oledLight with
+// "500 Application error: Some keys are not allowed for the request.
+// ( oledLight )" while the equivalent Backlight control works normally.
+//
+// lg_picture_settings already reports exactly that, as supported_picture_keys
+// and unsupported_picture_keys, and lgDisplayControlRefresh already stores it
+// in lgDisplayControlCapabilities -- but nothing ever read it. The grid
+// inferred availability from value presence alone, so a refused control
+// rendered as a dead slider showing "--" with no reason given and no hint that
+// a working equivalent was sitting in the same grid. Operators reasonably read
+// that as the control being broken and reach for the TV remote.
+//
+// Fails open: with no capability data (an older daemon) this returns exactly
+// the previous value-presence answer.
+const LG_DISPLAY_CONTROL_EQUIVALENTS={
+ oledLight:'backlight',
+ oledPixelBrightness:'backlight',
+ backlight:'oledLight'
+};
+
+function lgDisplayControlUnsupportedReason(key,raw,supportedKeys){
+ const text=String(raw||'');
+ // webOS phrases a refused key as "Some keys are not allowed for the request".
+ // Anything else (notably the helper's own "No value returned by TV") is
+ // already readable, so pass it through rather than inventing wording.
+ let message=/not allowed/i.test(text)
+  ? 'This TV does not accept this control over the network.'
+  : (text||'Not available on this TV.');
+ const partner=LG_DISPLAY_CONTROL_EQUIVALENTS[key];
+ if(partner&&Array.isArray(supportedKeys)&&supportedKeys.indexOf(partner)!==-1){
+  const meta=LG_DISPLAY_CONTROL_ITEMS.find(item=>item.key===partner);
+  message+=' Use '+((meta&&meta.label)||partner)+' instead.';
+ }
+ return message;
+}
+
+// Whether a control is usable, and if not, why. Pure: takes the values and
+// capability objects rather than reading module state, so it is testable.
+function lgDisplayControlSupportState(key,values,caps){
+ const vals=(values&&typeof values==='object')?values:{};
+ const capabilities=(caps&&typeof caps==='object')?caps:{};
+ const unsupported=(capabilities.unsupportedKeys&&typeof capabilities.unsupportedKeys==='object')?capabilities.unsupportedKeys:{};
+ const supportedKeys=Array.isArray(capabilities.supportedKeys)?capabilities.supportedKeys:[];
+ const hasValue=Object.prototype.hasOwnProperty.call(vals,key)&&vals[key]!==null&&vals[key]!==undefined;
+ if(Object.prototype.hasOwnProperty.call(unsupported,key)){
+  return {supported:false,reason:lgDisplayControlUnsupportedReason(key,unsupported[key],supportedKeys)};
+ }
+ if(supportedKeys.length&&supportedKeys.indexOf(key)===-1&&!hasValue){
+  return {supported:false,reason:'This TV did not report this control for the active picture mode.'};
+ }
+ return {supported:hasValue,reason:hasValue?'':'No value reported for this control.'};
+}
 let lgDisplayControlPending=false;
 let lgDisplayControlValues={};
 let lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
@@ -995,10 +1049,13 @@ function lgDisplayControlRender(){
  let html='';
  LG_DISPLAY_CONTROL_ITEMS.forEach(meta=>{
   const value=lgDisplayControlCurrentValue(meta.key);
-  const supported=value!==null&&value!==undefined;
+  const state=lgDisplayControlSupportState(meta.key,lgDisplayControlValues,lgDisplayControlCapabilities);
+  const supported=state.supported;
   const disabled=(!supported||lgDisplayControlPending)?' disabled':'';
   const displayValue=supported?String(value):'--';
-  html+='<div class="lg-display-control-item" data-lg-display-control="'+lgEscapeHtml(meta.key)+'">';
+  const reason=supported?'':String(state.reason||'');
+  const titleAttr=reason?' title="'+lgEscapeHtml(reason)+'"':'';
+  html+='<div class="lg-display-control-item'+(supported?'':' lg-display-control-unavailable')+'" data-lg-display-control="'+lgEscapeHtml(meta.key)+'"'+titleAttr+'>';
   html+='<div class="lg-display-control-top"><div class="lg-display-control-label">'+lgEscapeHtml(meta.label)+'</div><div class="lg-display-control-value" id="lgDcValue_'+lgEscapeHtml(meta.key)+'">'+lgEscapeHtml(displayValue)+'</div></div>';
   html+='<div class="lg-display-control-row">';
   if(meta.type==='number'){
@@ -1009,7 +1066,9 @@ function lgDisplayControlRender(){
   }else{
    html+='<select id="lgDcInput_'+lgEscapeHtml(meta.key)+'" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>'+lgDisplayControlOptionHtml(meta,value)+'</select>';
   }
-  html+='</div></div>';
+  html+='</div>';
+  if(reason) html+='<div class="lg-display-control-note">'+lgEscapeHtml(reason)+'</div>';
+  html+='</div>';
  });
  grid.innerHTML=html;
  lgDisplayControlSetStatus(lgDisplayControlError||(lgDisplayControlLoaded?'Picture controls loaded':'Refresh settings'),!!lgDisplayControlError);
