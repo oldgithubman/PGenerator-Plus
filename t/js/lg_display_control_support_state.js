@@ -18,7 +18,7 @@ catch(e){ console.log(JSON.stringify({loadError:String(e&&e.message||e)})); proc
 const f=sandbox.lgDisplayControlSupportState;
 if(typeof f!=='function'){ console.log(JSON.stringify({loadError:'lgDisplayControlSupportState not defined'})); process.exit(0); }
 
-// The exact shape a 2021 C1 returns: oledLight refused, backlight usable.
+// The exact shape a 2021 C1 returns: oledLight refused (no value), backlight usable.
 const c1Caps={supportedKeys:['backlight','brightness','contrast'],
   unsupportedKeys:{oledLight:'500 Application error: Some keys are not allowed for the request. ( oledLight )',
                    oledPixelBrightness:'500 Application error: Some keys are not allowed for the request. ( oledPixelBrightness )'}};
@@ -29,15 +29,22 @@ out.refused           = f('oledLight',c1Vals,c1Caps);
 out.refusedSibling    = f('oledPixelBrightness',c1Vals,c1Caps);
 out.works             = f('backlight',c1Vals,c1Caps);
 out.worksBrightness   = f('brightness',c1Vals,c1Caps);
-// No capability data at all (older daemon): must reproduce value-presence rule.
+// CRITICAL: a live value must win even when the key is ALSO listed unsupported
+// (daemon can do this: unscoped read refuses, scoped read returns a value).
+// Old code disabled a working slider here; the fix must keep it usable.
+out.valueWinsOverUnsupported = f('oledLight',{oledLight:40,backlight:50},
+  {supportedKeys:['oledLight','backlight'],unsupportedKeys:{oledLight:'Some keys are not allowed for the request. ( oledLight )'}});
+// No capability data (older daemon): must reproduce value-presence rule exactly.
 out.legacyPresent     = f('backlight',{backlight:50},{});
 out.legacyAbsent      = f('oledLight',{backlight:50},{});
 out.legacyUndef       = f('backlight',{backlight:undefined},{});
 // Defensive: junk inputs must not throw.
 out.nullArgs          = f('backlight',null,null);
-// Reverse equivalence: backlight refused, oledLight usable.
+// Reverse equivalence: backlight refused, oledLight has a live value.
 out.reverse           = f('backlight',{oledLight:40},
-                          {supportedKeys:['oledLight'],unsupportedKeys:{backlight:'Some keys are not allowed for the request. ( backlight )'}});
-// A non-refusal reason is passed through, not reworded.
-out.passthrough       = f('tint',{},{supportedKeys:['backlight'],unsupportedKeys:{tint:'No value returned by TV'}});
+  {supportedKeys:['oledLight'],unsupportedKeys:{backlight:'Some keys are not allowed for the request. ( backlight )'}});
+// A refused panel-light key with NO working sibling gets no brightness hint.
+out.refusedNoSibling  = f('oledLight',{brightness:50},c1Caps);
+// A non-panel-light key absent for this picture mode: explained, no hint.
+out.notForThisMode    = f('tint',{backlight:50},{supportedKeys:['backlight'],unsupportedKeys:{}});
 console.log(JSON.stringify(out));

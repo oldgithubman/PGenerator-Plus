@@ -25,5 +25,13 @@ jobs:
           perl -c usr/sbin/pgenerator-lg
           perl -c usr/share/PGenerator/lg.pm
           perl -c usr/share/PGenerator/webui.pm
+      - name: Check the Web UI JS and confirm Node is present
+        # t/lg_display_control_support_state.t drives webui-lg.js through a Node
+        # vm sandbox and SKIPS if node is missing -- assert it here so that test
+        # can never silently vanish from the suite, and syntax-check the JS the
+        # way the workers are checked above.
+        run: |
+          node --version
+          node -c usr/share/PGenerator/webui-lg.js
       - name: Run the test suite
         run: prove -v t/
