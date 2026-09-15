@@ -11,6 +11,7 @@ set -o pipefail
 # name (started through PATH) leaves no directory to strip.
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+source "$SCRIPT_DIR/pgen_meter_pattern.sh" || exit 1
 PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
 PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
 PGEN_SERIES_STEPS_HELPER="${PGEN_SERIES_STEPS_HELPER:-$SCRIPT_DIR/pgen_series_steps.py}"
@@ -252,10 +253,10 @@ record_series_cancel_usb_suppression() {
 
 series_quit_spotread() {
  local quit_reason="${1:-normal}"
+ local quit_offset=0 quit_confirmed=0 quit_output=""
+ [[ -f "${OUTFILE:-}" ]] && quit_offset=$(output_size)
  if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
   printf "Q" >&3 2>/dev/null || true
-  exec 3>&- 2>/dev/null || true
-  METER_SERIES_FD_OPEN=0
  fi
  # A Stop request is explicit cancellation, not a request to finish the active
  # read. Give spotread a short opportunity to consume Q and close its USB
@@ -267,9 +268,23 @@ series_quit_spotread() {
  local spotread_grace=3
  local waited=0
  while (( waited < spotread_grace * 10 )) && pgrep -x spotread >/dev/null 2>&1; do
+  # spotread first aborts read_sample(), then asks Q again to give up.
+  # Keep the FIFO open for that confirmation instead of forcing TERM on
+  # every normal quit. Inspect only output produced after our first Q.
+  if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" && "$quit_confirmed" == 0 ]]; then
+   quit_output=$(clean_output_since "$quit_offset")
+   if [[ "$quit_output" == *"any other key to retry:"* ]]; then
+    printf "Q" >&3 2>/dev/null || true
+    quit_confirmed=1
+   fi
+  fi
   sleep 0.1
   waited=$((waited + 1))
  done
+ if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
+  exec 3>&- 2>/dev/null || true
+  METER_SERIES_FD_OPEN=0
+ fi
  if pgrep -x spotread >/dev/null 2>&1; then
   echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread exceeded ${spotread_grace}s graceful timeout; sending TERM" >> /tmp/meter_series_debug.log
   # Dark reads can leave spotread blocked inside libusb so an explicit Stop
@@ -344,8 +359,10 @@ post_patch() {
   post_companion_patch "$@"
   return $?
  fi
- curl -s --max-time 8 "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1
+ if ! meter_post_local_patch "$API_BASE" "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")"; then
+  log "$METER_PATTERN_ERROR"
+  series_meter_read_failure_exit "$METER_PATTERN_ERROR" "pattern-request-failed"
+ fi
 }
 
 post_patch_timeout() {
@@ -1435,15 +1452,21 @@ restart_spotread_session() {
   aaa) SR_CMD="$SR_CMD -Y aaa" ;;
  esac
  echo "[$(date '+%H:%M:%S.%3N')] restarting spotread child: step=${STEP_NUM:-?} name=${NAME:-?} low_light=${CURRENT_LOW_LIGHT_MODE:-off}->$requested_mode" >> /tmp/meter_series_debug.log
- if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
-  exec 3>&-
-  METER_SERIES_FD_OPEN=0
- fi
- [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
- pkill -9 -x spotread 2>/dev/null
- pkill -9 -x spotread_sim 2>/dev/null
+ # Integration changes happen between reads. Let the old reader release its
+ # USB handle before reopening it, as the manual session path already does.
+ # Immediate SIGKILL caused a USB reset and failed init on the first black
+ # patch of the 2026-09-13 reference batch.
+ local attempt
+ SPOTREAD_RESTART_ERROR=""
+ for attempt in 1 2; do
+ series_quit_spotread "integration-change"
+ series_stop_requested && series_cancel_exit
  sleep 1.5
- rm -f "$OUTFILE" "$CMDPIPE"
+ local restart_label
+ restart_label=$(json_escape "Preparing meter integration for ${NAME:-patch} (attempt $attempt/2)")
+ write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$restart_label","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
  touch "$OUTFILE"
  mkfifo "$CMDPIPE"
  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
@@ -1456,6 +1479,7 @@ restart_spotread_session() {
   clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
   if echo "$clean" | grep -q "to take a reading:"; then
    CURRENT_LOW_LIGHT_MODE="$requested_mode"
+   SPOTREAD_RESTART_ERROR=""
    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
    return 0
   fi
@@ -1469,13 +1493,15 @@ restart_spotread_session() {
    continue
   fi
   if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
-   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart: instrument error" >> /tmp/meter_series_debug.log
-   return 1
+   break
   fi
   sleep 0.5
   waited=$((waited + 1))
  done
- echo "[$(date '+%H:%M:%S.%3N')] spotread session restart TIMED OUT" >> /tmp/meter_series_debug.log
+ SPOTREAD_RESTART_ERROR=$(printf '%s' "$clean" | tail -n 8 | tr '\r\n\t' '   ' | cut -c 1-1200)
+ [[ -n "$SPOTREAD_RESTART_ERROR" ]] || SPOTREAD_RESTART_ERROR="Meter did not become ready within 40 seconds"
+ echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt $attempt failed: $SPOTREAD_RESTART_ERROR" >> /tmp/meter_series_debug.log
+ done
  return 1
 }
 
@@ -1810,10 +1836,15 @@ capture_series_average_sample() {
     printf " " >&3
     continue
    fi
-   if (( retried_comm == 1 )) && { [[ "$new_output" == *"Spot read failed due to communication problem"* ]] \
-      || [[ "$new_output" == *"to take a reading:"* ]]; }; then
+   if (( retried_comm >= 1 )) && [[ "$new_output" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no averaging result; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
     return 1
+   fi
+   if (( retried_comm == 1 )) && [[ "$new_output" == *"to take a reading:"* ]]; then
+    retried_comm=2
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
    fi
    if prompt_reason=$(manual_ready_prompt_reason "$new_output"); then
     handle_series_manual_prompt "$STEP_NUM" "$NAME" "$prompt_reason" || return 1
@@ -2217,9 +2248,10 @@ EOJSON
  fi
 
  if ! ensure_spotread_low_light_for_step "$i"; then
-  LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed at step $STEP_NUM")
+  LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed at step $STEP_NUM ($NAME) after two attempts. Check the meter USB connection, then resume the queue.")
+  LOW_LIGHT_DEBUG=$(json_escape "${SPOTREAD_RESTART_ERROR:-Meter restart was unavailable}")
   write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","message":"$LOW_LIGHT_ERROR","error_code":"meter-integration-restart-failed","debug":"$LOW_LIGHT_DEBUG","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
   series_quit_spotread
   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
@@ -2320,11 +2352,18 @@ EOJSON
     printf " " >&3
     continue
    fi
-   if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-      || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+   if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result; retiring child step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
     READ_INCOMPLETE=1
     break
+   fi
+   # The first key only acknowledges the error. spotread then re-arms and
+   # prints its ordinary prompt; trigger exactly one replacement read here.
+   if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+    RETRIED_COMM=2
+    SCAN_OFFSET=$(output_size)
+    printf " " >&3
+    continue
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2410,10 +2449,15 @@ EOJSON
       printf " " >&3
       continue
      fi
-     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during no-reading recovery; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
       break
+     fi
+     if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+      RETRIED_COMM=2
+      SCAN_OFFSET=$(output_size)
+      printf " " >&3
+      continue
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2489,10 +2533,15 @@ EOJSON
       printf " " >&3
       continue
      fi
-     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during zero confirmation; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
       break
+     fi
+     if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+      RETRIED_COMM=2
+      SCAN_OFFSET=$(output_size)
+      printf " " >&3
+      continue
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2672,9 +2721,10 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   if ! ensure_spotread_low_light_for_step 0; then
-   LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed for final white refresh")
+   LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed for final white refresh after two attempts. Check the meter USB connection, then resume the queue.")
+   LOW_LIGHT_DEBUG=$(json_escape "${SPOTREAD_RESTART_ERROR:-Meter restart was unavailable}")
    write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
+{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","message":"$LOW_LIGHT_ERROR","error_code":"meter-integration-restart-failed","debug":"$LOW_LIGHT_DEBUG","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
    series_quit_spotread
    rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
@@ -2720,10 +2770,15 @@ EOJSON
      printf " " >&3
      continue
     fi
-    if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-       || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+    if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no final-white result; retiring child name=$FIRST_NAME" >> /tmp/meter_series_debug.log
      break
+    fi
+    if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+     RETRIED_COMM=2
+     SCAN_OFFSET=$(output_size)
+     printf " " >&3
+     continue
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log

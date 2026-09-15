@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/model/2020-alpha7-oled",
+      "priority": 20,
+      "match": { "retail_series": ["BX"] },
+      "data": { "identity": { "model_year": 2020, "processor_family": "alpha7", "expected_platform_token": "W20H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2020 BX Alpha 7 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W20H geometry; internal platform still outranks this fallback." }]
+    },
+    {
+      "profile_id": "lg/model/2020-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["CX", "GX", "WX", "ZX"] },
+      "data": { "identity": { "model_year": 2020, "processor_family": "alpha9", "expected_platform_token": "W20O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2020 CX/GX/WX/ZX Alpha 9 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W20O geometry; internal platform still outranks this fallback." }]
+    },
+    {
+      "profile_id": "lg/model/2021-alpha7-oled",
+      "priority": 20,
+      "match": { "retail_series": ["A1", "B1"] },
+      "data": { "identity": { "model_year": 2021, "processor_family": "alpha7", "expected_platform_token": "W21H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2021 A1/B1 Alpha 7 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W21H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2021-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C1", "G1", "M1", "R1", "Z1"] },
+      "data": { "identity": { "model_year": 2021, "processor_family": "alpha9", "expected_platform_token": "W21O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2021 C1/G1/M1/R1/Z1 Alpha 9 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W21O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2022-alpha7-oled",
+      "priority": 20,
+      "match": { "retail_series": ["A2", "B2"] },
+      "data": { "identity": { "model_year": 2022, "processor_family": "alpha7", "expected_platform_token": "W22H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2022 A2/B2 Alpha 7 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W22H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2022-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C2", "G2", "M2", "R2", "Z2"] },
+      "data": { "identity": { "model_year": 2022, "processor_family": "alpha9", "expected_platform_token": "W22O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2022 C2/G2/M2/R2/Z2 Alpha 9 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W22O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2023-alpha7-oled",
+      "priority": 20,
+      "match": { "retail_series": ["A3", "B3"] },
+      "data": { "identity": { "model_year": 2023, "processor_family": "alpha7", "expected_platform_token": "W23H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2023 A3/B3 Alpha 7 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W23H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2023-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C3", "G3", "M3", "R3"] },
+      "data": { "identity": { "model_year": 2023, "processor_family": "alpha9", "expected_platform_token": "W23O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2023 C3/G3/M3/R3 Alpha 9 support family." }, { "source_id": "portrait-lg-2023-guide", "strength": "official", "scope": "C3/G3 calibration grouping." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W23O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2024-alpha8-oled",
+      "priority": 20,
+      "match": { "retail_series": ["B4"] },
+      "data": { "identity": { "model_year": 2024, "processor_family": "alpha8", "expected_platform_token": "W24H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2024 B4 Alpha 8 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W24H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2024-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C4"] },
+      "data": { "identity": { "model_year": 2024, "processor_family": "alpha9", "expected_platform_token": "W24O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2024 C4 Alpha 9 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W24O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2024-alpha11-oled",
+      "priority": 20,
+      "match": { "retail_series": ["G4", "M4"] },
+      "data": { "identity": { "model_year": 2024, "processor_family": "alpha11", "expected_platform_token": "W24G", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2024 G4/M4 Alpha 11 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W24G geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2025-alpha8-oled",
+      "priority": 20,
+      "match": { "retail_series": ["B5"] },
+      "data": { "identity": { "model_year": 2025, "processor_family": "alpha8", "expected_platform_token": "W25H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2025 B5/B5A Alpha 8 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W25H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2025-alpha9-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C5"] },
+      "data": { "identity": { "model_year": 2025, "processor_family": "alpha9", "expected_platform_token": "W25O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2025 C5/C5A Alpha 9 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W25O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2025-alpha11-oled",
+      "priority": 20,
+      "match": { "retail_series": ["G5", "M5"] },
+      "data": { "identity": { "model_year": 2025, "processor_family": "alpha11", "expected_platform_token": "W25G", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2025 G5/M5 Alpha 11 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W25G geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2026-alpha8-oled",
+      "priority": 20,
+      "match": { "retail_series": ["B6"], "year_min": 2026, "year_max": 2026 },
+      "data": { "identity": { "model_year": 2026, "processor_family": "alpha8", "expected_platform_token": "W26H", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2026 B6/B6A Alpha 8 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W26H geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2026-alpha11-c-oled",
+      "priority": 20,
+      "match": { "retail_series": ["C6"], "year_min": 2026, "year_max": 2026 },
+      "data": { "identity": { "model_year": 2026, "processor_family": "alpha11", "expected_platform_token": "W26O", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2026 C6/C6A Alpha 11 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W26O geometry." }]
+    },
+    {
+      "profile_id": "lg/model/2026-alpha11-gallery-oled",
+      "priority": 20,
+      "match": { "retail_series": ["G6", "M6"], "year_min": 2026, "year_max": 2026 },
+      "data": { "identity": { "model_year": 2026, "processor_family": "alpha11", "expected_platform_token": "W26G", "match_basis": "retail_model_fallback" }, "calibration": { "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "portrait-lg-autocal", "strength": "official", "scope": "2026 G6/M6 Alpha 11 support family." }, { "source_id": "bscpylgtv-platform-table", "strength": "library_implementation", "scope": "Expected W26G geometry." }]
+    }
+  ],
+  "vendor_autocal_inventory": {
+    "scope": "Presentation and research inventory only; runtime geometry still resolves from the internal platform token.",
+    "2020": { "oled": ["BX", "CX", "GX", "WX", "ZX"], "lcd": ["NANO85", "NANO90", "NANO95", "NANO97", "NANO99"] },
+    "2021": { "oled": ["A1", "B1", "C1", "G1", "M1", "R1", "Z1"], "lcd": ["NANO85", "NANO90", "NANO95", "NANO99", "QNED90", "QNED95", "QNED99"] },
+    "2022": { "oled": ["A2", "B2", "C2", "G2", "M2", "R2", "Z2"], "lcd": ["NANO85", "NANO90", "NANO91", "NANO97", "NANO99", "QNED80", "QNED80UQA", "QNED90", "QNED99"] },
+    "2023": { "oled": ["A3", "B3", "C3", "G3", "M3", "R3"], "lcd": ["NANO85", "NANO90", "NANO91", "NANO97", "NANO99", "QNED80", "QNED80UQA", "QNED90", "QNED99"] },
+    "2024": { "oled": ["B4", "C4", "G4", "M4"], "lcd": ["LR60", "NANO80", "QNED80", "QNED85", "QNED86", "QNED90", "QNED99", "UT73", "UT80", "UT90"] },
+    "2025": { "oled": ["B5", "B5A", "C5", "C5A", "G5", "M5"], "lcd": ["NANO80", "NANO90", "QNED80", "QNED82", "QNED82A", "QNED85", "QNED85A", "QNED90", "QNED90A", "QNED92", "QNED9M", "UA75Z", "UA77", "UA77A", "UA90", "UA90A"] },
+    "2026": { "oled": ["B6", "B6A", "C6", "C6A", "G6", "M6"], "lcd": ["QNED80", "QNED82", "QNED82A", "QNED85", "QNED90", "QNED90A", "QNED92", "QNED9MA"] }
+  }
+}

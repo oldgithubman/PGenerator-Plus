@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/settings/2020-2021-best-available",
+      "priority": 35,
+      "match": {"platform_tokens": ["W20H", "W20O", "W21H", "W21O"]},
+      "data": {"settings": {"best_available": {
+        "enabled": true,
+        "label": "Best available settings for LG 2020–2021",
+        "manual_on_unavailable_read": true,
+        "note": "Apply readable controls; keep unavailable controls as explicit manual setup instructions. Acknowledged-only writes are never reported as verified."
+      }}},
+      "evidence": [{"source_id": "pgenerator-existing-behaviour", "strength": "implementation_policy", "scope": "Best-available handling for reviewed legacy platforms; no relaxation of LUT geometry or connection guards."}]
+    },
+    {
+      "profile_id": "lg/model/C1-known",
+      "priority": 21,
+      "match": {"retail_series": ["C1"]},
+      "data": {"identity": {"compatibility_name": "LG C1 (2021)", "model_year": 2021, "expected_platform_token": "W21O"}},
+      "evidence": [{"source_id": "c1-user-run-20260915", "strength": "user_report", "scope": "Recognises OLED65C1PUB and the C1 retail family. Full internal platform remains required for calibration admission."}]
+    },
+    {
+      "profile_id": "lg/settings/C1-best-available",
+      "priority": 36,
+      "match": {"retail_series": ["C1"], "platform_tokens": ["W21O"]},
+      "data": {"settings": {
+        "best_available": {
+          "label": "LG C1 — best available settings",
+          "unverified_write_signals": ["sdr", "hdr10", "dv"],
+          "note": "C1 hardware reports cover the five native controls in SDR, HDR10 and Dolby Vision. Probe this TV first; other controls remain usable when readable, otherwise give manual instructions. Accepted writes without readback remain unverified, not universal firmware verification."
+        },
+        "controls": {
+          "backlight": {"write": {"allow_unverified_readback": true}},
+          "brightness": {"write": {"allow_unverified_readback": true}},
+          "color": {"write": {"allow_unverified_readback": true}},
+          "contrast": {"write": {"allow_unverified_readback": true}},
+          "energySaving": {"write": {"allow_unverified_readback": true}}
+        }
+      }},
+      "evidence": [{"source_id": "c1-user-run-20260915", "strength": "user_report", "scope": "Five native setting candidates may use acknowledged-only success when readback is missing; actual write refusal, readback mismatch, invalid values and changed TV/input remain errors."}, {"source_id": "c1-pr14-all-signals-20260915", "strength": "user_report", "scope": "Extends only backlight, brightness, color, contrast and energySaving to SDR, HDR10 and Dolby Vision. HLG and other controls receive no acknowledged-only allowance."}]
+    }
+  ]
+}

@@ -17,6 +17,7 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGLGCapabilities qw(lg_scoped_request_payload);
 
 my ($config_file,$state_file,$stop_file)=@ARGV;
 die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_file) || !defined($state_file) || !defined($stop_file));
@@ -24,6 +25,8 @@ die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_fil
 my $json=JSON::PP->new->canonical->allow_nonref;
 my $api_host="127.0.0.1";
 my $api_port=80;
+my $automation_token="";
+my $config;
 
 sub read_file {
  my ($path)=@_;
@@ -34,6 +37,17 @@ sub read_file {
 
 sub write_state {
  my (%state)=@_;
+ # Automation reads this file directly. Retain ownership and the measured
+ # phase's context rather than requiring the standalone status endpoint to
+ # reconstruct them from a mutable config file.
+ $state{signal_mode}="dv";
+ $state{target_gamma}="2.2";
+ $state{dv_map_mode}="2";
+ if(ref($config) eq "HASH") {
+  foreach my $key (qw(full_autocal_run_id color_format max_bpc signal_range pattern_signal_range transport_signal_range)) {
+   $state{$key}=$config->{$key} if(defined($config->{$key}));
+  }
+ }
  open(my $fh,'>',$state_file) or return;
  print $fh $json->encode(\%state);
  close($fh);
@@ -47,7 +61,13 @@ sub api_json {
  $method||="GET";
  $timeout||=30;
  $timeout=1 if($timeout < 1);
- my $body=defined($payload) ? $json->encode($payload) : "";
+ my $request_payload=$payload;
+ $request_payload=lg_scoped_request_payload($path,$request_payload,$config);
+ if($method ne "GET" && ref($payload) eq "HASH"
+    && $automation_token=~/^[A-Za-z0-9_.:-]{8,200}$/) {
+  $request_payload={%{$request_payload},automation_token=>$automation_token};
+ }
+ my $body=defined($request_payload) ? $json->encode($request_payload) : "";
  my $deadline=time()+$timeout;
  my $socket=IO::Socket::INET->new(
   PeerHost=>$api_host,
@@ -96,8 +116,11 @@ sub api_json {
  return {status=>"error",message=>"Invalid Web UI API response"};
 }
 
-my $config=eval { $json->decode(read_file($config_file)) } || {};
+$config=eval { $json->decode(read_file($config_file)) } || {};
 die "Empty/invalid config\n" if(ref($config) ne "HASH");
+$automation_token=$config->{automation_token}
+ if(defined($config->{automation_token})
+    && $config->{automation_token}=~/^[A-Za-z0-9_.:-]{8,200}$/);
 
 write_state(status=>"running",message=>"Starting Dolby Vision profile measurement",steps=>[]);
 

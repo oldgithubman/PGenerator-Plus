@@ -27,9 +27,14 @@ use PGCalibrationMath qw(
 );
 use PGMeterReading qw(reading_xyz);
 use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGAutomationProcessing ();
+use PGLGCapabilities qw(resolve_lg_capabilities lg_scoped_request_payload);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+our $LG_3D_AUTOMATION_TOKEN = "";
+our $LG_3D_REQUEST_CONTEXT = {};
+our $LG_3D_SETTINGS_EPOCH = 0;
 
 my $config_file = shift || "/tmp/meter_lg_3d_autocal_config.json";
 my $state_file = shift || "/tmp/meter_lg_3d_autocal.json";
@@ -47,6 +52,39 @@ sub json_false { return JSON::PP::false; }
 sub json_bool {
  my ($value)=@_;
  return $value ? json_true() : json_false();
+}
+
+sub lg_payload_grid_for_config {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH");
+ my $explicit=int($config->{"payload_lut_size"}||0);
+ return $explicit if(($explicit == 17 || $explicit == 33) && $config->{"fixture_mode"});
+ my $generation=(ref($config->{"lg_generation"}) eq "HASH")
+  ? $config->{"lg_generation"}
+  : ((ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : {});
+ if(ref($generation) eq "HASH" && keys(%{$generation})) {
+  my $resolved=eval { resolve_lg_capabilities($generation) };
+  my $frozen=$config->{"preflight_generation_profile"};
+  if(ref($frozen) eq "HASH") {
+   return 0 if(!ref($resolved) || !$frozen->{"capability_profile_hash"}
+    || $frozen->{"capability_profile_hash"} ne ($resolved->{"capability_profile_hash"}||""));
+  }
+  my $grid=(ref($resolved) eq "HASH" && ref($resolved->{"data"}) eq "HASH"
+   && ref($resolved->{"data"}{"calibration"}) eq "HASH"
+   && ref($resolved->{"data"}{"calibration"}{"three_d_lut"}) eq "HASH")
+   ? int($resolved->{"data"}{"calibration"}{"three_d_lut"}{"grid_size"}||0) : 0;
+  return $grid if($resolved->{"platform_profile_applied"} && ($grid == 17 || $grid == 33));
+ }
+ # Fixtures predate capability manifests and exercise maths, not a TV write.
+ return 33 if($config->{"fixture_mode"});
+ return 0;
+}
+
+sub lg_3d_grid_from_value_count {
+ my ($count)=@_;
+ return 17 if(defined($count) && int($count) == 17**3*3);
+ return 33 if(defined($count) && int($count) == 33**3*3);
+ return 0;
 }
 
 sub ramp_levels { return (0,2,5,8,12,16,20,30,40,50,60,70,80,88,94,98,100); }
@@ -80,7 +118,9 @@ sub describe_and_exit {
   methods => ["matrix","ramp","lattice","skeleton","hybrid","imported"],
   lut_size => 17,
   cube_lut_size => 17,
-  payload_lut_size => 33,
+  payload_lut_size => undef,
+  payload_lut_sizes => [17,33],
+  payload_lut_size_policy => "resolved from the connected LG internal platform",
   payload_bits => 12,
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
@@ -177,9 +217,18 @@ sub cancelled {
 sub api_json {
  my ($method,$path,$payload,$timeout)=@_;
  $method ||= "GET";
+ # Recheck processing once after a calibration write, not once per patch.
+ $LG_3D_SETTINGS_EPOCH++ if $method eq 'POST'
+  && $path =~ m{^/api/lg/(?:1d-dpg/upload|hdr-tone-map/upload|3d-lut/(?:upload|reset|probe)|calibration-mode)$};
  $timeout ||= 30;
  $timeout=1 if($timeout < 1);
- my $body=defined($payload) ? $json->encode($payload) : "";
+ my $request_payload=$payload;
+ $request_payload=lg_scoped_request_payload($path,$request_payload,$LG_3D_REQUEST_CONTEXT);
+ if($method ne "GET" && ref($payload) eq "HASH"
+    && $LG_3D_AUTOMATION_TOKEN=~/^[A-Za-z0-9_.:-]{8,200}$/) {
+  $request_payload={%{$request_payload},automation_token=>$LG_3D_AUTOMATION_TOKEN};
+ }
+ my $body=defined($request_payload) ? $json->encode($request_payload) : "";
  my $deadline=time()+$timeout;
  my $socket=IO::Socket::INET->new(PeerHost=>$api_host,PeerPort=>$api_port,Proto=>"tcp",Timeout=>$timeout);
  return { status=>"error", message=>"Web UI API is unavailable" } if(!$socket);
@@ -2887,7 +2936,7 @@ sub lg_calibration_end_retry_forbidden {
 
 # ---- Imported-.cube upload path (method=imported) ----
 # No profiling, no solve: parse an operator-supplied .cube (saved on the Pi
-# by /api/3d-lut/import), trilinearly resample it to the LG 33-point payload
+# by /api/3d-lut/import), trilinearly resample it to the LG platform payload
 # and a 17-point export cube, then run the standard probe/upload flow.
 
 sub parse_cube_file {
@@ -2931,7 +2980,7 @@ sub imported_cube_sample {
 }
 
 sub build_imported_lut {
- my ($config,$state,$cube_size)=@_;
+ my ($config,$state,$cube_size,$payload_grid)=@_;
  my $path=$config->{"imported_cube_path"}||"";
  die "Imported .cube path missing\n" if($path eq "");
  die "Imported .cube not found: $path\n" if(!-f $path);
@@ -2972,14 +3021,16 @@ sub build_imported_lut {
   my $v=imported_cube_sample($cube,$r/($csize-1),$g/($csize-1),$b/($csize-1));
   push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
  }}}
- # LG payload (33^3): R-FASTEST fill to match generate_lut_lg_payload.
+ # LG payload (17^3 or 33^3): R-FASTEST fill to match generate_lut_lg_payload.
  # A failed commit retry supplies the exact exported binary from the original
  # solve.  Reuse those bytes instead of reconstructing the payload from the
  # smaller downloadable cube; the exported .cube (17-point by default) cannot
  # reproduce every 33-point node exactly and a retry must be byte-for-byte
  # identical to the first attempt.
  my @payload_u16;
- my $psize=33;
+ my $psize=int($payload_grid||lg_payload_grid_for_config($config));
+ die "LG 3D LUT platform geometry is unknown; refusing to build an upload payload\n"
+  if($psize != 17 && $psize != 33);
  my $exact_payload_path=$config->{"imported_payload_path"}||"";
  if($exact_payload_path ne "") {
   die "Imported LG payload not found: $exact_payload_path\n" if(!-f $exact_payload_path);
@@ -2997,7 +3048,7 @@ sub build_imported_lut {
   $model->{"imported_payload_path"}=$exact_payload_path;
   $model->{"exact_payload_reused"}=json_true();
   $state->{"retry_payload_reused"}=json_true();
-  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize; exact 33-point payload reused from $exact_payload_path");
+  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize; exact ${psize}-point payload reused from $exact_payload_path");
  } else {
   for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
    my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
@@ -3051,7 +3102,8 @@ sub export_lut {
  my $payload_size=0;
  if($have_payload) {
   $binary=pack("v*",@{$payload_u16});
-  $payload_size=33;
+  $payload_size=lg_3d_grid_from_value_count(scalar(@{$payload_u16}));
+  die "LG 3D LUT payload has an unsupported value count\n" if(!$payload_size);
   write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
  }
  write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
@@ -3641,6 +3693,12 @@ sub note_confirmed_zero_reading {
 
 sub read_step {
  my ($config,$step,$state)=@_;
+ if (!$config->{fixture_mode}) {
+  my $ok=eval {PGAutomationProcessing::enforce($config,$state,$LG_3D_SETTINGS_EPOCH,\&api_json,\&log_line)};
+  my $error=$@;
+  write_state($state) if ref($state) eq 'HASH';
+  return (undef,$error||'Unable to verify queued processing settings') if !$ok;
+ }
  my $fixture=fixture_reading_for_step($step,$config);
  if($fixture) {
   $fixture->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
@@ -4819,7 +4877,7 @@ sub run_hdr20_postcal_shadow_correction {
 
    $state->{"phase"}="postcal_shadow";
    $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
-   $state->{"message"}=sprintf("Re-committing DPG (per-anchor trim, worst=%.3f)",($pass==1 ? 1e9 : 0));
+   $state->{"message"}="Re-committing DPG before reading shadow anchors (pass $pass)";
    write_state($state);
    my ($cand_resp,$cand_bound,$cand_msg)=$bind_dpg->($candidate);
    $state->{"postcal_shadow_pass_".$pass."_counts"}={ %counts };
@@ -5068,6 +5126,10 @@ sub run_hdr20_postcal_shadow_correction {
 
 unless(caller()) {
 my $config=decode_json_safe(read_file($config_file),{});
+$LG_3D_REQUEST_CONTEXT=$config;
+$LG_3D_AUTOMATION_TOKEN=$config->{automation_token}
+ if(ref($config) eq "HASH" && defined($config->{automation_token})
+    && $config->{automation_token}=~/^[A-Za-z0-9_.:-]{8,200}$/);
 # Calibration-card Target White / Target Black overrides flow into the
 # fixture-mode synthetic readings and the profile target curve.
 if(ref($config) eq "HASH") {
@@ -5190,6 +5252,7 @@ if($retry_upload_only) {
  delete $state->{"elapsed_ms"};
  delete $state->{"terminal_commit_verified"};
 }
+delete $state->{automation_processing_epoch}; # A new worker must obtain fresh evidence.
 if($config->{"full_workflow"}) {
  $state->{"full_workflow"}=json_true();
  $state->{"full_autocal_run_id"}=$config->{"full_autocal_run_id"} if(defined($config->{"full_autocal_run_id"}) && $config->{"full_autocal_run_id"} ne "");
@@ -5345,26 +5408,45 @@ eval {
  # before generate (same idea as greyscale completion pattern cleanup).
  blank_display_for_solve($config,$state);
 
- # Export cube size is operator-selected (17/33). TV upload payload stays 33³.
+ # Export cube size is operator-selected. TV payload geometry is resolved
+ # independently from the connected TV's reviewed platform profile.
  my $cube_size=int($config->{"solve_cube_size"}||17);
  $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ my $payload_grid=lg_payload_grid_for_config($config);
+ die "LG 3D LUT platform geometry is unknown; refusing to generate or upload a TV payload\n"
+  if($upload_requested && !$config->{"fixture_mode"} && !$payload_grid);
+ $payload_grid=33 if(!$payload_grid && $config->{"fixture_mode"});
+ my $capability_generation=(ref($config->{"lg_generation"}) eq "HASH")
+  ? $config->{"lg_generation"}
+  : ((ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : {});
+ my $resolved_capabilities=(keys(%{$capability_generation}) ? eval { resolve_lg_capabilities($capability_generation) } : undef);
+ if(ref($resolved_capabilities) eq "HASH") {
+  $state->{"capability_profile"}={
+   capability_profile_id=>$resolved_capabilities->{"capability_profile_id"},
+   capability_profile_hash=>$resolved_capabilities->{"capability_profile_hash"},
+   capability_match_status=>$resolved_capabilities->{"match_status"},
+   capability_library_version=>$resolved_capabilities->{"library_version"},
+   applied_profiles=>$resolved_capabilities->{"applied_profiles"},
+   calibration=>$resolved_capabilities->{"data"}{"calibration"},
+  };
+ }
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"solve_cube_size"}=$cube_size;
  $state->{"cube_lut_size"}=$cube_size;
  $state->{"solve_progress_pct"}=10;
  $state->{"message"}=($method eq "ramp")
-  ? "Applying drift correction and solving ${cube_size}-point cube plus 33-point LG payload"
+  ? "Applying drift correction and solving ${cube_size}-point cube plus ${payload_grid}-point LG payload"
   : (is_volume_profile_method($method))
-   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", ${cube_size}-point cube plus 33-point LG payload"
+   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", ${cube_size}-point cube plus ${payload_grid}-point LG payload"
    : ($method eq "imported")
-    ? "Resampling imported .cube to ${cube_size}-point cube plus 33-point LG payload"
-    : "Solving matrix ${cube_size}-point cube plus 33-point LG payload";
+    ? "Resampling imported .cube to ${cube_size}-point cube plus ${payload_grid}-point LG payload"
+    : "Solving matrix ${cube_size}-point cube plus ${payload_grid}-point LG payload";
  write_state($state);
 
  my ($model,$cube_u16,$payload_u16,$preview_nodes);
  if($method eq "imported") {
-  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state,$cube_size);
+  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state,$cube_size,$payload_grid);
  } else {
  # Volume profiling (lattice / skeleton / hybrid) uses the same solve as the
  # offline lattice path: white-preserving matrix baseline from W/R/G/B/K
@@ -5424,16 +5506,16 @@ eval {
   };
   log_line("lattice debug dump error: $@") if($@);
  }
- $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes) plus 33-point LG payload";
+ $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes) plus ${payload_grid}-point LG payload";
  $state->{"current_name"}="Generating ${cube_size}³ cube";
  $state->{"solve_progress_pct"}=40;
  write_state($state);
  ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
- $state->{"message"}="Generating 33-point LG upload payload";
- $state->{"current_name"}="Generating 33³ payload";
+ $state->{"message"}="Generating ${payload_grid}-point LG upload payload";
+ $state->{"current_name"}="Generating ${payload_grid}³ payload";
  $state->{"solve_progress_pct"}=70;
  write_state($state);
- $payload_u16=generate_lut_lg_payload($model,33);
+ $payload_u16=generate_lut_lg_payload($model,$payload_grid);
  }
  my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
  $state->{"export"}=$export;
@@ -5456,7 +5538,7 @@ eval {
  $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
  $state->{"cube_lut_size"}=$cube_size;
  $state->{"solve_cube_size"}=$cube_size;
- $state->{"payload_lut_size"}=33;
+ $state->{"payload_lut_size"}=$payload_grid;
  $state->{"payload_bits"}=12;
  $state->{"payload_axis_order"}="R fastest, G middle, B slowest";
  $state->{"payload_channel_order"}="RGB values per node";
@@ -5486,7 +5568,7 @@ eval {
   } else {
    $state->{"phase"}="upload_probe";
    $state->{"current_name"}="Probing LG 3D LUT upload";
-   $state->{"message"}="Round-tripping a unity 33x33x33 payload before upload";
+   $state->{"message"}="Round-tripping a unity ${payload_grid}x${payload_grid}x${payload_grid} payload before upload";
    write_state($state);
    $probe=api_json("POST","/api/lg/3d-lut/probe",{
     picture_mode => $config->{"picture_mode"}||"",
@@ -5896,6 +5978,13 @@ eval {
   }
  }
 
+ # The final smoothing upload also exits CAL mode. Verify queued processing
+ # before returning, so the next stage cannot inherit reset menu defaults.
+ if (!$config->{fixture_mode}) {
+  PGAutomationProcessing::enforce($config,$state,$LG_3D_SETTINGS_EPOCH,\&api_json,\&log_line);
+  write_state($state);
+ }
+
  # Surface any null meter reads that had to be discarded during the run. They
  # were re-measured, so the LUT is sound, but a meter that dropped out once is
  # likely to do it again and the operator should know it happened.
@@ -5932,11 +6021,14 @@ eval {
      tv_message    => $state->{'message'} || '',
      worker_status => $state->{'status'} || '',
     });
-    PGAutoCalRun::run_merge_manifest($rid, { emitted_lut => {
-     lut_grid       => 33,
-     lut_data_count => 35937,
-     lut_bit_depth  => 12,
-    }});
+    PGAutoCalRun::run_merge_manifest($rid, {
+     emitted_lut => {
+      lut_grid       => ($state->{'payload_lut_size'}||0)+0,
+      lut_data_count => (($state->{'payload_lut_size'}||0)**3)*3,
+      lut_bit_depth  => 12,
+     },
+     capability_profile => $state->{'capability_profile'},
+    });
    }
    1;
   };

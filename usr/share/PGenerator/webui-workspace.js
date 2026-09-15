@@ -4620,7 +4620,7 @@ function meterClearDisplayPattern(){
  const displayToken=++meterPatternDisplayToken;
  const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
  const send=()=>displayToken===meterPatternDisplayToken
-  ?fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000})
+  ?fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop',only_if_unowned:true}),_quiet:true,_timeoutMs:5000})
   :null;
  try{ meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send); }catch(e){}
 }
@@ -4640,8 +4640,39 @@ async function meterStopCalibrationPattern(){
 // design, but that one instruction must reach the operator -- route all
 // run/end responses through this so it is never silently discarded.
 function meterReportLgRunEnd(r){
- if(r&&r.error_code==='lg-calibration-session-stuck'&&r.message){ toast(r.message,true); }
+ if(r&&r.status==='error'&&r.message){ toast(r.message,true); }
  return r;
+}
+async function meterStopAndConfirm(endpoint='/api/meter/stop'){
+ const label=document.getElementById('meterStopStatus');
+ if(label)label.textContent='Stopping workers and closing TV calibration mode…';
+ const result=await fetchJSON(endpoint,{method:'POST',_quiet:true,_timeoutMs:180000});
+ if(!result||result.status!=='ok')throw new Error(result?.message||'Stop was not acknowledged. Check the TV before another run.');
+ if(result.run){
+  // A standalone Stop pressed while a batch owns the devices stops the batch.
+  const deadline=Date.now()+180000;
+  while(Date.now()<deadline){
+   const current=await fetchJSON('/api/automation/runs/current',{_quiet:true,_timeoutMs:5000});
+   if(current?.run?.id===result.run.id&&['stopped','failed'].includes(current.run.status)){
+    if(current.run.status==='failed')throw new Error(current.run.failure?.message||'Batch stop cleanup failed');
+    return true;
+   }
+   await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  throw new Error('Batch stop cleanup is still unconfirmed. Follow the Automation activity log.');
+ }
+ const started=Date.now();let escalated=false;
+ while(Date.now()-started<180000){
+  const state=await fetchJSON('/api/meter/stop/status',{_quiet:true,_timeoutMs:5000});
+  if(state?.status==='stopped')return true;
+  if(label)label.textContent='TV calibration exit acknowledged; waiting for the meter to close…';
+  if(!escalated&&state?.series_alive&&Date.now()-started>5000){
+   escalated=true;
+   await fetchJSON('/api/meter/series/kill',{method:'POST',_quiet:true,_timeoutMs:15000});
+  }
+  await new Promise(resolve=>setTimeout(resolve,1000));
+ }
+ throw new Error('Stop cleanup timed out; a meter or calibration worker may still be running.');
 }
 function meterAutoCalRunEndPayload(status,note,runId){
  const payload={status:status||'complete',controller_id:meterFullAutoCalControllerId()};
@@ -7933,6 +7964,10 @@ async function meterFullAutoCalCaptureReportSet(stage){
 }
 
 async function meterFullAutoCalBuildSnapshotReportSections(entries){
+ const previousReportGamma=window._meterSnapshotReportTargetGamma;
+ const previousReportContext=window._meterSnapshotReportContext;
+ const reportControls=['meterTargetGamma','meterTargetGamut','meterDeltaEForm','meterColorDeltaEForm','meterCustomD65Enabled','meterTargetWhiteX','meterTargetWhiteY']
+  .map(id=>document.getElementById(id)).filter(Boolean).map(el=>({el,value:el.value,checked:el.checked}));
  const restore={
   key:meterActiveSeriesKey,
   selectedName:_selectedColorReadingName,
@@ -7954,14 +7989,37 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
     sectionHtml+=meterBuildEmptySeriesReportSection(title);
     continue;
    }
+   if(snap.transport_context_inferred){
+    sectionHtml+=meterBuildNoticeReportSection('Saved transport settings',
+     'Some transport settings were not recorded. Missing values use the automation runner defaults (RGB, 10-bit, Full range), not the current output. Verify the original settings before treating these charts as calibration evidence.');
+   }
+   // Report each job against its saved targets, not the operator's current
+   // single-calibration selectors. No change events or TV writes are sent.
+   // Keep transport and phase scoped across animation frames as well: another
+   // job may be running in a different range, bit depth or DV map mode.
+   window._meterSnapshotReportContext=snap;
+   const reportValue=(id,value)=>{const el=document.getElementById(id);if(el&&value!=null)el.value=String(value);};
+   reportValue('meterTargetGamma',snap.target_gamma||reportControls.find(control=>control.el.id==='meterTargetGamma')?.value);
+   window._meterSnapshotReportTargetGamma=snap.target_gamma||reportControls.find(control=>control.el.id==='meterTargetGamma')?.value||null;
+   reportValue('meterTargetGamut',snap.target_gamut);
+   reportValue('meterDeltaEForm',snap.delta_e_formula);
+   reportValue('meterColorDeltaEForm',snap.delta_e_formula);
+   if(snap.target_white){
+    reportValue('meterTargetWhiteX',snap.target_white.x);reportValue('meterTargetWhiteY',snap.target_white.y);
+    const custom=document.getElementById('meterCustomD65Enabled');if(custom)custom.checked=true;
+   }
    meterRecoverSeries({
     series_id:null,
+    snapshot_report:true,
+    cache_key:snap.cache_key,
     type:snap.type,
     points:snap.points,
 	    status:'complete',
 	    total_steps:Array.isArray(snap.steps)?snap.steps.length:0,
 	    signal_mode:snap.signal_mode,
 	    target_gamma:snap.target_gamma,
+	    target_gamut:snap.target_gamut,
+	    calibration_target_context:snap.calibration_target_context,
 	    max_luma:snap.max_luma,
 	    dv_map_mode:snap.dv_map_mode,
 	    steps:meterFullAutoCalCloneValue(snap.steps||[]),
@@ -7969,10 +8027,20 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
 	    white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null,
 	    black_reading:snap.black_reading?meterFullAutoCalCloneValue(snap.black_reading):null
    });
+   if(snap.lg_autocal_26_best_known){
+    // Use the same current/best-known combination as the single AutoCal view.
+    meterReadings=meterAutoCalStatusChartReadings(snap);
+    drawAllCharts();
+   }
    await meterPrepareCurrentSeriesForReport();
    sectionHtml+=meterBuildCurrentSeriesReportSection(title);
   }
  } finally {
+  if(previousReportContext===undefined)delete window._meterSnapshotReportContext;
+  else window._meterSnapshotReportContext=previousReportContext;
+  if(previousReportGamma===undefined)delete window._meterSnapshotReportTargetGamma;
+  else window._meterSnapshotReportTargetGamma=previousReportGamma;
+  reportControls.forEach(({el,value,checked})=>{el.value=value;el.checked=checked;});
   meterSeriesCache=cacheBackup||{};
   meterPersistSeriesCache();
   if(restore.key){
@@ -8755,9 +8823,10 @@ async function meterStopDvAutoCalProfile(){
  meterDvAutoCalProfileRunning=false;
  meterDvProfileStandaloneRunning=false;
  meterActionPending=true;
+ let stopError='';
  try{
-  await fetchJSON('/api/lg/dv-profile/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
- }catch(e){}
+  await meterStopAndConfirm('/api/lg/dv-profile/stop');
+ }catch(e){stopError=e.message||'Stop cleanup failed';}
  try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(meterAutoCalRunEndPayload('aborted',wasFullWorkflow?'Full Auto Cal stopped':'Dolby Vision profile measurement stopped')),_quiet:true,_timeoutMs:8000})); }catch(e){}
  finally{
   meterActionPending=false;
@@ -8772,7 +8841,7 @@ async function meterStopDvAutoCalProfile(){
  // this stop ends the run, so verification must grade against ST 2084 again
  // (same restore meterStopAutoCal performs).
  meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
- toast('Dolby Vision profile measurement stopped');
+ toast(stopError||'Dolby Vision profile measurement stopped',!!stopError);
 }
 
 function meterFullAutoCalTouchupTargetDelta(){
@@ -10185,9 +10254,10 @@ async function meterStopAutoCal(){
  if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
  meterAutoCalRunning=false;
  meterActionPending=true;
+ let stopError='';
  try{
-  await fetchJSON('/api/meter/lg-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
- }catch(e){}
+  await meterStopAndConfirm('/api/meter/lg-autocal/stop');
+ }catch(e){stopError=e.message||'Stop cleanup failed';}
  // Always clear full-workflow server metadata on stop (even standalone
  // greyscale may leave hdr20/full keys). Prevents refresh from re-firing
  // the Full Auto Cal complete / Generate Report popup.
@@ -10202,7 +10272,7 @@ async function meterStopAutoCal(){
   try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
 	 meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
- toast('LG Auto Cal stopped');
+ toast(stopError||'LG Auto Cal stopped',!!stopError);
 }
 
 function meterLg3dAutoCalSummary(status){
@@ -11605,9 +11675,10 @@ async function meterStopLg3dAutoCal(){
  meterFullAutoCalResetState(false);
  meterLg3dAutoCalRunning=false;
  meterActionPending=true;
+ let stopError='';
  try{
-  await fetchJSON('/api/meter/lg-3d-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
- }catch(e){}
+  await meterStopAndConfirm('/api/meter/lg-3d-autocal/stop');
+ }catch(e){stopError=e.message||'Stop cleanup failed';}
  try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(meterAutoCalRunEndPayload('aborted',wasFullWorkflow?'Full Auto Cal stopped':'3D LUT AutoCal stopped')),_quiet:true,_timeoutMs:8000})); }catch(e){}
  finally{
   meterActionPending=false;
@@ -11618,7 +11689,7 @@ async function meterStopLg3dAutoCal(){
  // Stop during the 3D LUT stage ends an HDR/DV run whose greyscale stage
  // pinned Target Gamma to 2.2; restore ST 2084 for verification.
  meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
- toast('LG 3D LUT AutoCal stopped');
+ toast(stopError||'LG 3D LUT AutoCal stopped',!!stopError);
 }
 let meterInternalSeriesWorkflow=null;
 
@@ -18541,6 +18612,13 @@ function meterBuildReportSummaryCards(){
    {label:'Black Level',value:isFinite(black)?black.toFixed(3)+' cd/m²':'--'},
     {label:'Contrast Ratio',value:meterFormatContrastRatio(meterMeasuredContrastRatio(rawGs))},
    {label:'Average CCT',value:avgCct?Math.round(avgCct)+'K':'--'}
+  ];
+ } else if(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext()){
+  // A native panel/profile pass measures its primaries; it is not an accuracy
+  // sweep against a target gamut. Do not invent a Delta-E score for it.
+  cards=[
+   {label:'Peak Luminance',value:Math.max(...valid.map(r=>Number(r.Y??r.luminance)||0)).toFixed(1)+' cd/m²'},
+   {label:'Readings',value:String(valid.length)}
   ];
  } else {
     const colorRefMode=meterColorRefMode();

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/operations/apply-all-2020",
+      "priority": 15,
+      "match": {"year_min": 2020, "year_max": 2020},
+      "data": {"operations": {"apply_all_inputs": {"support_state": "unsupported"}}},
+      "evidence": [{"source_id": "pgenerator-existing-behaviour", "strength": "library_implementation", "scope": "Retains the existing 2020 apply-to-all exclusion; not a claim that all settings are unavailable."}]
+    },
+    {
+      "profile_id": "lg/operations/apply-all-2021-2026",
+      "priority": 15,
+      "match": {"year_min": 2021, "year_max": 2026},
+      "data": {"operations": {"apply_all_inputs": {
+        "support_state": "inventory",
+        "scope": "active_picture_mode_all_inputs",
+        "wire_key": "applyToAllInput",
+        "value": "picture",
+        "routes": ["ssap.settings", "luna.settings"],
+        "verification": "fresh_picture_to_done_transition",
+        "per_setting_verification": false,
+        "evidence_limit": "C1/C2/G3/G4/G5 catalogues list this action. Other 2021-2026 models retain the existing platform-family inference; acknowledgement never proves that individual destination settings match."
+      }}},
+      "evidence": [
+        {"source_id": "bscpylgtv-firmware-catalogues", "strength": "firmware_inventory", "scope": "applyToAllInput picture/done values in C1, C2, G3, G4 and G5 catalogues."},
+        {"source_id": "pgenerator-existing-behaviour", "strength": "library_implementation", "scope": "Existing 2021+ operation support, now explicit and bounded to reviewed years."}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "recipes": [{
+    "recipe_id": "lg/autocal/hdr10/reference-v1",
+    "signal": "hdr10",
+    "applies_to": { "model_year_min": 2020 },
+    "settings": [
+      { "logical_control": "brightness", "wire_key": "brightness", "value": 50, "essential": true },
+      { "logical_control": "contrast", "wire_key": "contrast", "value": 100, "essential": true },
+      { "logical_control": "energy_saving", "wire_key": "energySaving", "value": "off", "essential": true },
+      { "logical_control": "hdr_dynamic_tone_mapping", "wire_key": "hdrDynamicToneMapping", "value": "off", "essential": true }
+    ],
+    "panel_light_policy": "maximum_or_workflow_defined",
+    "evidence_limit": "The exact values are documented for the 2023 and 2024 workflows. On other supported model years this is a PGenerator reference recipe, not a claim about firmware defaults or route support.",
+    "evidence": [
+      { "source_id": "portrait-lg-2023-guide", "strength": "official", "scope": "2023 reference preparation values; operation support must still be resolved for the connected TV." },
+      { "source_id": "portrait-lg-2024-guide", "strength": "official", "scope": "2024 reference preparation values; operation support must still be resolved for the connected TV." }
+    ]
+  }]
+}

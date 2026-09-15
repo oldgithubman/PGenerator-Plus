@@ -1,0 +1,17 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const noop=()=>{};
+const s={console,setTimeout:noop,clearTimeout:noop,setInterval:noop,clearInterval:noop,document:{getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[],addEventListener:noop,body:{}},window:{},navigator:{},location:{href:''},localStorage:{getItem:()=>null,setItem:noop},fetchJSON:noop,toast:noop};s.window=s;vm.createContext(s);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../../usr/share/PGenerator/webui-lg.js'),'utf8'),s);
+const binding={wire_key:'backlight',label:'OLED Pixel Brightness',aliases:['backlight','oledLight','oledPixelBrightness'],writable:true};
+const scanKeys=s.lgVerificationScanKeys({controls:{panel_light:{wire_key:'backlight'},energy_saving:{wire_key:'energySaving'}}});
+assert.ok(scanKeys.includes('backlight'));
+assert.ok(!scanKeys.includes('panel_light')&&!scanKeys.includes('energy_saving'),'scan uses wire keys, not internal logical identifiers');
+const items=s.lgDisplayControlVisibleItems({backlight:18},{logicalControls:{panel_light:binding}});
+assert.equal(items.filter(x=>binding.aliases.includes(x.key)).length,1);
+assert.equal(items.find(x=>x.key==='backlight').label,'OLED Pixel Brightness');
+assert.equal(s.lgVerificationEvidence('backlight',{backlight:18},{backlight:{}},binding),'Readable; write unverified');
+assert.equal(s.lgVerificationEvidence('oledPixelBrightness',{}, {},binding),'Alternate API name; uses backlight');
+assert.equal(s.lgVerificationEvidence('backlight',{backlight:18},{backlight:{observation:{roundtrip:{status:'verified'}}}},binding),'Write + restoration verified');
+assert.equal(s.lgVerificationEvidence('backlight',{backlight:18},{backlight:{observation:{roundtrip:{status:'restore_failed'},verify:{status:'verified'}}}},binding),'Restoration needs attention');
+assert.equal(s.lgVerificationEvidence('gamma',{gamma:'high2'},{gamma:{write_decision:'not_applicable'}},binding),'Not applicable to this signal');
+console.log('Logical panel control and evidence classifications passed');

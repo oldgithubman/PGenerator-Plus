@@ -78,7 +78,7 @@
 	   .lg-display-control-row input[type="number"]{width:68px}
 	   .lg-display-control-row select,.lg-display-control-row input[type="text"]{width:100%}
 	   .lg-display-control-unavailable{opacity:.72}
-	   .lg-display-control-note{margin-top:6px;font-size:.68rem;line-height:1.25;color:var(--muted,#8b93a7)}
+	   .lg-display-control-note{margin-top:6px;font-size:.68rem;line-height:1.25;color:var(--text2)}
 	   #lgDisplayControlPanel .lg-display-control-row select,#lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;box-sizing:border-box;color-scheme:dark}
 	   #lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{padding:6px 8px}
 	   #lgDisplayControlPanel .lg-display-control-row select{padding:6px 30px 6px 8px;-webkit-appearance:none;appearance:none;cursor:pointer;background-color:#0d0d15;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
@@ -165,9 +165,12 @@
   <div id="lgDisplayControlStatus" style="font-size:.8rem;color:var(--text2);line-height:1.45;margin-bottom:8px">Connect display</div>
 	  <div class="btn-row" style="margin-bottom:10px">
 	   <button class="btn btn-sm btn-primary" id="lgDisplayControlRefreshBtn" onclick="lgDisplayControlRefresh(true)">Refresh Settings</button>
+    <button class="btn btn-sm btn-secondary" id="lgVerifyTvBtn" onclick="lgVerifyThisTv()">Verify this TV</button>
+    <button class="btn btn-sm btn-secondary" id="lgVerifyPanelLightBtn" onclick="lgVerifyPanelLight()" disabled>Test panel-light write + restore</button>
 	   <button class="btn btn-sm btn-warning" id="lgDisplayControlResetBtn" onclick="lgResetPictureMode()" disabled>&#8634; Reset Picture Mode</button>
 	   <button class="btn btn-sm btn-secondary" id="lgApplyAllInputsBtn" onclick="lgApplyAllInputs()" disabled title="Copy the active picture mode's settings to the same mode on every input (the TV's Picture &gt; Apply to All Inputs)">Apply to All Inputs</button>
 	  </div>
+   <section id="lgVerificationReport" aria-live="polite" style="font-size:.78rem;line-height:1.5;margin:10px 0 14px;color:var(--text2)">Verify this TV reads setting capabilities for the current input and picture mode. It does not change settings.</section>
 	  <div id="lgDisplayControlGrid"></div>
   </div>
  </div>

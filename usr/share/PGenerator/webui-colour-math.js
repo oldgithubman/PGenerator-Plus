@@ -260,8 +260,10 @@ function signalPercentToCode(policy,stimulus){
   const value=clamp(stimulus,0,100);
   let slot='';
   for(const key of Object.keys(PGEN_HDR20_8_LIMITED)) if(Math.abs(Number(key)-value)<0.01){slot=key;break;}
-  const minimum=bits===10&&policy.hdr20_use_limited&&policy.hdr20_full?0:(bits===8?0:64);
-  const span=bits===10?(policy.hdr20_use_limited&&policy.hdr20_full?1023:876):255;
+  // Interstitial Dark Detail points use the same domain as the HDR20 table.
+  const full=policy.hdr20_use_limited&&policy.hdr20_full;
+  const minimum=full?0:(bits===8?16:64);
+  const span=full?inputMax:(bits===8?219:876);
   code=Object.prototype.hasOwnProperty.call(policy.active_table,slot)
    ?policy.active_table[slot]:Math.round(minimum+value/100*span);
   code=clamp(code,minimum,minimum+span);

@@ -1,0 +1,941 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/picture-modes/catalogue",
+      "priority": 5,
+      "match": {},
+      "data": {
+        "picture_modes": {
+          "sdr": {
+            "expert1": {
+              "value": "expert1",
+              "label": "SDR Expert Bright",
+              "settings_key": "pictureMode",
+              "settings_value": "expert1",
+              "aliases": [
+                "isfexpert1",
+                "isfexpertbright",
+                "expertbright",
+                "brightroom"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "expert1",
+                "internal_mode": "expert1"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "expert2": {
+              "value": "expert2",
+              "label": "SDR Expert Dark",
+              "settings_key": "pictureMode",
+              "settings_value": "expert2",
+              "aliases": [
+                "isfexpert2",
+                "isfexpertdark",
+                "expertdark",
+                "isfdarkroom",
+                "isfdark",
+                "darkroom"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "expert2",
+                "internal_mode": "expert2"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "cinema": {
+              "value": "cinema",
+              "label": "SDR Cinema",
+              "settings_key": "pictureMode",
+              "settings_value": "cinema",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "cinema",
+                "internal_mode": "cinema"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "filmMaker": {
+              "value": "filmMaker",
+              "label": "SDR Filmmaker",
+              "settings_key": "pictureMode",
+              "settings_value": "filmMaker",
+              "aliases": [
+                "filmmakerMode"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "filmMaker",
+                "internal_mode": "filmMaker"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "game": {
+              "value": "game",
+              "label": "SDR Game Optimizer",
+              "settings_key": "pictureMode",
+              "settings_value": "game",
+              "aliases": [
+                "gameoptimizer"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "game",
+                "internal_mode": "game"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "normal": {
+              "value": "normal",
+              "label": "SDR Standard",
+              "settings_key": "pictureMode",
+              "settings_value": "normal",
+              "aliases": [
+                "standard"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "eco": {
+              "value": "eco",
+              "label": "SDR Auto Power Save",
+              "settings_key": "pictureMode",
+              "settings_value": "eco",
+              "aliases": [
+                "aps",
+                "autopowersave"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "sports": {
+              "value": "sports",
+              "label": "SDR Sports",
+              "settings_key": "pictureMode",
+              "settings_value": "sports",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "vivid": {
+              "value": "vivid",
+              "label": "SDR Vivid",
+              "settings_key": "pictureMode",
+              "settings_value": "vivid",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "personalized": {
+              "value": "personalized",
+              "label": "SDR Personalised Picture",
+              "settings_key": "pictureMode",
+              "settings_value": "personalized",
+              "aliases": [
+                "personalised",
+                "personalizedpicture",
+                "personalisedpicture"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "technicolor": {
+              "value": "technicolor",
+              "label": "SDR Technicolor Expert",
+              "settings_key": "pictureMode",
+              "settings_value": "technicolor",
+              "aliases": [
+                "technicolorExpert"
+              ],
+              "offered": false,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "technicolorExpert",
+                "internal_mode": "technicolorExpert"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            }
+          },
+          "hdr10": {
+            "hdrCinema": {
+              "value": "hdrCinema",
+              "label": "HDR Cinema",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrCinema",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "hdr_cinema",
+                "internal_mode": "hdr_cinema"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrCinemaBright": {
+              "value": "hdrCinemaBright",
+              "label": "HDR Cinema Home",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrCinemaBright",
+              "aliases": [
+                "hdrCinemaHome"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrFilmMaker": {
+              "value": "hdrFilmMaker",
+              "label": "HDR Filmmaker",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrFilmMaker",
+              "aliases": [
+                "hdrFilmmakerMode"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "hdr_filmMaker",
+                "internal_mode": "hdr_filmMaker"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrGame": {
+              "value": "hdrGame",
+              "label": "HDR Game Optimizer",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrGame",
+              "aliases": [
+                "hdrGameOptimizer"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "hdr_game",
+                "internal_mode": "hdr_game"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrStandard": {
+              "value": "hdrStandard",
+              "label": "HDR Standard",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrStandard",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrEco": {
+              "value": "hdrEco",
+              "label": "HDR Auto Power Save",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrEco",
+              "aliases": [
+                "hdrAutoPowerSave"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrVivid": {
+              "value": "hdrVivid",
+              "label": "HDR Vivid",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrVivid",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrPersonalized": {
+              "value": "hdrPersonalized",
+              "label": "HDR Personalised Picture",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrPersonalized",
+              "aliases": [
+                "hdrPersonalised",
+                "hdrPersonalizedPicture",
+                "hdrPersonalisedPicture"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrTechnicolor": {
+              "value": "hdrTechnicolor",
+              "label": "HDR Technicolor Expert",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrTechnicolor",
+              "aliases": [
+                "hdrTechnicolorExpert"
+              ],
+              "offered": false,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "hdr_technicolorExpert",
+                "internal_mode": "hdr_technicolorExpert"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            }
+          },
+        "dv": {
+          "dolbyVisionCinema": {
+            "value": "dolbyVisionCinema",
+            "label": "DV Cinema (legacy token)",
+            "settings_key": "pictureMode",
+            "settings_value": "dolbyHdrCinema",
+            "aliases": [],
+            "offered": false,
+            "selection": {"support_state": "inventory"},
+            "readback": {"support_state": "unknown"},
+            "calibration": {"support_state": "inventory", "bank": "dolby_cinema", "internal_mode": "dolby_hdr_cinema"},
+            "source_ids": ["pgenerator-existing-behaviour"],
+            "note": "Compatibility-only internal token, not an additional TV preset. Preserve exact spelling at retry boundaries; native dolbyHdrCinema readback belongs to the offered dark-reference row."
+          },
+          "dolbyVisionCinemaBright": {
+              "value": "dolbyVisionCinemaBright",
+              "label": "DV Cinema Home",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrCinemaBright",
+              "aliases": [
+                "dolbyVisionCinemaHome",
+                "dolbyHdrCinemaHome",
+                "dolbyCinemaBright"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "dolby_cinema_bright",
+                "internal_mode": "dolby_hdr_cinema_bright"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "dolbyVisionFilmMaker": {
+              "value": "dolbyVisionFilmMaker",
+              "label": "DV Filmmaker",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrCinema",
+              "aliases": [
+                "dolbyVisionFilmmakerMode",
+                "dolbyHdrFilmmaker",
+                "dolbyHdrFilmmakerMode",
+                "dolbyHdrCinemaDark",
+                "dolbyVisionCinemaDark",
+            "dolbyCinemaDark"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "dolby_cinema_dark",
+                "internal_mode": "dolby_hdr_cinema_dark"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "dolbyVisionGame": {
+              "value": "dolbyVisionGame",
+              "label": "DV Game Optimizer",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrGame",
+              "aliases": [
+                "dolbyVisionGameOptimizer",
+                "dolbyHdrGameOptimizer",
+                "dolbyGame"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "inventory",
+                "bank": "dolby_game",
+                "internal_mode": "dolby_hdr_game"
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "dolbyVisionVivid": {
+              "value": "dolbyVisionVivid",
+              "label": "DV Vivid",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrVivid",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "dolbyVisionStandard": {
+              "value": "dolbyVisionStandard",
+              "label": "DV Standard",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrStandard",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "dolbyVisionPersonalized": {
+              "value": "dolbyVisionPersonalized",
+              "label": "DV Personalised Picture",
+              "settings_key": "pictureMode",
+              "settings_value": "dolbyHdrPersonalized",
+              "aliases": [
+                "dolbyVisionPersonalised",
+                "dolbyHdrPersonalised"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unknown",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            }
+          },
+          "hlg": {
+            "hdrCinema": {
+              "value": "hdrCinema",
+              "label": "HLG Cinema",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrCinema",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrCinemaBright": {
+              "value": "hdrCinemaBright",
+              "label": "HLG Cinema Home",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrCinemaBright",
+              "aliases": [
+                "hdrCinemaHome"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrFilmMaker": {
+              "value": "hdrFilmMaker",
+              "label": "HLG Filmmaker",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrFilmMaker",
+              "aliases": [
+                "hdrFilmmakerMode"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrGame": {
+              "value": "hdrGame",
+              "label": "HLG Game Optimizer",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrGame",
+              "aliases": [
+                "hdrGameOptimizer"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrStandard": {
+              "value": "hdrStandard",
+              "label": "HLG Standard",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrStandard",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrEco": {
+              "value": "hdrEco",
+              "label": "HLG Auto Power Save",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrEco",
+              "aliases": [
+                "hdrAutoPowerSave"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrVivid": {
+              "value": "hdrVivid",
+              "label": "HLG Vivid",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrVivid",
+              "aliases": [],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrPersonalized": {
+              "value": "hdrPersonalized",
+              "label": "HLG Personalised Picture",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrPersonalized",
+              "aliases": [
+                "hdrPersonalised",
+                "hdrPersonalizedPicture",
+                "hdrPersonalisedPicture"
+              ],
+              "offered": true,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            },
+            "hdrTechnicolor": {
+              "value": "hdrTechnicolor",
+              "label": "HLG Technicolor Expert",
+              "settings_key": "pictureMode",
+              "settings_value": "hdrTechnicolor",
+              "aliases": [
+                "hdrTechnicolorExpert"
+              ],
+              "offered": false,
+              "selection": {
+                "support_state": "inventory"
+              },
+              "readback": {
+                "support_state": "unknown"
+              },
+              "calibration": {
+                "support_state": "unsupported",
+                "bank": null,
+                "internal_mode": null
+              },
+              "source_ids": [
+                "pgenerator-existing-behaviour"
+              ]
+            }
+          }
+        }
+      },
+      "evidence": [
+        {
+          "source_id": "pgenerator-existing-behaviour",
+          "strength": "implementation_policy",
+          "scope": "Existing selector vocabulary and calibration-bank mappings moved to reviewed data. Inventory is not hardware proof. Legacy tokens are retained but not offered as additional presets."
+        },
+        {
+          "source_id": "colourstrue-g3-mode-banks",
+          "strength": "implementation_policy",
+          "scope": "Settings selection and calibration banks are separate; no reviewed HDR Cinema Home bank. Physical results remain scoped to the reference G3, not promoted to all models."
+        }
+      ]
+    },
+    {
+      "profile_id": "lg/picture-modes/2020-2021-labels",
+      "priority": 15,
+      "match": {
+        "year_min": 2019,
+        "year_max": 2021
+      },
+      "data": {
+        "picture_modes": {
+          "dv": {
+            "dolbyVisionFilmMaker": {
+              "label": "DV Cinema"
+            },
+            "dolbyVisionCinema": {
+              "calibration": {"support_state": "inventory", "bank": "dolby_cinema_dark", "internal_mode": "dolby_hdr_cinema_dark"}
+            },
+            "dolbyVisionPersonalized": {
+              "offered": false
+            }
+          },
+          "sdr": {
+            "personalized": {
+              "offered": false
+            }
+          },
+          "hdr10": {
+            "hdrPersonalized": {
+              "offered": false
+            },
+            "hdrEco": {
+              "offered": false
+            }
+          },
+          "hlg": {
+            "hdrPersonalized": {
+              "offered": false
+            },
+            "hdrEco": {
+              "offered": false
+            }
+          }
+        }
+      },
+      "evidence": [
+        {
+          "source_id": "pgenerator-existing-behaviour",
+          "strength": "implementation_policy",
+          "scope": "Preserve the existing 2020/2021 menu: dark Dolby Vision reference is labelled Cinema; no Personalised Picture or HDR Auto Power Save options. Runtime availability remains separately checked."
+        }
+      ]
+    }
+  ]
+}

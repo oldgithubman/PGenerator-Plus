@@ -24,6 +24,7 @@ set -o pipefail
 
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+source "$SCRIPT_DIR/pgen_meter_pattern.sh" || exit 1
 PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
 PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
 
@@ -406,8 +407,11 @@ post_patch() {
   post_companion_patch "$@"
   return $?
  fi
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1
+ if ! meter_post_local_patch "$API_BASE" "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")"; then
+  log "$METER_PATTERN_ERROR"
+  write_state "$(meter_pattern_error_json "${REQUEST_ID:-}")"
+  return 1
+ fi
 }
 
 post_patch_timeout() {
@@ -730,25 +734,32 @@ capture_additional_average_sample() {
  return 1
 }
 
-cleanup() {
- log "cleanup: tearing down spotread"
- companion_show_alignment
- # Ask spotread to quit cleanly, then close its stdin (EOF via the cat pipe).
- # spotread may be mid-reading (an active USB transaction); SIGKILLing it now
- # wedges the Pi's dwc2 USB controller, which then fails the NEXT session with
- # "communication failed during init". So give it time to finish the in-flight
- # read, process the quit, and release the device before escalating to a kill.
- printf "Q" >&3 2>/dev/null
- exec 3>&- 2>/dev/null
- exec 4>&- 2>/dev/null
- # Wait up to ~6s for the spotread pipeline to exit on its own.
- local _w=0
+stop_spotread_child() {
+ # A first Q can abort the instrument read and produce a second quit/retry
+ # prompt. Keep stdin open until that fresh prompt is answered; closing it
+ # immediately strands a responsive driver and forces termination on handoff.
+ local quit_offset=0 quit_output="" quit_confirmed=0 _w=0
+ [[ -f "${OUTFILE:-}" ]] && quit_offset=$(output_size)
+ # A failed startup may already have closed the reader. A broken pipe must
+ # not abort cleanup of our session markers or the remaining process tree.
+ (printf "Q" >&3) 2>/dev/null || true
+ # Keep the existing ~6s grace budget, including the confirmation handshake.
  while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  if (( quit_confirmed == 0 )) && [[ -f "${OUTFILE:-}" ]]; then
+   quit_output=$(clean_output_since "$quit_offset")
+   if [[ "$quit_output" == *"any other key to retry:"* ]]; then
+    log "spotread shutdown: confirming quit"
+    (printf "Q" >&3) 2>/dev/null || true
+    quit_confirmed=1
+   fi
+  fi
   sleep 0.1
   _w=$(( _w + 1 ))
  done
+ exec 3>&- 2>/dev/null
  # Still alive: ask politely (TERM) and let the USB transaction unwind.
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  log "spotread shutdown: quit timed out; sending TERM"
   kill "$BG_PID" 2>/dev/null
   pkill -TERM -x spotread 2>/dev/null
   pkill -TERM -x spotread_sim 2>/dev/null
@@ -760,15 +771,25 @@ cleanup() {
  fi
  # Last resort only if it ignored both the quit and TERM (genuinely stuck).
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  log "spotread shutdown: TERM timed out; forcing exit"
   pkill -9 -P "$BG_PID" 2>/dev/null
   kill -9 "$BG_PID" 2>/dev/null
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
+ [[ -n "$BG_PID" ]] && wait "$BG_PID" 2>/dev/null
+ BG_PID=""
  # Let the kernel release the USB interface before the replacement process
  # tries to claim it. Immediate re-open is what produced intermittent
  # "did not claim interface" failures on the Pi during the observed run.
  sleep 1
+}
+
+cleanup() {
+ log "cleanup: tearing down spotread"
+ companion_show_alignment
+ stop_spotread_child
+ exec 4>&- 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 
@@ -834,35 +855,7 @@ respawn_spotread () {
  case "$new_mode" in a|aa|aaa|x|x_a|x_aa|x_aaa|off) ;; *) new_mode="off" ;; esac
  local respawn_reason="${2:-low-light mode change}"
  log "respawn: restarting spotread for $respawn_reason with low_light mode=$new_mode (was $CURRENT_LOW_LIGHT_MODE)"
- # Close the current spotread cleanly. SIGKILLing it mid-read wedges the
- # Pi's dwc2 USB controller, so ask politely first and escalate only if
- # it ignores the quit.
- printf "Q" >&3 2>/dev/null
- exec 3>&- 2>/dev/null
- local _w=0
- while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
-  sleep 0.1
-  _w=$(( _w + 1 ))
- done
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  kill "$BG_PID" 2>/dev/null
-  pkill -TERM -x spotread 2>/dev/null
-  pkill -TERM -x spotread_sim 2>/dev/null
-  local _t=0
-  while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
-   sleep 0.1
-   _t=$(( _t + 1 ))
-  done
- fi
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  pkill -9 -P "$BG_PID" 2>/dev/null
-  kill -9 "$BG_PID" 2>/dev/null
- fi
- pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
- pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
- # The old process is gone, but the kernel can still be releasing its USB
- # interface. Give it a short settle before the first replacement claim.
- sleep 1
+ stop_spotread_child
  # The wait-for-ready loop below is run twice (150 iterations x 0.1s =
  # 15s per attempt, 30s total). A one-shot USB init hiccup is recovered by
  # the second attempt.
@@ -914,32 +907,7 @@ respawn_spotread () {
    return 0
   fi
   log "respawn: spotread failed to ready within 15s on attempt $_retry, will retry with clean re-exec"
-  # Clean quit + kill cycle for the retry. Same logic as the initial
-  # shutdown above but applied to the just-failed spotread.
-  printf "Q" >&3 2>/dev/null
-  exec 3>&- 2>/dev/null
-  local _w2=0
-  while (( _w2 < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
-   sleep 0.1
-   _w2=$(( _w2 + 1 ))
-  done
-  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-   kill "$BG_PID" 2>/dev/null
-   pkill -TERM -x spotread 2>/dev/null
-  pkill -TERM -x spotread_sim 2>/dev/null
-   local _t2=0
-   while (( _t2 < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
-    sleep 0.1
-    _t2=$(( _t2 + 1 ))
-   done
-  fi
-  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-   pkill -9 -P "$BG_PID" 2>/dev/null
-   kill -9 "$BG_PID" 2>/dev/null
-  fi
-  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
- pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
-  sleep 1
+  stop_spotread_child
  done
  log "respawn: spotread failed to ready within 15s on both attempts after $respawn_reason, surfacing error"
  write_state '{"status":"error","message":"Meter respawn failed"}'

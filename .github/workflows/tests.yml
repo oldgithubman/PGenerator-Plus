@@ -25,6 +25,10 @@ jobs:
           perl -c usr/sbin/pgenerator-lg
           perl -c usr/share/PGenerator/lg.pm
           perl -c usr/share/PGenerator/webui.pm
+          perl -c usr/share/PGenerator/PGAutomation.pm
+          perl -c usr/share/PGenerator/PGAutomationProcessing.pm
+          perl -Iusr/share/PGenerator -c usr/share/PGenerator/PGAutomationETA.pm
+          perl -c usr/bin/pgen_automation_runner.pl
       - name: Check the Web UI JS and confirm Node is present
         # t/lg_display_control_support_state.t drives webui-lg.js through a Node
         # vm sandbox and SKIPS if node is missing -- assert it here so that test
@@ -33,5 +37,31 @@ jobs:
         run: |
           node --version
           node -c usr/share/PGenerator/webui-lg.js
+          node -c usr/share/PGenerator/webui-automation.js
       - name: Run the test suite
         run: prove -v t/
+
+  browser:
+    # Ubuntu 24.04's AppArmor policy denies user namespaces to Puppeteer's
+    # downloaded Chrome (PR #14: "No usable sandbox"). Keep Chrome sandboxed
+    # on the supported 22.04 image rather than adding --no-sandbox.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install headless browser for local UI checks
+        run: npm install --no-save --no-package-lock puppeteer@24.43.1
+      - name: Run UI regression checks without appliance access
+        run: |
+          node t/browser/automation_activity.cjs
+          node t/browser/automation_history.cjs
+          node t/browser/automation_refresh.cjs
+          node t/browser/automation_editor.cjs
+          node t/browser/automation_settings_plan.cjs
+          node t/browser/automation_review_fixes.cjs
+          node t/browser/automation_dismiss_readiness.cjs
+          node t/browser/automation_job_detail.cjs
+          node t/browser/automation_calibration_observer.cjs
+          node t/browser/automation_design_states.cjs

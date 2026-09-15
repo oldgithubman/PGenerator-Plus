@@ -12,6 +12,8 @@ use Socket qw(inet_aton sockaddr_in);
 # threads::shared degrades to no-ops when the loading process never loaded
 # threads, so this is safe for any single-threaded consumer of this file.
 use threads::shared;
+use PGLGVerification qw(verify_lg_panel_light);
+use PGLGCapabilities qw(lg_record_setting_observation);
 
 # Serializes synchronous LG helper conversations across the WebUI's worker
 # threads (see lg_helper_run). One TV, one conversation at a time.
@@ -57,6 +59,56 @@ sub lg_pin_input_file (@) {
 sub lg_pin_log_file (@) {
  my $token=shift;
  return &lg_pin_session_dir($token)."/helper.log";
+}
+
+sub lg_automation_execution_file (@) {
+ my $base=$ENV{"PGEN_AUTOMATION_DIR"}||"/var/lib/PGenerator/automation";
+ return $base."/execution.json";
+}
+
+sub lg_automation_guard_json (@) {
+ my ($body)=@_;
+ my $execution_file=&lg_automation_execution_file();
+ return "" if(!-f $execution_file);
+ my $raw="";
+ return "" if(!open(my $fh,"<:raw",$execution_file));
+ { local $/; $raw=<$fh>//""; }
+ close($fh);
+ my $execution=eval { JSON::PP::decode_json($raw) };
+ return "" if(ref($execution) ne "HASH");
+ my $status=$execution->{status}||"";
+ return "" if($status ne "starting" && $status ne "running"
+  && $status ne "paused" && $status ne "stopping" && $status ne "completing" && $status ne "interrupted");
+ my $payload=eval { JSON::PP::decode_json($body||"") };
+ $payload={} if(ref($payload) ne "HASH");
+ my $token=$payload->{automation_token}||"";
+ if($token ne "" && $token eq ($execution->{token}||"")) {
+  my $id=$execution->{run_id}||"";
+  if(!$payload->{automation_cleanup} && $id=~/\A[A-Za-z0-9._-]+\z/ && $id ne "." && $id ne "..") {
+   my $base=$ENV{PGEN_AUTOMATION_DIR}||"/var/lib/PGenerator/automation";
+   my $control;
+   if(open(my $fh,"<:raw","$base/runs/$id/control.json")) {local $/;$control=eval {JSON::PP::decode_json(<$fh>)};close($fh);}
+   return &lg_encode_json({status=>"error",error_code=>"automation-stopping",message=>"Automation is stopping; pending TV changes were cancelled"})
+    if(ref($control) eq "HASH" && ($control->{request}||"") eq "stop");
+  }
+  return "";
+ }
+ my $run_id=$execution->{run_id}||"current run";
+ return &lg_encode_json({
+  status => "error",
+  error_code => "automation-active",
+  message => "Automation queue is active ($run_id). Stop or finish it before starting a guided LG or meter operation.",
+  run_id => $run_id,
+ });
+}
+
+# Scoped categories look like "picture$hdmi1.filmMaker.2d.x". Keep the dollar
+# escaped inside the class: an unescaped "$_" there interpolates the current
+# topic and silently drops the dollar, downgrading every scoped category.
+sub lg_picture_category_or_default (@) {
+ my ($category)=@_;
+ return "picture" if(!defined($category) || $category eq "" || $category !~ /\A[A-Za-z0-9\$_.-]{1,200}\z/);
+ return $category;
 }
 
 sub lg_helper_path (@) {
@@ -1603,7 +1655,7 @@ sub lg_autocal_worker_running (@) {
  # unknown blocks; the reset path leaves it unset so unknown cannot lock the
  # operator out of their own recovery route.
  my ($strict)=@_;
- foreach my $name (qw(webui_meter_lg_autocal_running webui_meter_lg_3d_autocal_running)) {
+ foreach my $name (qw(webui_meter_lg_autocal_running webui_meter_lg_3d_autocal_running webui_meter_lg_dv_profile_running)) {
   no strict 'refs';
   next if(!defined(&{"main::$name"}));
   my $running=eval { &{"main::$name"}() };
@@ -1667,6 +1719,7 @@ sub webui_lg_status_json (@) {
 }
 
 sub webui_lg_manual_ip (@) {
+ lock($_lg_helper_gate);
  my $body=shift;
  my $payload=&lg_decode_json($body);
  my $ip=$payload->{"ip"}||"";
@@ -1683,6 +1736,7 @@ sub webui_lg_manual_ip (@) {
 }
 
 sub webui_lg_forget (@) {
+ lock($_lg_helper_gate);
  my $body=shift;
  my $payload=&lg_decode_json($body);
  my $target_ip=(ref($payload) eq "HASH") ? ($payload->{"ip"}||"") : "";
@@ -1692,11 +1746,13 @@ sub webui_lg_forget (@) {
 }
 
 sub webui_lg_disconnect (@) {
+ lock($_lg_helper_gate);
  return &lg_encode_json({ status => "error", message => "Unable to disconnect LG TV" }) if(!&lg_mark_disconnected());
  return &webui_lg_status_json("LG TV disconnected. Saved pairing is kept for the next Connect.");
 }
 
 sub webui_lg_pin_pair_start (@) {
+ lock($_lg_helper_gate);
  my $body=shift;
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
@@ -1714,6 +1770,7 @@ sub webui_lg_pin_pair_start (@) {
 }
 
 sub webui_lg_pin_pair_submit (@) {
+ lock($_lg_helper_gate);
  my $body=shift;
  my $payload=&lg_decode_json($body);
  my $pin=$payload->{"pin"}||"";
@@ -1725,6 +1782,7 @@ sub webui_lg_pin_pair_submit (@) {
 }
 
 sub webui_lg_connect (@) {
+ lock($_lg_helper_gate);
  my $body=shift;
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
@@ -1775,6 +1833,8 @@ sub webui_lg_scan (@) {
 
 sub webui_lg_calibration_mode (@) {
  my $body=shift;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  my $payload=&lg_decode_json($body);
  my $enabled=$payload->{"enabled"} ? 1 : 0;
  my $clients=&lg_load_clients();
@@ -1790,6 +1850,9 @@ sub webui_lg_calibration_mode (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before changing calibration mode." }) if($client_key eq "");
  my $result=&lg_helper_run({
   action => "calibration_mode",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   enable => $enabled,
@@ -1822,6 +1885,10 @@ sub lg_calmode_trace (@) {
 sub webui_lg_picture_settings (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
+ if($payload->{verification_scan}) {
+  my $guard=&lg_automation_guard_json($body);
+  return $guard if($guard ne '');
+ }
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
 	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
@@ -1838,6 +1905,8 @@ sub webui_lg_picture_settings (@) {
  my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
  my $picture_mode=$payload->{"picture_mode"}||"";
  $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
+ my $category=$payload->{"category"}||"picture";
+ $category=&lg_picture_category_or_default($category);
 # Read-only poll: if CEC already knows the panel is in standby there is
 # nothing to read, and spawning the helper would burn the full 60s
 # picture_get wrapper on the daemon's single WebUI request thread. The
@@ -1850,18 +1919,59 @@ return &lg_encode_json($tv_off_gate) if(ref($tv_off_gate) eq "HASH");
 &lg_calmode_trace("picture_get: force_ddc=".($payload->{"force_ddc_white_balance"}?1:0)." pmode=$picture_mode req_pmode=".($payload->{"picture_mode"}||"")); # TEMP DEBUG CALMODE
 my $result=&lg_helper_run({
  action => "picture_get",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
  ip => $ip,
  client_key => $client_key,
   keys => $keys,
-	  picture_mode => $picture_mode,
-	  signal_mode => $payload->{"signal_mode"}||"",
-	  tv_input => &lg_input_from_cec(),
+  picture_mode => $picture_mode,
+  signal_mode => $payload->{"signal_mode"}||"",
+  category => $category,
+	  tv_input => $payload->{tv_input}||&lg_input_from_cec(),
 	  include_current_input => $payload->{"include_current_input"} ? &lg_json_true() : &lg_json_false(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
 	  helper_timeout => int($payload->{"helper_timeout"}||0),
 	  connect_timeout => 5,
 	 });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_verify_panel_light (@) {
+ my ($body)=@_;
+ my $guard=&lg_automation_guard_json($body);
+ return $guard if($guard ne '');
+ my $request=&lg_decode_json($body);
+ return &lg_encode_json({status=>'error',message=>'Explicit confirmation is required for a reversible panel-light test.'}) if(!$request->{confirm_reversible_test});
+ # Queue start/resume takes this same lock. Keep it until restoration ends,
+ # so a newly claimed queue cannot cause the setter to refuse cleanup.
+ my $execution_lock=&lg_automation_execution_file();
+ $execution_lock=~s/\.json$/.lock/;
+ return &lg_encode_json({status=>'error',message=>'Unable to reserve the idle automation state for verification.'})
+  if(!open(my $execution_gate,'>>',$execution_lock));
+ return &lg_encode_json({status=>'error',message=>'Automation state is changing. Try verification again when idle.'})
+  if(!flock($execution_gate,LOCK_EX|LOCK_NB));
+ # Hold the shared TV conversation lock across write, independent read and
+ # restoration. Other helper users cannot interleave a TV operation.
+ lock($_lg_helper_gate);
+ $guard=&lg_automation_guard_json($body);
+ return $guard if($guard ne '');
+ my $clients=&lg_load_clients();
+ return &lg_encode_json({status=>'error',message=>'Exit calibration mode before testing panel light.'}) if($clients->{calibration_mode});
+ for my $worker (qw(webui_meter_series_alive webui_meter_lg_autocal_running webui_meter_lg_3d_autocal_running webui_meter_lg_dv_profile_running webui_meter_session_alive)) {
+  no strict 'refs';
+  return &lg_encode_json({status=>'error',message=>'Finish the active meter or calibration operation before verification.'}) if(defined(&{$worker}) && &{$worker}());
+ }
+ my $result=verify_lg_panel_light($request,
+  sub { &lg_decode_json(&webui_lg_picture_settings(&lg_encode_json($_[0]))) },
+  sub { &lg_decode_json(&webui_lg_picture_settings_set(&lg_encode_json($_[0]))) });
+ if($result->{write_attempted} && $result->{generation} && $result->{context}) {
+  $result->{evidence_saved}=lg_record_setting_observation($result->{generation},$result->{context},$result->{key},'roundtrip',{
+   status=>$result->{status} eq 'ok' ? 'verified' : $result->{restored} ? 'failed_restored' : 'restore_failed',
+   route=>'application.picture-settings-roundtrip',reason=>$result->{message},
+  })->{ok};
+ }
+ delete $result->{generation};
  return &lg_encode_json($result);
 }
 
@@ -1877,6 +1987,8 @@ sub lg_settings_are_ddc_white_balance (@) {
 
 sub webui_lg_picture_settings_set (@) {
  my $body=shift;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
@@ -1905,6 +2017,8 @@ sub webui_lg_picture_settings_set (@) {
  my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
  my $picture_mode=$payload->{"picture_mode"}||"";
  $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
+ my $category=$payload->{"category"}||"picture";
+ $category=&lg_picture_category_or_default($category);
 	 my $ddc_white_balance=&lg_settings_are_ddc_white_balance($settings);
 	 my $keep_calibration_mode=exists($payload->{"keep_calibration_mode"})
 	  ? ($payload->{"keep_calibration_mode"} ? 1 : 0)
@@ -1918,18 +2032,21 @@ sub webui_lg_picture_settings_set (@) {
  &lg_calmode_trace("picture_set: ddc_wb=$ddc_white_balance keep=$keep_calibration_mode active=$calibration_mode_active force=".($payload->{"force_ddc_white_balance"}?1:0)." method=".($settings->{"whiteBalanceMethod"}||"")." pmode=$picture_mode req_pmode=".($payload->{"picture_mode"}||"")." skip_readback=".($payload->{"skip_readback"}?1:0)); # TEMP DEBUG CALMODE
  my $result=&lg_helper_run({
   action => "picture_set",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
   ip => $ip,
   client_key => $client_key,
   settings => $settings,
   readback_keys => $readback_keys,
 	  picture_mode => $picture_mode,
 	  signal_mode => $payload->{"signal_mode"}||"",
-	  tv_input => &lg_input_from_cec(),
+	  tv_input => $payload->{tv_input}||&lg_input_from_cec(),
 		  keep_calibration_mode => $keep_calibration_mode,
 		  calibration_mode_active => $calibration_mode_active,
 		  reset_ddc_baseline => ($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"}) ? &lg_json_true() : &lg_json_false(),
 		  verify_ddc_upload => $payload->{"verify_ddc_upload"} ? &lg_json_true() : &lg_json_false(),
 		  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
+		  category => $category,
 		  helper_timeout => int($payload->{"helper_timeout"}||0),
 	  connect_timeout => 5,
 	 });
@@ -2014,6 +2131,8 @@ sub webui_lg_picture_settings_set (@) {
 
 sub webui_lg_picture_reset (@) {
  my $body=shift;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
@@ -2035,6 +2154,8 @@ sub webui_lg_picture_reset (@) {
  return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "picture_reset",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
 	  ip => $ip,
 	  client_key => $client_key,
 	  picture_mode => $picture_mode,
@@ -2057,6 +2178,8 @@ sub webui_lg_picture_reset (@) {
 
 sub webui_lg_picture_apply_all_inputs (@) {
  my $body=shift;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
@@ -2090,6 +2213,9 @@ sub webui_lg_picture_apply_all_inputs (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if($client_key eq "");
  my $result=&lg_helper_run({
   action => "picture_apply_all_inputs",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   connect_timeout => 5,
@@ -2153,6 +2279,9 @@ sub webui_lg_3d_lut_probe (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before probing 3D LUT support." }) if($client_key eq "");
  my $result=&lg_helper_run({
   action => "3d_lut_probe",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2192,6 +2321,9 @@ sub webui_lg_3d_lut_upload (@) {
  return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "3d_lut_upload",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2237,6 +2369,9 @@ sub webui_lg_3d_lut_reset (@) {
  return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "3d_lut_reset",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2286,6 +2421,9 @@ sub webui_lg_hdr_tone_map_upload (@) {
  }
   my $result=&lg_helper_run({
    action => "hdr_tone_map_upload",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
    ip => $ip,
    client_key => $client_key,
    picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2322,6 +2460,9 @@ sub webui_lg_1d_dpg_read (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading the HDR20 1D DPG." }) if($client_key eq "");
  my $result=&lg_helper_run({
   action => "1d_dpg_read",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2357,6 +2498,9 @@ sub webui_lg_1d_dpg_upload (@) {
  return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "1d_dpg_upload",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2421,6 +2565,9 @@ sub webui_lg_dv_profile_upload (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a Dolby Vision profile." }) if($client_key eq "");
  my $result=&lg_helper_run({
   action => "dv_profile_upload",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
@@ -2513,15 +2660,25 @@ sub webui_meter_lg_dv_profile_mark_cancelled (@) {
 
 sub webui_meter_lg_dv_profile_kill (@) {
  my $mark=shift;
- if(open(my $fh,">",$_meter_lg_dv_profile_stop_file)) { print $fh time(); close($fh); chmod(0666,$_meter_lg_dv_profile_stop_file); }
+ &webui_meter_lg_dv_profile_request_stop();
  system("sudo pkill -TERM -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null");
  select(undef,undef,undef,0.4);
  system("sudo pkill -9 -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null") if(&webui_meter_lg_dv_profile_running());
  &webui_meter_lg_dv_profile_mark_cancelled() if($mark);
 }
 
+sub webui_meter_lg_dv_profile_request_stop (@) {
+ return 0 if(!open(my $fh,">",$_meter_lg_dv_profile_stop_file));
+ my $ok=print $fh time();
+ $ok=0 if(!$ok || !close($fh));
+ chmod(0666,$_meter_lg_dv_profile_stop_file) if($ok);
+ return $ok ? 1 : 0;
+}
+
 sub webui_meter_lg_dv_profile_start (@) {
  my ($body)=@_;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  return '{"status":"error","message":"Dolby Vision profile payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  my $start_lock;
  return '{"status":"error","retryable":true,"message":"Unable to serialize Dolby Vision profile startup"}'
@@ -2545,6 +2702,9 @@ sub webui_meter_lg_dv_profile_start (@) {
  if(&webui_meter_lg_dv_profile_running()) {
   return '{"status":"error","retryable":false,"message":"Dolby Vision profile measurement is already running"}';
  }
+ my ($scoped_body,$scope_error)=&webui_lg_freeze_calibration_context($body);
+ return &lg_encode_json({status=>'error',message=>$scope_error}) if($scope_error);
+ $body=$scoped_body;
  my $_dv_display_model=&webui_lg_display_model_name({});
  if($_dv_display_model ne "" && $body!~/"display_model"\s*:/) {
   $_dv_display_model=~s/\\/\\\\/g; $_dv_display_model=~s/"/\\"/g;
@@ -2640,13 +2800,23 @@ sub webui_meter_lg_dv_profile_status (@) {
 }
 
 sub webui_meter_lg_dv_profile_stop (@) {
+ my ($body)=@_;
+ if(defined($body) && $body=~/"automation_graceful"\s*:\s*true/i) {
+  my $automation_guard=&lg_automation_guard_json($body);
+  return $automation_guard if($automation_guard ne "");
+  return &lg_encode_json({status=>"error",message=>"Unable to write Dolby Vision profile stop request"})
+   if(!&webui_meter_lg_dv_profile_request_stop());
+  return &lg_encode_json({status=>"ok",message=>"Dolby Vision profile stop requested"});
+ }
+ return &webui_meter_stop_complete($body);
+}
+
+sub webui_meter_lg_dv_profile_force_stop (@) {
+ my ($body)=@_;
+ my $automation_guard=&lg_automation_guard_json($body);
+ return $automation_guard if($automation_guard ne "");
  &webui_meter_lg_dv_profile_kill(1);
- # Strip full-workflow keys from the greyscale status so a refresh right
- # after Stop cannot re-adopt the already-finished greyscale stage as an
- # ongoing Full DV AutoCal (same reasoning as webui_meter_lg_3d_autocal_stop).
- &webui_meter_lg_autocal_clear_full_workflow_state();
- &webui_meter_stop();
- return '{"status":"ok","message":"Dolby Vision profile measurement stopped"}';
+ return '{"status":"ok","message":"Dolby Vision profile force stop requested"}';
 }
 
 sub webui_lg_hdr_calman_reset (@) {
@@ -2668,6 +2838,9 @@ sub webui_lg_hdr_calman_reset (@) {
  return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "hdr_calman_reset",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $picture_mode,
@@ -2708,6 +2881,9 @@ sub webui_lg_dv_calman_reset (@) {
  return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "dv_calman_reset",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $picture_mode,
@@ -2754,6 +2930,9 @@ sub webui_lg_sdr_calman_reset (@) {
  return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "sdr_calman_reset",
+  expected_tv_input => $payload->{"expected_tv_input"}||"",
+  expected_profile_hash => $payload->{"expected_profile_hash"}||"",
+  tv_input => $payload->{"tv_input"}||"",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $picture_mode,
@@ -2971,6 +3150,8 @@ sub webui_lg_calibration_history_list (@) {
     mtime => $mtime+0,
     de => defined($meta->{"de"}) ? ($meta->{"de"}+0) : undef,
     source => "archive",
+    reuploadable => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 1 : 0,
+    note => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 'Restores the 1D LUT only; other settings and profiles are unchanged.' : 'Saved signal or picture mode is missing; automatic restore is unavailable.',
    };
   }
   closedir($dh);
@@ -3033,6 +3214,8 @@ sub webui_lg_calibration_history_list (@) {
     mtime => $mtime+0,
     de => defined($de_from_data) ? ($de_from_data+0) : undef,
     source => "run",
+    reuploadable => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 1 : 0,
+    note => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 'Restores the 1D LUT only; other settings and profiles are unchanged.' : 'Saved signal or picture mode is missing; automatic restore is unavailable.',
    };
   }
   closedir($dh);
@@ -3177,6 +3360,35 @@ sub webui_lg_calibration_history_download (@) {
  return &lg_encode_json({ status => "error", message => "Unknown id" });
 }
 
+sub _lg_cal_hist_restore_1d {
+ my ($data,$saved_mode,$saved_signal,$payload)=@_;
+ my $mode=$payload->{picture_mode}||$saved_mode||'';
+ my $signal=$payload->{signal_mode}||$saved_signal||'';
+ return &lg_encode_json({status=>'error',message=>'Restore requires the original saved signal and picture mode; cross-mode 1D restoration is not allowed.'})
+  if(!$saved_mode || !$saved_signal || $mode ne $saved_mode || $signal ne $saved_signal || $signal !~ /^(?:sdr|hdr10|dv)$/);
+ return &lg_encode_json({status=>'error',message=>"Select $signal output on the generator before restoring this 1D LUT."})
+  if(defined(&webui_pattern_signal_mode) && &webui_pattern_signal_mode('{}') ne $signal);
+ # History restoration always owns its bookends. Never claim that an upload
+ # succeeded when CAL_START or CAL_END failed, even if the upload itself did.
+ my $context={picture_mode=>$mode,signal_mode=>$signal};
+ my $result;
+ eval {
+  my $on=&lg_decode_json(&webui_lg_calibration_mode(&lg_encode_json({%$context,enabled=>JSON::PP::true})));
+  die(($on->{message}||'TV did not acknowledge calibration entry')."\n")
+   if(($on->{status}||'') ne 'ok' || !$on->{calibration_mode});
+  $result=&lg_decode_json(&webui_lg_1d_dpg_upload(&lg_encode_json({%$context,dpg_data=>$data,keep_calibration_mode=>1,calibration_mode_active=>1,helper_timeout=>90})));
+  die "No 1D upload result returned\n" if(ref($result) ne 'HASH' || !exists($result->{status}));
+  1;
+ } or $result={status=>'error',message=>"1D restore failed: ".($@||'Unknown upload failure')};
+ my $off=eval { &lg_decode_json(&webui_lg_calibration_mode(&lg_encode_json({%$context,enabled=>JSON::PP::false}))) };
+ my $exit_error=$@;
+ if(ref($off) ne 'HASH' || ($off->{status}||'') ne 'ok' || !exists($off->{calibration_mode}) || $off->{calibration_mode}) {
+  $result={%{$result||{}},status=>'error',upload_status=>$result->{status}||'unknown',error_code=>'calibration-exit-unconfirmed',
+   message=>($result->{message}||'1D upload finished').'; calibration exit is unconfirmed. Use Exit Calibration before testing the TV.',cleanup_detail=>$exit_error||$off->{message}||'No exit acknowledgement'};
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_calibration_history_reupload (@) {
  my ($body)=@_;
  my $payload=&lg_decode_json($body);
@@ -3195,42 +3407,23 @@ sub webui_lg_calibration_history_reupload (@) {
    unless(ref($run_dpg) eq "ARRAY" && @{$run_dpg}==3072);
   my $manifest=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/manifest.json") || {};
   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
-  $picture_mode ||= $cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "";
+  my $saved_mode=$cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "";
   # Fall back to the layout the DPG itself came from, so an SDR run cannot be
   # re-pushed as HDR (which would write the curve into the wrong picture mode).
-  $signal_mode ||= $cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $run_sm || "";
-  # Optional cal-mode bookends via existing calibration-mode endpoint helpers
-  if($enable_cal) {
-   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
-    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
-   eval { &webui_lg_calibration_mode($on_body); };
-  }
-  my $up_body=&lg_encode_json({
-   dpg_data => $run_dpg,
-   picture_mode => $picture_mode,
-   signal_mode => $signal_mode,
-   keep_calibration_mode => 1,
-   calibration_mode_active => 1,
-   helper_timeout => 90,
-  });
-  my $result_json=&webui_lg_1d_dpg_upload($up_body);
+  my $saved_signal=$cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $run_sm || "";
+  my $result_json=_lg_cal_hist_restore_1d($run_dpg,$saved_mode,$saved_signal,$payload);
   eval {
    my $decoded=&lg_decode_json($result_json);
    if(ref($decoded) eq "HASH" && ($decoded->{"status"}||"") eq "ok") {
     &_lg_cal_hist_archive_1d($run_dpg,{
-     picture_mode => $picture_mode,
-     signal_mode => $signal_mode,
+     picture_mode => $saved_mode,
+     signal_mode => $saved_signal,
      de => $run_de,
      run_id => $run,
      variant => (_lg_cal_hist_run_smoothed($state) ? "smoothed" : ""),
     });
    }
   };
-  if($disable_cal) {
-   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
-    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
-   eval { &webui_lg_calibration_mode($off_body); };
-  }
   return $result_json;
  }
 
@@ -3266,28 +3459,7 @@ sub webui_lg_calibration_history_reupload (@) {
   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/1d/$1.json");
   return &lg_encode_json({ status => "error", message => "1D archive not found" })
    unless(ref($meta) eq "HASH" && ref($meta->{"dpg_data"}) eq "ARRAY" && @{$meta->{"dpg_data"}}==3072);
-  $picture_mode ||= $meta->{"picture_mode"} || "";
-  $signal_mode ||= $meta->{"signal_mode"} || "";
-  if($enable_cal) {
-   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
-    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
-   eval { &webui_lg_calibration_mode($on_body); };
-  }
-  my $up_body=&lg_encode_json({
-   dpg_data => $meta->{"dpg_data"},
-   picture_mode => $picture_mode,
-   signal_mode => $signal_mode,
-   keep_calibration_mode => 1,
-   calibration_mode_active => 1,
-   helper_timeout => 90,
-  });
-  my $result_json=&webui_lg_1d_dpg_upload($up_body);
-  if($disable_cal) {
-   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
-    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
-   eval { &webui_lg_calibration_mode($off_body); };
-  }
-  return $result_json;
+  return _lg_cal_hist_restore_1d($meta->{dpg_data},$meta->{picture_mode},$meta->{signal_mode},$payload);
  }
 
  if($id =~ /^dvfile:([A-Za-z0-9._-]+)$/) {
@@ -3354,6 +3526,10 @@ sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
  my $body=shift;
+ if($method eq "POST" && $path ne "/api/lg/picture-settings") {
+  my $automation_guard=&lg_automation_guard_json($body);
+  return $automation_guard if($automation_guard ne "");
+ }
  if(($path eq "/api/lg/status" || $path eq "/api/lg/detect") && $method eq "GET") {
   return &webui_lg_status_json();
  }
@@ -3412,7 +3588,10 @@ sub webui_lg_api (@) {
   return &webui_meter_lg_dv_profile_status();
  }
  if($path eq "/api/lg/dv-profile/stop" && $method eq "POST") {
-  return &webui_meter_lg_dv_profile_stop();
+  return &webui_meter_lg_dv_profile_stop($body);
+ }
+ if($path eq "/api/lg/dv-profile/kill" && $method eq "POST") {
+  return &webui_meter_lg_dv_profile_force_stop($body);
  }
  if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
   return &webui_lg_1d_dpg_read($body);
@@ -3437,6 +3616,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/picture-settings/set" && $method eq "POST") {
   return &webui_lg_picture_settings_set($body);
+ }
+ if($path eq "/api/lg/verify-panel-light" && $method eq "POST") {
+  return &webui_lg_verify_panel_light($body);
  }
  if($path eq "/api/lg/picture-settings/reset" && $method eq "POST") {
   return &webui_lg_picture_reset($body);
@@ -3570,8 +3752,8 @@ sub lg_close_calibration_mode_at_run_end (@) {
  $clients={} if(ref($clients) ne "HASH");
  $payload={} if(ref($payload) ne "HASH");
  return { status => "ok", calibration_cleanup_needed => &lg_json_false() }
-  if(!$clients->{"calibration_mode"});
- if(&lg_autocal_worker_running()) {
+  if(!$clients->{"calibration_mode"} && !$payload->{force_stop});
+ if(&lg_autocal_worker_running(1)) {
   return {
    status => "error",
    error_code => "lg-calibration-session-active",

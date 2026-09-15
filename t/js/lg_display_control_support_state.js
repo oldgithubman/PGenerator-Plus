@@ -47,4 +47,6 @@ out.reverse           = f('backlight',{oledLight:40},
 out.refusedNoSibling  = f('oledLight',{brightness:50},c1Caps);
 // A non-panel-light key absent for this picture mode: explained, no hint.
 out.notForThisMode    = f('tint',{backlight:50},{supportedKeys:['backlight'],unsupportedKeys:{}});
+out.matrixReadOnly = f('brightness',{brightness:50},{settingContracts:{brightness:{write_decision:'blocked'}}});
+out.matrixWrongSignal = f('gamma',{gamma:'medium'},{settingContracts:{gamma:{write_decision:'not_applicable'}}});
 console.log(JSON.stringify(out));

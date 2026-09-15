@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "colourstrue-g3-mode-banks": {
+      "title": "ColoursTrue LG G3 picture-mode catalogue and calibration-bank separation",
+      "url": "local:ColoursTrue/Wiki/concepts/lg-g3-picture-mode-catalogue.md",
+      "retrieved_at": "2026-09-15",
+      "use": "Catalogue updated 2026-08-02, referencing r98 bank probes and r100/r101 mode selection evidence. HDR Cinema Home (hdrCinemaBright) is selectable but has no proved externalpq bank; HDR Cinema is a distinct calibrated preset. Generic workflow admission retains PGenerator's established supported families, not proof of every TV's support."
+    },
+    "c1-pr14-all-signals-20260915": {
+      "title": "Dizzy C1 hardware follow-up: five accepted picture controls across SDR, HDR10 and Dolby Vision",
+      "url": "https://github.com/oldgithubman/PGenerator-Plus/pull/14#issuecomment-5679735312",
+      "retrieved_at": "2026-09-15",
+      "use": "OLED65C1PUB / W21O, reported webOS 6.5.3 and firmware 53.45. Five-key accepted-write evidence, not verified readback or permission to ignore refusals, mismatches or connection errors."
+    },
+    "c1-user-run-20260915": {
+      "title": "User-supplied OLED65C1PUB automation attempt log, 15 September 2026",
+      "url": "local:t/fixtures/lg-capabilities/c1-run-2026-09-15.json",
+      "license": "user-provided",
+      "use": "Reported five-key successful queue configuration and 13 refused read/capability keys. Not proof that the refused keys cannot be written; webOS release 6.5.3 is not an exact firmware version."
+    },
+    "bscpylgtv-platform-table": {
+      "title": "bscpylgtv calibration platform table",
+      "url": "https://github.com/chros73/bscpylgtv/blob/master/bscpylgtv/webos_client.py",
+      "license": "MIT",
+      "version": "0.5.4",
+      "retrieved_at": "2026-09-15",
+      "use": "Internal platform token to 3D LUT size and Dolby Vision configuration generation."
+    },
+    "bscpylgtv-firmware-catalogues": {
+      "title": "bscpylgtv firmware settings catalogues",
+      "url": "https://github.com/chros73/bscpylgtv/tree/master/docs",
+      "license": "MIT",
+      "local_snapshot_revision": "008ebbb605e60a66de7d4f0d6d2217e966888731",
+      "retrieved_at": "2026-09-15",
+      "use": "Firmware-scoped inputs, modes, defaults, and separate public get/set allowlists."
+    },
+    "lg-settings-service": {
+      "title": "LG webOS TV Settings service",
+      "url": "https://webostv.developer.lge.com/develop/references/settings-service",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Official public settings request shapes."
+    },
+    "portrait-lg-autocal": {
+      "title": "Calibrating LG TVs with Calman",
+      "url": "https://www.portrait.com/resource-center/calibrating-lg-tvs-with-calman/",
+      "license": "documentation",
+      "published_at": "2025-11-10",
+      "retrieved_at": "2026-09-15",
+      "use": "Model-year and processor-family AutoCal support inventory."
+    },
+    "portrait-lg-2023-guide": {
+      "title": "Calman 2023 LG OLED calibration guide",
+      "url": "https://www.portrait.com/resource-center/lg-2023-oled-calibration-and-user-settings-no-matter-what/",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Signal-specific calibration preparation values."
+    },
+    "portrait-lg-2024-guide": {
+      "title": "2024 LG AutoCal guide",
+      "url": "https://www.portrait.com/resource-center/2024-lg-autocal-guide/",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Signal-specific calibration preparation values and TV setup guidance."
+    },
+    "pgenerator-existing-behaviour": {
+      "title": "PGenerator LG calibration implementation",
+      "url": "local:usr/sbin/pgenerator-lg",
+      "license": "project",
+      "use": "Existing reset, readback and calibration transport behaviour retained during migration."
+    }
+  }
+}
