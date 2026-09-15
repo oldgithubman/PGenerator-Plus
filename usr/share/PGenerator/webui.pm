@@ -1536,10 +1536,12 @@ sub webui_handle_request (@) {
          # from the newly-spawned renderer) with up to 4 attempts
          # and settle delays. This recovers the renderer in the
          # HDR case where a single stop+start almost always loses
-         # the race. load_new_pattern_file also re-pushes the last
-         # remembered pattern, so the user sees a pattern on the
-         # TV immediately after the apply instead of a frozen
-         # splash framebuffer.
+         # the race. It does NOT re-push the last pattern: the
+         # apply wipes $var_dir/running, so operations.txt is empty
+         # by the time the renderer respawns. pattern_generator_start
+         # seeds an idle black frame instead (seed_idle_pattern_file),
+         # which is what keeps the screen off the renderer's
+         # unencoded default background -- green on a YPbPr wire.
          close($client);
          $SIG{CHLD}='DEFAULT';
          # Serialize apply workers: a failed retry ladder can run for

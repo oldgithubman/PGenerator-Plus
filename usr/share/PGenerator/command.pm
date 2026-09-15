@@ -546,6 +546,13 @@ sub pattern_generator_start(@) {
  # and exits with EACCES - "Pattern renderer failed to start" on the WebUI.
  &wait_for_drm_master_unowned(3);
  &get_hdmi_info();
+ # get_hdmi_info() has just settled $w_s/$h_s and normalize_signal_mode_conf()
+ # has settled the conf, so the idle frame is authored for the mode the
+ # renderer is about to come up in. Seeding is unconditional: every renderer
+ # start goes through here, including the $no_clean_files retry ladder in
+ # load_new_pattern_file() that a WebUI apply uses, which is exactly the path
+ # that used to leave the file empty and the screen green on YPbPr.
+ &seed_idle_pattern_file();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) {
   $use_drm_override=0;
   &log("DRM: Colorspace-based kernel detected; starting renderer without drm_override.so");

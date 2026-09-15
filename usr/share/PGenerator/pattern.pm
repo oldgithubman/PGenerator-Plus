@@ -719,7 +719,6 @@ sub lut (@) {
  return "$r,$g,$b";
 }
 
-return 1;
 
 ###############################################
 #             Create File Pattern             #
@@ -752,6 +751,142 @@ sub clean_pattern_files (@) {
 sub round_val (@) {
  my $value = shift;
  return int($value+0.5);
+}
+
+
+###############################################
+#        Seed Idle Pattern File Function      #
+###############################################
+# The renderer has no encoded idle state. With an empty operations.txt it
+# never gets past `if(entered == 0) return;` in ofApp::draw(), so nothing ever
+# calls ofApp::setBackground() and the framebuffer keeps openFrameworks'
+# default clear color (ofStyle bgColor, 60,60,60 in the 0.11.2 the README
+# pins; openFrameworks is not vendored here) as plain RGB. On an RGB wire
+# that is an unremarkable dark grey. On a YPbPr wire the same bytes are read
+# as Y=Cb=Cr, which drives the chroma channels hard negative, clips red and
+# blue to zero and parks the panel on its green primary until the first
+# pattern lands. Measured on an LG OLED at 3840x2160: YCbCr 4:4:4 green at
+# 9.7 nits / CIE 0.293,0.613 in SDR (at 8, 10 and 12 bpc, Limited and Full)
+# and 26.1 nits / 0.271,0.672 in HDR10, plus 4:2:2 at 10 bpc in both — the
+# only depth 4:2:2 offers, per the max_bpc coercion in webui.pm's
+# color_format == 2 branch. RGB idle measures a neutral 4.2 nits and 0.000
+# nits once any pattern is pushed.
+#
+# ofApp::setup() does call setBackground(), but ofxRPI4Window::setup() leaves
+# colorspace_on=0 while ofApp::update() sets it to 1, so the next
+# ofxRPI4Window::update() flips and re-runs *WindowSetup(). That rebuilds
+# currentRenderer and calls ofGLProgrammableRenderer::setup(), which resets
+# the style — including bgColor — back to the openFrameworks default. Any
+# background set before that point is discarded.
+#
+# Seeding a black frame fixes it at the only layer we can ship without
+# rebuilding the renderer: draw() then runs every frame and re-encodes the
+# background through RGB2YCbCr(), including after that renderer rebuild.
+# It also gives ofxRPI4Window::setup() a real BITS value. An empty file
+# leaves bit_depth at 0, which takes `case 0:` and pins the window to an
+# 8-bit surface no matter what max_bpc says.
+#
+# Only seeds when the file is missing or blank, so a real pattern is never
+# clobbered. PATTERN_NAME=stop matches what the WebUI writes for an idle
+# screen, and webui_pattern_idle_refresh_allowed() already treats "stop" and
+# an empty file identically.
+sub idle_pattern_text (@) {
+ # Read $bits_default as the conf-change sites left it. Calling
+ # sync_pattern_bits_default() here would re-derive it from max_bpc on every
+ # renderer start, which overrides resolve.pm's deliberate desync ("bits_default
+ # is NOT synced to max_bpc -- EGL surface is always 8bpc") on the same thread.
+ my $bits=int($bits_default || 8);
+ $bits=8 if($bits != 8 && $bits != 10 && $bits != 12);
+ # Standard DV is the one mode whose source precision is not its BITS: the
+ # tunnel keeps an 8-bit framebuffer while the shader consumes 12-bit codes,
+ # and its black is the legal floor 256, not 0. Mirrors webui_pattern_set().
+ my $dv=0;
+ $dv=1 if(int($pgenerator_conf{"dv_status"} || 0) == 1);
+ $dv=1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
+ $dv=1 if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
+ # DV is always the 8-bit tunnel, whichever flag set $dv. sync_pattern_bits_default()
+ # only pins $bits_default to 8 on dv_status==1, so a session signalled through
+ # is_ll_dovi/is_std_dovi alone (dv_status still 0 at sync time) would otherwise
+ # leave $bits at max_bpc and emit e.g. BITS=10 + SOURCE_MAX=4095 + RGB=256,256,256,
+ # a 12-bit DV black floor on a 10-bit tunnel. webui_pattern_effective_bits() returns
+ # 8 for dv unconditionally; match it.
+ $bits=8 if($dv);
+ # Draw through the 10-bit path on a 12 bpc link, as webui_pattern_effective_bits()
+ # does. This is not cosmetic: ofApp::setBackground() branches on bit_depth == 10
+ # and otherwise falls back to its 8-bit path, so it has no encoding for a 12-bit
+ # framebuffer -- a seeded BITS=12 leaves the idle background unconverted and the
+ # screen green, which is the whole bug. Measured on the bench at 12 bpc HDR10
+ # YCbCr 4:4:4: BITS=12 gives 6.9 nits at CIE 0.273,0.673 (green), BITS=10 gives
+ # 0.000 nits.
+ #
+ # The cost is that set_values() feeds BITS back into avi_info.max_bpc, so the
+ # idle link sits at 10 bpc until the first real pattern: the WebUI sends 10 for
+ # a 12 bpc link anyway, and Calman's first BITS=12 patch restores 12 with a
+ # window rebuild. A correct-depth green screen is worse than a black one that
+ # corrects itself on the next pattern.
+ $bits=10 if($bits == 12);
+ my $source_max=255;
+ $source_max=1023 if($bits >= 10);
+ $source_max=4095 if($dv);
+ my $black=$dv ? "256,256,256" : "0,0,0";
+ my $w=int($w_s || 1920);
+ my $h=int($h_s || 1080);
+ my $txt="PATTERN_NAME=stop\n";
+ $txt.="BITS=$bits\n";
+ $txt.="SOURCE_MAX=$source_max\n";
+ $txt.="DRAW=RECTANGLE\n";
+ $txt.="DIM=$w,$h\n";
+ $txt.="RGB=$black\n";
+ $txt.="BG=$black\n";
+ $txt.="POSITION=0,0\n";
+ # SOURCE_RANGE describes authored RGB source components, so the renderer
+ # only consults it on the RGB transport (normalizeSourceValue() returns
+ # early when output_format != 0). Emit it where webui_pattern_set() does,
+ # including its rule that DV's inner components are always legal-range even
+ # when the outer tunnel is RGB Full.
+ if(int($pgenerator_conf{"color_format"} || 0) == 0) {
+  my $range="FULL";
+  $range="LIMITED" if($dv || int($pgenerator_conf{"rgb_quant_range"} || 0) == 1);
+  $txt.="SOURCE_RANGE=$range\n";
+ }
+ $txt.="END=1\n";
+ $txt.="FRAME=1\n";
+ return $txt;
+}
+
+sub seed_idle_pattern_file (@) {
+ my $existing="";
+ if(-f $command_file && open(my $fh,"<",$command_file)) {
+  local $/;
+  $existing=<$fh>;
+  close($fh);
+ }
+ $existing="" if(!defined $existing);
+ # Anything with real content is a pattern somebody asked for. Leave it.
+ return 0 if($existing=~/\S/);
+ my $txt=&idle_pattern_text();
+ # Stage under a pid-unique name. The shared "$command_file.tmp" is written
+ # by get_pattern() and the WebUI's own pattern writer from daemon threads,
+ # while this runs in the double-forked apply worker, which holds only
+ # webui-apply.lock -- a lock no pattern writer takes. Two opens of one
+ # fixed name can interleave into a half-parsed file, and ofApp::update()
+ # feeds every field to boost::lexical_cast with no try/catch. rename() is
+ # still atomic, so a unique staging name costs nothing.
+ my $tmp="$command_file.seed.$$";
+ if(!open(my $out,">",$tmp)) {
+  &log("ERROR: cannot stage idle pattern $tmp: $!");
+  return 0;
+ } else {
+  print $out $txt;
+  close($out);
+ }
+ if(!rename($tmp,$command_file)) {
+  &log("ERROR: cannot install idle pattern $command_file: $!");
+  unlink($tmp);
+  return 0;
+ }
+ &log("Pattern: seeded idle black frame for empty operations.txt");
+ return 1;
 }
 
 return 1;
