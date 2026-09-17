@@ -3646,12 +3646,33 @@ sub _preflight_read_mode {
     my $mode=_observed_settings($live)->{pictureMode}||'';
     my $profile=$live->{generation_profile}||{};
     die 'Cannot safely probe modes: the current TV mode cannot be read independently. No unverified mode will be used for restoration.'
-        if !_response_ok($live) || $live->{virtual_picture_settings} || $live->{picture_mode_read_forbidden}
-            || !$mode || !_signal_mode_compatible($signal,$mode);
+        if !_response_ok($live) || $live->{virtual_picture_settings};
+    # An architectural read ban (ddc_only generations: 2021-and-earlier and
+    # webOS 6-, per pgenerator-lg's generation classification) is not a
+    # transient failure and can never clear on this panel. Refusing the whole
+    # queue here converted every pre-2022 panel into one that cannot start
+    # automation at all. Only the ban flag takes this path: the panel says
+    # the read will never answer, so the context is saved as explicitly
+    # unverified, mode probing and the mode-dependent part of restoration
+    # are skipped, and nothing downstream may treat a mode as known without
+    # verified=>1. An empty or incompatible mode WITHOUT the flag is still
+    # fatal — a failed read must not masquerade as a permanent one.
+    if ($live->{picture_mode_read_forbidden}) {
+        die 'Cannot safely probe modes: TV input or compatibility signature is unavailable'
+            if ($live->{current_input}||'') !~ /^hdmi[1-4](?:_pc)?$/ || ($profile->{capability_profile_hash}||'') !~ /^[a-f0-9]{64}$/;
+        return {picture_mode=>'',signal_format=>$signal,tv_input=>$live->{current_input},
+            mode_read_forbidden=>JSON::PP::true,
+            capability_profile=>{hash=>$profile->{capability_profile_hash},id=>$profile->{capability_profile_id}},
+            generation_profile=>$profile,settle_seconds=>1,stages=>{calibration=>0},
+            no_echo=>1,verified=>0,current_input=>$live->{current_input}};
+    }
+    die 'Cannot safely probe modes: the current TV mode cannot be read independently. No unverified mode will be used for restoration.'
+        if !$mode || !_signal_mode_compatible($signal,$mode);
     die 'Cannot safely probe modes: TV input or compatibility signature is unavailable'
         if ($live->{current_input}||'') !~ /^hdmi[1-4](?:_pc)?$/ || ($profile->{capability_profile_hash}||'') !~ /^[a-f0-9]{64}$/;
     # Stamped as an independent no-echo read so the mode selector may act on
-    # it; verified only because every unreadable case died above.
+    # it; verified only because every unreadable case above either returned
+    # explicitly unverified or died.
     return {picture_mode=>$mode,signal_format=>$signal,tv_input=>$live->{current_input},
         capability_profile=>{hash=>$profile->{capability_profile_hash},id=>$profile->{capability_profile_id}},
         generation_profile=>$profile,settle_seconds=>1,stages=>{calibration=>0},
@@ -3709,10 +3730,15 @@ sub _restore_preflight_context {
     my $ok=eval {
         # Return each signal's selected mode to its original value, with the
         # initially active signal restored last. Never restore TV settings/LUTs.
+        # A context entry captured on an architectural-read-ban panel carries
+        # verified=>0 and an empty mode: there is no original mode to restore
+        # to, so the generator signal is still returned but the mode step is
+        # skipped and recorded, never silently "restored".
         for my $signal (reverse @{$context->{order}||[]}) {
             my $item=$context->{modes}{$signal};
             $ACTIVE_ITEM=$item;
             die($::LAST_ERROR||'Unable to restore preflight signal') if !_apply_signal($item);
+            next if !$item->{verified};
             my $live=_preflight_read_mode($signal);
             die 'TV input or compatibility changed during preflight restoration'
                 if $live->{tv_input} ne $item->{tv_input}
@@ -3729,10 +3755,18 @@ sub _restore_preflight_context {
         _preflight_wait_config($context->{config},_api('POST','/api/config',$context->{config},1,0));
         my $pattern=_api('POST','/api/pattern',{name=>'gray50',signal_mode=>$context->{config}{signal_mode}},1,0);
         die 'Unable to display neutral pattern after preflight restoration' if !_response_ok($pattern);
-        my $live=_preflight_read_mode($context->{config}{signal_mode});
-        die 'Original viewing context did not restore'
-            if $live->{tv_input} ne $context->{original}{tv_input}
-                || !_mode_agrees($live->{picture_mode},$context->{original}{picture_mode});
+        # With an architectural read ban only the input is restorable: the
+        # mode was never known and no unverified read may confirm one.
+        if ($context->{original}{verified}) {
+            my $live=_preflight_read_mode($context->{config}{signal_mode});
+            die 'Original viewing context did not restore'
+                if $live->{tv_input} ne $context->{original}{tv_input}
+                    || !_mode_agrees($live->{picture_mode},$context->{original}{picture_mode});
+        } else {
+            my $live=_preflight_read_mode($context->{config}{signal_mode});
+            die 'Original input did not restore'
+                if $live->{tv_input} ne $context->{original}{tv_input};
+        }
         die 'Unable to persist completed preflight restoration' if !ref(_update_run(sub {
             $_[0]{preflight_restore_required}=JSON::PP::false;
             $_[0]{preflight_context_restored_at}=time();
@@ -3799,9 +3833,16 @@ sub _preflight_queue {
                 my $frozen=_freeze_job_lg_context($item);
                 die($::LAST_ERROR||'Unable to select preflight picture mode')
                     if !_select_item_picture_mode($number,$item,'queue-preflight',$frozen);
-                my $selected=_preflight_read_mode($signal);
-                die 'Target picture mode was not independently confirmed during preflight'
-                    if !_mode_agrees(_picture_mode($item),$selected->{picture_mode});
+                # On a panel with an architectural mode-read ban the original
+                # mode was never known, so there is no verified mode to
+                # confirm against and no unverified read may gate the job.
+                # The mode write itself still went through its own accepted-
+                # or-verified path inside _select_item_picture_mode.
+                if ($context->{original}{verified}) {
+                    my $selected=_preflight_read_mode($signal);
+                    die 'Target picture mode was not independently confirmed during preflight'
+                        if !_mode_agrees(_picture_mode($item),$selected->{picture_mode});
+                }
                 $result->{progress_done}++;
                 _preflight_progress($result,$number,'Picture mode confirmed; checking TV controls and meter');
                 my $ready=_api('POST','/api/automation/readiness',{scope=>'job',items=>[$item]},0,0);
@@ -3830,6 +3871,14 @@ sub _preflight_queue {
     my $restored=_restore_preflight_context();
     $result->{progress_done}++ if $restored;
     push @{$result->{checks}},{ok=>0,level=>'error',name=>'queue-preflight-restore',message=>$::LAST_ERROR||'Preflight restoration failed'} if !$restored;
+    # Record the reduced guarantee on architectural-read-ban panels: the
+    # generator output and input are restored and verified; the original
+    # picture mode was never readable, so it is not claimed as restored.
+    if (ref($context) eq 'HASH' && !$context->{original}{verified}) {
+        $result->{mode_restoration}='skipped-read-ban';
+        push @{$result->{checks}},{ok=>0,level=>'warning',name=>'queue-preflight-mode-restore',
+            message=>'This generation cannot report its picture mode, so the original mode was not restored — only the original output and input were confirmed. Set the TV picture mode from the menu if the batch changed it.'};
+    }
     push @{$result->{checks}},{ok=>0,level=>'error',name=>'queue-preflight-cancelled',message=>'Queue preflight stopped; unchecked jobs are not ready'} if $STOP_REQUESTED;
     my @errors=grep {!$_->{ok} && ($_->{level}||'error') eq 'error'} @{$result->{checks}};
     my @warnings=grep {!$_->{ok} && ($_->{level}||'') eq 'warning'} @{$result->{checks}};
