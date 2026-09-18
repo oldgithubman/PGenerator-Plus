@@ -37,7 +37,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 # Shown in the dashboard and reported by /api/health so a support thread can
 # establish which console someone is running. Bump when behaviour changes.
-DEPLOYER_BUILD = "1.2"
+DEPLOYER_BUILD = "1.3"
 # The console's own files as they appear in the repository snapshot. They are
 # not deployable, but they are extracted alongside the snapshot so the running
 # console can notice that the repository carries a different version of itself:
@@ -50,6 +50,17 @@ DEPLOYER_SELF_FILES = (
 )
 PID_FILE = APP_DIR / ".server.pid"
 DEPLOY_ROOTS = ("etc", "lib", "usr", "var")
+# The panel capability library under this subtree is atomic. tv/sources.json and
+# tv/lg/index.json name the sibling profile and recipe files that make up a
+# valid library, so installing only some of them leaves the manifest pointing at
+# a file that was never copied. The device then fails library validation and
+# silently falls back to a conservative profile that blocks calibration.
+# Deploying any file in this subtree therefore pulls the whole pinned-snapshot
+# subtree, so the installed library is always internally consistent.
+# (2026-09-18: a partial deploy shipped tv/lg/index.json without the newly added
+# tv/lg/series/g3.json it references and disabled C1 calibration until the
+# missing file was copied over by hand.)
+CAPABILITY_TREE_PREFIX = "usr/share/PGenerator/tv/"
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$")
 USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
 REPO_PART_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
@@ -699,6 +710,37 @@ def validate_selected(snapshot: dict[str, Any], paths: Any) -> list[str]:
     return selected
 
 
+def capability_library_closure(
+    snapshot: dict[str, Any], selected: list[str]
+) -> tuple[list[str], list[str]]:
+    """Expand the selection so the panel capability library ships as one unit.
+
+    If the operator selected any file under CAPABILITY_TREE_PREFIX, add every
+    other file in that subtree from the pinned snapshot. The library manifest
+    (tv/lg/index.json) references sibling files by name, so deploying a subset
+    leaves the installed library inconsistent and fails validation on the
+    device. Over-including files already identical on the Pi is harmless -- the
+    apply step backs each target up and rewrites it in place.
+
+    Returns (paths, added); added lists the files pulled in by the closure so
+    the caller can report them.
+    """
+    if not any(rel.startswith(CAPABILITY_TREE_PREFIX) for rel in selected):
+        return selected, []
+    chosen = list(selected)
+    present = set(chosen)
+    added: list[str] = []
+    for rel in sorted(snapshot["files"]):
+        if not rel.startswith(CAPABILITY_TREE_PREFIX):
+            continue
+        if rel in PROTECTED_PATHS or rel in present:
+            continue
+        chosen.append(rel)
+        present.add(rel)
+        added.append(rel)
+    return chosen, added
+
+
 def perl_source_paths(snapshot: dict[str, Any], paths: list[str]) -> list[str]:
     root = Path(snapshot["root"])
     perl_paths: list[str] = []
@@ -942,7 +984,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/upload":
                 snapshot = get_snapshot(payload.get("snapshotId"))
                 selected = validate_selected(snapshot, payload.get("paths"))
+                selected, auto_included = capability_library_closure(snapshot, selected)
                 result = upload_files(connection, snapshot, selected)
+                if auto_included:
+                    result["autoIncluded"] = auto_included
             elif self.path == "/api/restart":
                 result = restart_renderer(connection)
             elif self.path == "/api/restart-daemon":
