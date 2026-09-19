@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "key_sets": {
+    "public-picture-basic-4": ["brightness", "backlight", "contrast", "color"],
+    "public-picture-basic-5": ["brightness", "backlight", "contrast", "color", "energySaving"],
+    "public-picture-61": [
+      "brightness", "backlight", "contrast", "color", "energySaving", "pictureMode",
+      "dynamicContrast", "peakBrightness", "gamma", "blackLevel", "motionEyeCare",
+      "colorGamut", "hdrDynamicToneMapping", "realCinema", "truMotionMode", "tint",
+      "adjustingLuminance", "colorTemperature", "whiteBalancePoint", "superResolution",
+      "sharpness", "noiseReduction", "mpegNoiseReduction", "smoothGradation", "dynamicColor",
+      "whiteBalanceMethod", "whiteBalanceIre10pt", "whiteBalanceIre", "whiteBalanceRedOffset",
+      "whiteBalanceRedGain", "whiteBalanceRed10pt", "whiteBalanceRed", "adjustingLuminance10pt",
+      "whiteBalanceGreenOffset", "whiteBalanceGreenGain", "whiteBalanceGreen10pt",
+      "whiteBalanceGreen", "whiteBalanceBlueOffset", "whiteBalanceBlueGain", "whiteBalanceBlue10pt",
+      "whiteBalanceBlue", "colorManagementColorSystem", "colorManagementSaturationRed",
+      "colorManagementSaturationGreen", "colorManagementSaturationBlue",
+      "colorManagementSaturationCyan", "colorManagementSaturationMagenta",
+      "colorManagementSaturationYellow", "colorManagementHueRed", "colorManagementHueGreen",
+      "colorManagementHueBlue", "colorManagementHueCyan", "colorManagementHueMagenta",
+      "colorManagementHueYellow", "colorManagementLuminanceRed", "colorManagementLuminanceGreen",
+      "colorManagementLuminanceBlue", "colorManagementLuminanceCyan",
+      "colorManagementLuminanceMagenta", "colorManagementLuminanceYellow", "whiteBalanceLuminance"
+    ],
+    "public-picture-62": [
+      "brightness", "backlight", "contrast", "color", "energySaving", "pictureMode",
+      "dynamicContrast", "peakBrightness", "gamma", "blackLevel", "motionEyeCare",
+      "colorGamut", "hdrDynamicToneMapping", "realCinema", "truMotionMode", "tint",
+      "adjustingLuminance", "colorTemperature", "whiteBalancePoint", "superResolution",
+      "sharpness", "noiseReduction", "mpegNoiseReduction", "smoothGradation", "dynamicColor",
+      "whiteBalanceMethod", "whiteBalanceIre10pt", "whiteBalanceIre", "whiteBalanceRedOffset",
+      "whiteBalanceRedGain", "whiteBalanceRed10pt", "whiteBalanceRed", "adjustingLuminance10pt",
+      "whiteBalanceGreenOffset", "whiteBalanceGreenGain", "whiteBalanceGreen10pt",
+      "whiteBalanceGreen", "whiteBalanceBlueOffset", "whiteBalanceBlueGain", "whiteBalanceBlue10pt",
+      "whiteBalanceBlue", "colorManagementColorSystem", "colorManagementSaturationRed",
+      "colorManagementSaturationGreen", "colorManagementSaturationBlue",
+      "colorManagementSaturationCyan", "colorManagementSaturationMagenta",
+      "colorManagementSaturationYellow", "colorManagementHueRed", "colorManagementHueGreen",
+      "colorManagementHueBlue", "colorManagementHueCyan", "colorManagementHueMagenta",
+      "colorManagementHueYellow", "colorManagementLuminanceRed", "colorManagementLuminanceGreen",
+      "colorManagementLuminanceBlue", "colorManagementLuminanceCyan",
+      "colorManagementLuminanceMagenta", "colorManagementLuminanceYellow", "whiteBalanceLuminance",
+      "eyeComfortMode"
+    ]
+  },
+  "profiles": [
+    {
+      "profile_id": "lg/firmware/CX/4.63.25",
+      "priority": 50,
+      "match": { "retail_series": ["CX"], "firmware_versions": ["4.63.25"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "CX", "firmware": "4.63.25", "webos": "5.6.1" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-basic-4" },
+            "write": { "support_state": "not_listed_in_firmware_inventory", "picture_keys": [] }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "medium", "hdrDynamicToneMapping": "on", "colorTemperature": "-50", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "CX firmware 4.63.25 catalogue. Empty public-write list does not mean every other write route is unsupported." }]
+    },
+    {
+      "profile_id": "lg/firmware/C1/3.53.45",
+      "priority": 50,
+      "match": { "retail_series": ["C1"], "firmware_versions": ["3.53.45"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "C1", "firmware": "3.53.45", "webos": "6.5.3" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-basic-5" },
+            "write": { "support_state": "not_listed_in_firmware_inventory", "picture_keys": [] }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "medium", "hdrDynamicToneMapping": "on", "colorTemperature": "-50", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "C1 firmware 3.53.45 catalogue. The five public read keys match the reported C1 control subset." }]
+    },
+    {
+      "profile_id": "lg/firmware/C2/33.31.20",
+      "priority": 50,
+      "match": { "retail_series": ["C2"], "firmware_versions": ["33.31.20"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "C2", "firmware": "33.31.20", "webos": "10.3.0" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" },
+            "write": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "medium", "hdrDynamicToneMapping": "on", "colorTemperature": "-50", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "C2 firmware 33.31.20 public settings inventory; availability remains context-dependent." }]
+    },
+    {
+      "profile_id": "lg/series/G3/public-settings",
+      "priority": 50,
+      "match": { "retail_series": ["G3"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "G3", "firmware": "23.25.55", "webos": "9.2.2" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-61" },
+            "write": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-61" },
+            "grouped_read": { "support_state": "unknown", "note": "Inventory membership does not prove that a grouped request succeeds." },
+            "individual_read": { "support_state": "unknown", "note": "Promote only from a matching live context." }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "medium", "hdrDynamicToneMapping": "on", "colorTemperature": "-50", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "G3 firmware 23.25.55 public settings inventory; no live write claim is inferred." }]
+    },
+    {
+      "profile_id": "lg/firmware/G4/23.23.30",
+      "priority": 50,
+      "match": { "retail_series": ["G4"], "firmware_versions": ["23.23.30"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "G4", "firmware": "23.23.30", "webos": "9.2.4" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-61" },
+            "write": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-61" }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "medium", "hdrDynamicToneMapping": "on", "colorTemperature": "-50", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "G4 firmware 23.23.30 public settings inventory; availability remains context-dependent." }]
+    },
+    {
+      "profile_id": "lg/firmware/G5/33.21.81",
+      "priority": 50,
+      "match": { "retail_series": ["G5"], "firmware_versions": ["33.21.81"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "G5", "firmware": "33.21.81", "webos": "10.2.0" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" },
+            "write": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "mediumHavingLevel", "hdrDynamicToneMapping": "on", "colorTemperature": "-40", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "G5 firmware 33.21.81 public settings inventory; availability remains context-dependent." }]
+    },
+    {
+      "profile_id": "lg/firmware/G6/43.11.77",
+      "priority": 50,
+      "match": { "retail_series": ["G6"], "firmware_versions": ["43.11.77"] },
+      "data": {
+        "firmware_inventory": { "catalogue_model": "G6", "firmware": "43.11.77", "webos": "11.1.0" },
+        "settings": {
+          "public_routes": {
+            "read": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" },
+            "write": { "support_state": "firmware_inventory", "picture_key_set": "public-picture-62" }
+          },
+          "firmware_defaults": { "brightness": "50", "backlight": "100", "contrast": "80", "color": "50", "energySaving": "off", "pictureMode": "dolbyHdrCinemaBright", "dynamicContrast": "off", "peakBrightness": "off", "gamma": "mediumHavingLevel", "hdrDynamicToneMapping": "on", "colorTemperature": "-40", "sharpness": "10" }
+        }
+      },
+      "evidence": [{ "source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "G6 firmware 43.11.77 (webOS 11.1.0) public settings inventory; availability remains context-dependent. The 2026-specific firmware version never matches a 2016 G6." }]
+    }
+  ]
+}

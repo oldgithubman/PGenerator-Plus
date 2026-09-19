@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pgenerator.local/schemas/tv-capability-profile-v1.json",
+  "title": "PGenerator TV capability library v1",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "profile": { "$ref": "#/$defs/profile" },
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/profile" }
+    },
+    "recipes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/recipe" }
+    }
+  },
+  "oneOf": [
+    { "required": ["profile"] },
+    { "required": ["profiles"] },
+    { "required": ["recipes"] }
+  ],
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "required": ["profile_id", "priority", "match", "data", "evidence"],
+      "properties": {
+        "profile_id": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "match": {
+          "type": "object",
+          "properties": {
+            "platform_tokens": { "type": "array", "items": { "type": "string", "pattern": "^W[0-9]{2}[A-Z]$" } },
+            "retail_series": { "type": "array", "items": { "type": "string" } },
+            "firmware_versions": { "type": "array", "items": { "type": "string" } },
+            "year_min": { "type": "integer" },
+            "year_max": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "picture_modes": {
+              "type": "object",
+              "propertyNames": {"enum": ["sdr", "hdr10", "hlg", "dv"]},
+              "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/picture_mode_patch"}}
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["source_id", "strength"],
+            "properties": {
+              "source_id": { "type": "string" },
+              "strength": { "enum": ["official", "firmware_inventory", "library_implementation", "hardware_observed", "hardware_verified", "proposed", "implementation_policy", "user_report"] },
+              "scope": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "picture_mode_patch": {
+      "description": "Complete catalogue records or scoped patches. New records require all fields in the runtime validator; scoped patches may override individual fields.",
+      "type": "object",
+      "properties": {
+        "value": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "settings_key": {"const": "pictureMode"},
+        "settings_value": {"type": "string", "minLength": 1},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "offered": {"type": "boolean"},
+        "selection": {"$ref": "#/$defs/mode_operation"},
+        "readback": {"$ref": "#/$defs/mode_operation"},
+        "calibration": {"$ref": "#/$defs/mode_operation"},
+        "source_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "mode_operation": {
+      "type": "object",
+      "properties": {
+        "support_state": {"enum": ["unknown", "unsupported", "inventory", "supported", "verified"]},
+        "bank": {"type": ["string", "null"]},
+        "internal_mode": {"type": ["string", "null"]}
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "required": ["recipe_id", "signal", "settings", "evidence"],
+      "properties": {
+        "recipe_id": { "type": "string" },
+        "signal": { "enum": ["sdr", "hdr10", "dolby_vision"] },
+        "settings": { "type": "array" },
+        "evidence": { "type": "array", "minItems": 1 }
+      }
+    }
+  }
+}

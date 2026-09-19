@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "colourstrue-g3-mode-banks": {
+      "title": "ColoursTrue LG G3 picture-mode catalogue and calibration-bank separation",
+      "url": "local:ColoursTrue/Wiki/concepts/lg-g3-picture-mode-catalogue.md",
+      "retrieved_at": "2026-09-15",
+      "use": "Catalogue updated 2026-08-02, referencing r98 bank probes and r100/r101 mode selection evidence. HDR Cinema Home (hdrCinemaBright) is selectable but has no proved externalpq bank; HDR Cinema is a distinct calibrated preset. Generic workflow admission retains PGenerator's established supported families, not proof of every TV's support."
+    },
+    "c1-pr14-all-signals-20260915": {
+      "title": "Dizzy C1 hardware follow-up: five accepted picture controls across SDR, HDR10 and Dolby Vision",
+      "url": "https://github.com/oldgithubman/PGenerator-Plus/pull/14#issuecomment-5679735312",
+      "retrieved_at": "2026-09-15",
+      "use": "OLED65C1PUB / W21O, reported webOS 6.5.3 and firmware 53.45. Five-key accepted-write evidence, not verified readback or permission to ignore refusals, mismatches or connection errors."
+    },
+    "c1-user-run-20260915": {
+      "title": "User-supplied OLED65C1PUB automation attempt log, 15 September 2026",
+      "url": "local:t/fixtures/lg-capabilities/c1-run-2026-09-15.json",
+      "license": "user-provided",
+      "use": "Reported five-key successful queue configuration and 13 refused read/capability keys. Not proof that the refused keys cannot be written; webOS release 6.5.3 is not an exact firmware version."
+    },
+    "lg-calibration-platform-table": {
+      "title": "LG calibration platform table",
+      "url": "local:docs/Reference (third-party LG calibration client, gitignored snapshot)",
+      "license": "MIT",
+      "retrieved_at": "2026-09-15",
+      "use": "Internal HE_DTV_WxxH/O/G platform token to 3D LUT size and Dolby Vision configuration generation."
+    },
+    "lg-firmware-settings-catalogues": {
+      "title": "LG webOS firmware settings catalogues",
+      "url": "local:docs/Reference (available_settings_*.md extracted from firmware defaultSettings.json, description.json and valid-settings.js; gitignored snapshot)",
+      "license": "MIT",
+      "retrieved_at": "2026-09-16",
+      "use": "Firmware-scoped inputs, modes, defaults, and separate public get/set allowlists."
+    },
+    "lg-control-clients-panel-protection": {
+      "title": "Third-party LG control clients: OLED panel-protection Luna toggles",
+      "url": "local:docs/Reference (LG calibration client endpoint table, gitignored snapshot; corroborated by two other open-source LG control tools)",
+      "license": "MIT",
+      "retrieved_at": "2026-09-16",
+      "use": "com.webos.service.oledepl setTemporalPeakControl / setGlobalStressReduction with an enable boolean on 2020 and newer OLEDs. Write-only; no readback exists."
+    },
+    "calibrator-forum-asbl-practice": {
+      "title": "Calibrator forum practice: disable ASBL (TPC/GSR) during LG OLED measurement",
+      "url": "local:ColoursTrue/References (calibration-software user forum thread, not in the tree)",
+      "license": "user-provided",
+      "retrieved_at": "2026-09-16",
+      "use": "Static patterns dim after about 60 s with panel protection on; calibrators switch TPC and GSR off for the session and back on afterwards. Pattern insertion is the alternative mitigation."
+    },
+    "lg-settings-service": {
+      "title": "LG webOS TV Settings service",
+      "url": "https://webostv.developer.lge.com/develop/references/settings-service",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Official public settings request shapes."
+    },
+    "calibration-software-lg-autocal-support": {
+      "title": "Third-party calibration software: LG AutoCal support inventory",
+      "url": "local:docs/Reference (third-party calibration-software LG AutoCal support article, gitignored snapshot)",
+      "license": "documentation",
+      "published_at": "2025-11-10",
+      "retrieved_at": "2026-09-15",
+      "use": "Model-year and processor-family AutoCal support inventory."
+    },
+    "calibration-software-lg-2023-guide": {
+      "title": "Third-party calibration software: 2023 LG OLED calibration guide",
+      "url": "local:docs/Reference (third-party calibration-software 2023 LG OLED guide, gitignored snapshot)",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Signal-specific calibration preparation values."
+    },
+    "calibration-software-lg-2024-guide": {
+      "title": "Third-party calibration software: 2024 LG AutoCal guide",
+      "url": "local:docs/Reference (third-party calibration-software 2024 LG AutoCal guide, gitignored snapshot)",
+      "license": "documentation",
+      "retrieved_at": "2026-09-15",
+      "use": "Signal-specific calibration preparation values and TV setup guidance."
+    },
+    "pgenerator-existing-behaviour": {
+      "title": "PGenerator LG calibration implementation",
+      "url": "local:usr/sbin/pgenerator-lg",
+      "license": "project",
+      "use": "Existing reset, readback and calibration transport behaviour retained during migration."
+    },
+    "owner-g3-sweep-20260918": {
+      "title": "Owner's LG OLED55G36LA (G3) live API sweep, 18 September 2026",
+      "url": "local:docs/tvtests/runs/G3-20260918",
+      "license": "project",
+      "retrieved_at": "2026-09-18",
+      "use": "Direct API calls on firmware 23.25.55 over HDMI: every picture mode selected per signal, every public picture key read and written at its limits and every listed value with readback and restore in each mode, HLG/HDR10 settings sharing and read scoping probed."
+    }
+  }
+}

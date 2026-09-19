@@ -24,6 +24,8 @@ set -o pipefail
 
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+source "$SCRIPT_DIR/pgen_meter_pattern.sh" || exit 1
+source "$SCRIPT_DIR/pgen_meter_timing.sh" || exit 1
 PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
 PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
 
@@ -110,7 +112,7 @@ COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
 SETUP_STEP_ID=0
 
-log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOG_FILE"; }
 startup_marker() { log "startup marker: $*"; }
 
 signal_startup_ready() {
@@ -406,8 +408,11 @@ post_patch() {
   post_companion_patch "$@"
   return $?
  fi
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1
+ if ! meter_post_local_patch "$API_BASE" "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")"; then
+  log "$METER_PATTERN_ERROR"
+  write_state "$(meter_pattern_error_json "${REQUEST_ID:-}")"
+  return 1
+ fi
 }
 
 post_patch_timeout() {
@@ -730,25 +735,32 @@ capture_additional_average_sample() {
  return 1
 }
 
-cleanup() {
- log "cleanup: tearing down spotread"
- companion_show_alignment
- # Ask spotread to quit cleanly, then close its stdin (EOF via the cat pipe).
- # spotread may be mid-reading (an active USB transaction); SIGKILLing it now
- # wedges the Pi's dwc2 USB controller, which then fails the NEXT session with
- # "communication failed during init". So give it time to finish the in-flight
- # read, process the quit, and release the device before escalating to a kill.
- printf "Q" >&3 2>/dev/null
- exec 3>&- 2>/dev/null
- exec 4>&- 2>/dev/null
- # Wait up to ~6s for the spotread pipeline to exit on its own.
- local _w=0
+stop_spotread_child() {
+ # A first Q can abort the instrument read and produce a second quit/retry
+ # prompt. Keep stdin open until that fresh prompt is answered; closing it
+ # immediately strands a responsive driver and forces termination on handoff.
+ local quit_offset=0 quit_output="" quit_confirmed=0 _w=0
+ [[ -f "${OUTFILE:-}" ]] && quit_offset=$(output_size)
+ # A failed startup may already have closed the reader. A broken pipe must
+ # not abort cleanup of our session markers or the remaining process tree.
+ (printf "Q" >&3) 2>/dev/null || true
+ # Keep the existing ~6s grace budget, including the confirmation handshake.
  while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  if (( quit_confirmed == 0 )) && [[ -f "${OUTFILE:-}" ]]; then
+   quit_output=$(clean_output_since "$quit_offset")
+   if [[ "$quit_output" == *"any other key to retry:"* ]]; then
+    log "spotread shutdown: confirming quit"
+    (printf "Q" >&3) 2>/dev/null || true
+    quit_confirmed=1
+   fi
+  fi
   sleep 0.1
   _w=$(( _w + 1 ))
  done
+ exec 3>&- 2>/dev/null
  # Still alive: ask politely (TERM) and let the USB transaction unwind.
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  log "spotread shutdown: quit timed out; sending TERM"
   kill "$BG_PID" 2>/dev/null
   pkill -TERM -x spotread 2>/dev/null
   pkill -TERM -x spotread_sim 2>/dev/null
@@ -760,15 +772,25 @@ cleanup() {
  fi
  # Last resort only if it ignored both the quit and TERM (genuinely stuck).
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  log "spotread shutdown: TERM timed out; forcing exit"
   pkill -9 -P "$BG_PID" 2>/dev/null
   kill -9 "$BG_PID" 2>/dev/null
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
+ [[ -n "$BG_PID" ]] && wait "$BG_PID" 2>/dev/null
+ BG_PID=""
  # Let the kernel release the USB interface before the replacement process
  # tries to claim it. Immediate re-open is what produced intermittent
  # "did not claim interface" failures on the Pi during the observed run.
  sleep 1
+}
+
+cleanup() {
+ log "cleanup: tearing down spotread"
+ companion_show_alignment
+ stop_spotread_child
+ exec 4>&- 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 
@@ -834,35 +856,7 @@ respawn_spotread () {
  case "$new_mode" in a|aa|aaa|x|x_a|x_aa|x_aaa|off) ;; *) new_mode="off" ;; esac
  local respawn_reason="${2:-low-light mode change}"
  log "respawn: restarting spotread for $respawn_reason with low_light mode=$new_mode (was $CURRENT_LOW_LIGHT_MODE)"
- # Close the current spotread cleanly. SIGKILLing it mid-read wedges the
- # Pi's dwc2 USB controller, so ask politely first and escalate only if
- # it ignores the quit.
- printf "Q" >&3 2>/dev/null
- exec 3>&- 2>/dev/null
- local _w=0
- while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
-  sleep 0.1
-  _w=$(( _w + 1 ))
- done
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  kill "$BG_PID" 2>/dev/null
-  pkill -TERM -x spotread 2>/dev/null
-  pkill -TERM -x spotread_sim 2>/dev/null
-  local _t=0
-  while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
-   sleep 0.1
-   _t=$(( _t + 1 ))
-  done
- fi
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  pkill -9 -P "$BG_PID" 2>/dev/null
-  kill -9 "$BG_PID" 2>/dev/null
- fi
- pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
- pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
- # The old process is gone, but the kernel can still be releasing its USB
- # interface. Give it a short settle before the first replacement claim.
- sleep 1
+ stop_spotread_child
  # The wait-for-ready loop below is run twice (150 iterations x 0.1s =
  # 15s per attempt, 30s total). A one-shot USB init hiccup is recovered by
  # the second attempt.
@@ -914,32 +908,7 @@ respawn_spotread () {
    return 0
   fi
   log "respawn: spotread failed to ready within 15s on attempt $_retry, will retry with clean re-exec"
-  # Clean quit + kill cycle for the retry. Same logic as the initial
-  # shutdown above but applied to the just-failed spotread.
-  printf "Q" >&3 2>/dev/null
-  exec 3>&- 2>/dev/null
-  local _w2=0
-  while (( _w2 < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
-   sleep 0.1
-   _w2=$(( _w2 + 1 ))
-  done
-  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-   kill "$BG_PID" 2>/dev/null
-   pkill -TERM -x spotread 2>/dev/null
-  pkill -TERM -x spotread_sim 2>/dev/null
-   local _t2=0
-   while (( _t2 < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
-    sleep 0.1
-    _t2=$(( _t2 + 1 ))
-   done
-  fi
-  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-   pkill -9 -P "$BG_PID" 2>/dev/null
-   kill -9 "$BG_PID" 2>/dev/null
-  fi
-  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
- pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
-  sleep 1
+  stop_spotread_child
  done
  log "respawn: spotread failed to ready within 15s on both attempts after $respawn_reason, surfacing error"
  write_state '{"status":"error","message":"Meter respawn failed"}'
@@ -1237,21 +1206,28 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
   # read, so this long-lived worker cannot safely infer the current display
   # from its last READ command. This also makes repeated reads of one patch
   # behave the same for the local renderer and Patch Companion.
+  meter_timing_start
+  log "Read $REQUEST_ID | $NAME | Pattern started; settle ${SETTLE_MS} ms"
 	  if ! post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"; then
 	   log "pattern provider failed for $NAME"
 	   continue
 	  fi
 
+  meter_clock_ms; METER_PATTERN_DONE_MS=$METER_CLOCK_MS
   if (( SETTLE_MS > 0 )); then
    SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
    sleep "$SETTLE_SEC"
   fi
 
+  meter_clock_ms; METER_SETTLE_DONE_MS=$METER_CLOCK_MS
+  log "Read $REQUEST_ID | Meter started; pattern $((METER_PATTERN_DONE_MS-METER_READ_STARTED_MS)) ms; settle $((METER_SETTLE_DONE_MS-METER_PATTERN_DONE_MS)) ms"
+
    # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
    # returns no measurable response. Report a valid 0.0 reading immediately.
 	   if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" ]] && ire_le "$IRE" 0; then
     TS=$(date +%s)
-	    write_state "{\"status\":\"complete\",\"request_id\":\"$REQUEST_ID\",\"readings\":[{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"request_id\":\"$REQUEST_ID\",\"sample_count\":0,\"requested_sample_count\":$REQUESTED_SAMPLE_COUNT,\"average_mode\":\"$CMD_LOW_LIGHT_MODE\",\"synthetic_black\":true}],\"count\":1}"
+    meter_timing_finish
+	    write_state "{\"status\":\"complete\",\"request_id\":\"$REQUEST_ID\",\"readings\":[{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"request_id\":\"$REQUEST_ID\",\"sample_count\":0,\"requested_sample_count\":$REQUESTED_SAMPLE_COUNT,\"average_mode\":\"$CMD_LOW_LIGHT_MODE\",\"synthetic_black\":true,\"timing_ms\":$METER_TIMING_JSON}],\"count\":1}"
     continue
    fi
 
@@ -1447,7 +1423,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	     # Wrap as a complete reading record (matches spotread_wrapper.sh shape).
 	     # Pass parsed JSON via environment variables so Python 2 shells on older
 	     # Pi images do not choke on inline quoting.
-	     OUT=$(PARSED_JSON="$PARSED" READ_IRE="$IRE" READ_NAME="$NAME" READ_R="$R" READ_G="$G" READ_B="$B" READ_REQUEST_ID="$REQUEST_ID" READ_NULL_FLAG="$NULL_READ_FLAGGED" READ_NULL_RETRIES="$NULL_READ_DISCARDS" READ_AVERAGE_MODE="$CMD_LOW_LIGHT_MODE" READ_REQUESTED_SAMPLES="$REQUESTED_SAMPLE_COUNT" python -c "
+	     meter_timing_finish
+	     log "Read $REQUEST_ID | Complete | timings_ms=$METER_TIMING_JSON"
+	     OUT=$(READ_TIMING_JSON="$METER_TIMING_JSON" PARSED_JSON="$PARSED" READ_IRE="$IRE" READ_NAME="$NAME" READ_R="$R" READ_G="$G" READ_B="$B" READ_REQUEST_ID="$REQUEST_ID" READ_NULL_FLAG="$NULL_READ_FLAGGED" READ_NULL_RETRIES="$NULL_READ_DISCARDS" READ_AVERAGE_MODE="$CMD_LOW_LIGHT_MODE" READ_REQUESTED_SAMPLES="$REQUESTED_SAMPLE_COUNT" python -c "
 import json, os
 r=json.loads(os.environ.get('PARSED_JSON','{}'))
 try:
@@ -1462,6 +1440,7 @@ r['r_code']=int(os.environ.get('READ_R','0') or 0)
 r['g_code']=int(os.environ.get('READ_G','0') or 0)
 r['b_code']=int(os.environ.get('READ_B','0') or 0)
 r['request_id']=os.environ.get('READ_REQUEST_ID','')
+r['timing_ms']=json.loads(os.environ.get('READ_TIMING_JSON','{}'))
 r['observer']=os.environ.get('OBSERVER','1931_2')
 r['average_mode']=os.environ.get('READ_AVERAGE_MODE','off')
 try:

@@ -1,0 +1,13 @@
+{
+  "source": "PGenerator Automation Log 2026-09-15.docx supplied by user",
+  "model_name": "OLED65C1PUB",
+  "webos_release": "6.5.3",
+  "firmware_version": null,
+  "run_id": "20260915-131204-29f440",
+  "signal_mode": "sdr",
+  "picture_mode": "filmMaker",
+  "reported_working_keys": ["backlight", "brightness", "color", "contrast", "energySaving"],
+  "refused_read_keys": ["blackLevel", "colorGamut", "dynamicColor", "dynamicContrast", "gamma", "mpegNoiseReduction", "noiseReduction", "peakBrightness", "realCinema", "sharpness", "smoothGradation", "superResolution", "tint"],
+  "refusal": "500 Application error: Some keys are not allowed for the request",
+  "note": "Internal W21O is supplied separately by test fixtures, not asserted as captured in this log. Refused reads are not proof of refused writes."
+}

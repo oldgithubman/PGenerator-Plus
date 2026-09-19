@@ -1,0 +1,1383 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/settings/webos-2020-common",
+      "priority": 10,
+      "match": {
+        "year_min": 2020,
+        "year_max": 2026
+      },
+      "data": {
+        "settings": {
+          "logical_controls": {"panel_light": {"preferred_wire_key": "backlight"}},
+          "policy": {
+            "unknown_read": "probe_individually",
+            "unknown_write": "require_preflight_read_and_verified_readback",
+            "inventory_write": "require_verified_readback",
+            "unsupported": "block",
+            "missing_readback": "unverified"
+          },
+          "controls": {
+            "pictureMode": {
+              "wire_key": "pictureMode",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "string",
+                "minimum_length": 1
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "picture_mode_selector",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "picture_mode_semantic"
+              }
+            },
+            "brightness": {
+              "wire_key": "brightness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "contrast": {
+              "wire_key": "contrast",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "blackLevel": {
+              "wire_key": "blackLevel",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum_or_legacy_map",
+                "known_values": [
+                  "auto",
+                  "low",
+                  "high"
+                ],
+                "aliases": {
+                  "limited": "low",
+                  "full": "high"
+                },
+                "map_keys": [
+                  "ntsc",
+                  "ntsc443",
+                  "pal",
+                  "pal60",
+                  "palm",
+                  "paln",
+                  "secam",
+                  "unknown"
+                ]
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true,
+                "preserve_observed_shape": true
+              },
+              "verify": {
+                "comparator": "enum_or_active_legacy_map"
+              }
+            },
+            "blackLevelAdjust": {
+              "wire_key": "blackLevelAdjust",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "backlight": {
+              "wire_key": "backlight",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "aliases": [
+                "oledLight",
+                "oledPixelBrightness"
+              ],
+              "read": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "oledLight": {
+              "wire_key": "oledLight",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "oledPixelBrightness": {
+              "wire_key": "oledPixelBrightness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "scope": "active_picture_slot",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "peakBrightness": {
+              "wire_key": "peakBrightness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "aliases": {
+                  "med": "medium"
+                },
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "color": {
+              "wire_key": "color",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "colorDepth": {
+              "wire_key": "colorDepth",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "tint": {
+              "wire_key": "tint",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": -50,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "sharpness": {
+              "wire_key": "sharpness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "hSharpness": {
+              "wire_key": "hSharpness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "vSharpness": {
+              "wire_key": "vSharpness",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "gamma": {
+              "wire_key": "gamma",
+              "category": "picture",
+              "signals": [
+                "sdr"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "low",
+                  "medium",
+                  "high1",
+                  "high2"
+                ],
+                "aliases": {
+                  "1.9": "low",
+                  "2.2": "medium",
+                  "2.4": "high1",
+                  "bt1886": "high2",
+                  "bt.1886": "high2"
+                }
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "colorTemperature": {
+              "wire_key": "colorTemperature",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer_or_enum",
+                "minimum": -50,
+                "maximum": 50,
+                "known_values": [
+                  "cool",
+                  "medium",
+                  "warm",
+                  "warm1",
+                  "warm2",
+                  "warm3",
+                  "expert1",
+                  "expert2"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "scalar"
+              }
+            },
+            "colorGamut": {
+              "wire_key": "colorGamut",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "auto",
+                  "native",
+                  "extended",
+                  "wide"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "energySaving": {
+              "wire_key": "energySaving",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "min",
+                  "med",
+                  "max",
+                  "auto",
+                  "screenOff"
+                ],
+                "aliases": {
+                  "minimum": "min",
+                  "medium": "med",
+                  "maximum": "max"
+                },
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "dynamicContrast": {
+              "wire_key": "dynamicContrast",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "hdrDynamicToneMapping": {
+              "wire_key": "hdrDynamicToneMapping",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "on",
+                  "HGIG"
+                ],
+                "aliases": {
+                  "hGiG": "HGIG",
+                  "hgig": "HGIG"
+                }
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "access": "individual",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "dynamicColor": {
+              "wire_key": "dynamicColor",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "localDimming": {
+              "wire_key": "localDimming",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "noiseReduction": {
+              "wire_key": "noiseReduction",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high",
+                  "auto"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "mpegNoiseReduction": {
+              "wire_key": "mpegNoiseReduction",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high",
+                  "auto"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "smoothGradation": {
+              "wire_key": "smoothGradation",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "superResolution": {
+              "wire_key": "superResolution",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "realCinema": {
+              "wire_key": "realCinema",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "on"
+                ]
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "eyeComfortMode": {
+              "wire_key": "eyeComfortMode",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "on"
+                ]
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "blackFrameInsertion": {
+              "wire_key": "blackFrameInsertion",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "truMotionMode": {
+              "wire_key": "truMotionMode",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "off",
+                  "cinematicMovement",
+                  "natural",
+                  "smooth",
+                  "user"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "access": "individual",
+                "current_app": true,
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "deJudder": {
+              "wire_key": "deJudder",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "deBlur": {
+              "wire_key": "deBlur",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg",
+                "dv"
+              ],
+              "value_schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "read": {
+                "route": "ssap.settings"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceMethod": {
+              "wire_key": "whiteBalanceMethod",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "2",
+                  "10",
+                  "20",
+                  "22",
+                  "22code"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "whiteBalanceIre": {
+              "wire_key": "whiteBalanceIre",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 109
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceRed": {
+              "wire_key": "whiteBalanceRed",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "integer_or_array",
+                "minimum": -50,
+                "maximum": 50,
+                "minimum_items": 1,
+                "maximum_items": 26
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_or_array",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceGreen": {
+              "wire_key": "whiteBalanceGreen",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "integer_or_array",
+                "minimum": -50,
+                "maximum": 50,
+                "minimum_items": 1,
+                "maximum_items": 26
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_or_array",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceBlue": {
+              "wire_key": "whiteBalanceBlue",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "integer_or_array",
+                "minimum": -50,
+                "maximum": 50,
+                "minimum_items": 1,
+                "maximum_items": 26
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_or_array",
+                "tolerance": 0.1
+              }
+            },
+            "adjustingLuminance": {
+              "wire_key": "adjustingLuminance",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "integer_or_array",
+                "minimum": -50,
+                "maximum": 50,
+                "minimum_items": 1,
+                "maximum_items": 26
+              },
+              "read": {
+                "route": "ssap.settings",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ssap.settings",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_or_array",
+                "tolerance": 0.1
+              }
+            }
+          },
+          "ddc_controls": {
+            "whiteBalanceMethod": {
+              "wire_key": "whiteBalanceMethod",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "2",
+                  "10",
+                  "20",
+                  "22",
+                  "22code"
+                ],
+                "extensible": true
+              },
+              "read": {
+                "route": "ddc_state",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            },
+            "whiteBalanceIre": {
+              "wire_key": "whiteBalanceIre",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 109
+              },
+              "read": {
+                "route": "ddc_state",
+                "access": "individual"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceRed": {
+              "wire_key": "whiteBalanceRed",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "numeric_array",
+                "minimum_items": 20,
+                "maximum_items": 26,
+                "minimum": -50,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ddc_state"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_array",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceGreen": {
+              "wire_key": "whiteBalanceGreen",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "numeric_array",
+                "minimum_items": 20,
+                "maximum_items": 26,
+                "minimum": -50,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ddc_state"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_array",
+                "tolerance": 0.1
+              }
+            },
+            "whiteBalanceBlue": {
+              "wire_key": "whiteBalanceBlue",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "numeric_array",
+                "minimum_items": 20,
+                "maximum_items": 26,
+                "minimum": -50,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ddc_state"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_array",
+                "tolerance": 0.1
+              }
+            },
+            "adjustingLuminance": {
+              "wire_key": "adjustingLuminance",
+              "category": "picture",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "numeric_array",
+                "minimum_items": 20,
+                "maximum_items": 26,
+                "minimum": -50,
+                "maximum": 50
+              },
+              "read": {
+                "route": "ddc_state"
+              },
+              "write": {
+                "route": "ddc_1d",
+                "require_readback": true
+              },
+              "verify": {
+                "comparator": "numeric_array",
+                "tolerance": 0.1
+              }
+            },
+            "ddc_layout": {
+              "wire_key": "ddc_layout",
+              "category": "transport",
+              "signals": [
+                "sdr",
+                "hdr10",
+                "hlg"
+              ],
+              "value_schema": {
+                "type": "enum",
+                "known_values": [
+                  "sdr26",
+                  "hdr20"
+                ]
+              },
+              "read": {
+                "route": "ddc_state"
+              },
+              "write": {
+                "route": "transport_metadata",
+                "require_readback": false
+              },
+              "verify": {
+                "comparator": "enum"
+              }
+            }
+          }
+        }
+      },
+      "evidence": [
+        {
+          "source_id": "lg-settings-service",
+          "strength": "official",
+          "scope": "Public settings request model and category/key/value structure."
+        },
+        {
+          "source_id": "lg-firmware-settings-catalogues",
+          "strength": "library_implementation",
+          "scope": "Observed LG setting key names, values and per-firmware inventories."
+        },
+        {
+          "source_id": "pgenerator-existing-behaviour",
+          "strength": "proposed",
+          "scope": "Existing PGenerator controls and route behavior, now represented as reviewed contracts."
+        }
+      ]
+    }
+  ]
+}

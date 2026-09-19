@@ -1,0 +1,10 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is not installed' if !$node;
+my $output=`"$node" "$Bin/js/automation_no_manual_popups.js" 2>&1`;
+is($?,0,'an automation-owned AutoCal worker raises no manual popups') or diag $output;
+like($output,qr/^PASS automation runs raise no manual AutoCal popups/m,'ownership guard, adoption, spinner and completion prompt covered');
+done_testing();

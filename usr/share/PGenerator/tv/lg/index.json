@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "vendor": "lg",
+  "library_version": "2026.09.18.1",
+  "base": "base/conservative.json",
+  "profile_files": [
+    "picture-modes/catalogue.json",
+    "settings/webos-2020-common.json",
+    "settings/context-operations.json",
+    "settings/legacy-best-available.json",
+    "models/oled-2020-2026.json",
+    "platforms/webos-2020-2026.json",
+    "firmware/known-oled-catalogues.json",
+    "firmware/known-oled-values.json",
+    "series/g3.json"
+  ],
+  "recipe_files": [
+    "recipes/autocal-sdr.json",
+    "recipes/autocal-hdr10.json",
+    "recipes/autocal-dolby-vision.json"
+  ],
+  "resolution_order": ["base", "retail_model", "internal_platform", "exact_firmware", "exact_device_context"],
+  "notes": [
+    "The internal HE_DTV platform token outranks a retail model name.",
+    "Inventory means a source describes the operation; it is not live proof.",
+    "Read, write and verify support are independent claims."
+  ]
+}

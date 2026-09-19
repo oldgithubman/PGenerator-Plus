@@ -1,0 +1,14 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use JSON::PP qw(decode_json);
+use Test::More;
+my $node = `sh -c 'command -v node || command -v nodejs' 2>/dev/null`;
+chomp $node;
+plan skip_all => 'Node is required for the editor snapshot test' if !$node;
+my $json = `"$node" "$Bin/js/automation_snapshot_evidence.js" 2>&1`;
+is($? >> 8, 0, 'editor snapshots strip merged run evidence from copied jobs') or diag($json);
+my $result = eval { decode_json($json) };
+ok(ref($result) eq 'HASH' && $result->{ok}, 'snapshot test reported success');
+cmp_ok($result->{bytes}, '<', 2000, 'a copied job stays recipe-sized');
+done_testing();

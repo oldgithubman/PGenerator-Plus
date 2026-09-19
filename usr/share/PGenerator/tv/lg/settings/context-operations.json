@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/operations/apply-all-2020",
+      "priority": 15,
+      "match": {"year_min": 2020, "year_max": 2020},
+      "data": {"operations": {"apply_all_inputs": {"support_state": "unsupported"}}},
+      "evidence": [{"source_id": "pgenerator-existing-behaviour", "strength": "library_implementation", "scope": "Retains the existing 2020 apply-to-all exclusion; not a claim that all settings are unavailable."}]
+    },
+    {
+      "profile_id": "lg/operations/apply-all-2021-2026",
+      "priority": 15,
+      "match": {"year_min": 2021, "year_max": 2026},
+      "data": {"operations": {"apply_all_inputs": {
+        "support_state": "inventory",
+        "scope": "active_picture_mode_all_inputs",
+        "wire_key": "applyToAllInput",
+        "value": "picture",
+        "routes": ["ssap.settings", "luna.settings"],
+        "verification": "fresh_picture_to_done_transition",
+        "per_setting_verification": false,
+        "evidence_limit": "C1/C2/G3/G4/G5 catalogues list this action. Other 2021-2026 models retain the existing platform-family inference; acknowledgement never proves that individual destination settings match."
+      }}},
+      "evidence": [
+        {"source_id": "lg-firmware-settings-catalogues", "strength": "firmware_inventory", "scope": "applyToAllInput picture/done values in C1, C2, G3, G4 and G5 catalogues."},
+        {"source_id": "pgenerator-existing-behaviour", "strength": "library_implementation", "scope": "Existing 2021+ operation support, now explicit and bounded to reviewed years."}
+      ]
+    },
+    {
+      "profile_id": "lg/operations/panel-protection-2020-2026",
+      "priority": 15,
+      "match": {"year_min": 2020, "year_max": 2026},
+      "data": {"operations": {"panel_protection": {
+        "support_state": "inventory",
+        "scope": "global_panel_protection",
+        "controls": {
+          "tpc": {"label": "Temporal Peak Luminance Control (TPC)", "route": "luna.oledepl", "luna_uri": "com.webos.service.oledepl/setTemporalPeakControl", "payload_key": "enable"},
+          "gsr": {"label": "Global Stress Reduction (GSR)", "route": "luna.oledepl", "luna_uri": "com.webos.service.oledepl/setGlobalStressReduction", "payload_key": "enable"}
+        },
+        "readback": "unavailable",
+        "verification": "acknowledged_unverified",
+        "restore_value": true,
+        "evidence_limit": "Write-only Luna methods on 2020 and newer OLEDs, reached through the alert bridge. Neither the settings service nor the calibration API reads the state back, so a dispatched request is never verified and a run must re-enable both controls itself. A reviewed internal platform is still required before anything is sent."
+      }}},
+      "evidence": [
+        {"source_id": "lg-control-clients-panel-protection", "strength": "library_implementation", "scope": "setTemporalPeakControl and setGlobalStressReduction {enable} on 2020+ OLEDs; three independent open-source LG control tools expose the same pair."},
+        {"source_id": "calibrator-forum-asbl-practice", "strength": "user_report", "scope": "Calibrators disable TPC/GSR (ASBL) for the duration of a session because static patterns are dimmed after roughly a minute; not a claim about any individual set."}
+      ]
+    }
+  ]
+}

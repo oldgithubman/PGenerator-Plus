@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "cases": [
+    { "platform": "W20H", "year": 2020, "grid": 17 },
+    { "platform": "W20O", "year": 2020, "grid": 33 },
+    { "platform": "W21H", "year": 2021, "grid": 17 },
+    { "platform": "W21O", "year": 2021, "grid": 33 },
+    { "platform": "W22H", "year": 2022, "grid": 17 },
+    { "platform": "W22O", "year": 2022, "grid": 33 },
+    { "platform": "W23H", "year": 2023, "grid": 17 },
+    { "platform": "W23O", "year": 2023, "grid": 33 },
+    { "platform": "W24H", "year": 2024, "grid": 17 },
+    { "platform": "W24G", "year": 2024, "grid": 33 },
+    { "platform": "W24O", "year": 2024, "grid": 33 },
+    { "platform": "W25H", "year": 2025, "grid": 17 },
+    { "platform": "W25G", "year": 2025, "grid": 33 },
+    { "platform": "W25O", "year": 2025, "grid": 33 },
+    { "platform": "W26H", "year": 2026, "grid": 17 },
+    { "platform": "W26G", "year": 2026, "grid": 33 },
+    { "platform": "W26O", "year": 2026, "grid": 33 }
+  ]
+}

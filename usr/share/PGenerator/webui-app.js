@@ -510,6 +510,42 @@ function normalizeColorimetryValue(value,signalMode){
 // persisted colorimetry, so any manual edit survives one poll
 // cycle and the server remains the source of truth).
 //
+// The operator's transport choices per signal family (P34). Switching Signal
+// Mode used to land on fixed defaults (SDR: 8-bit) and left HDR's P3
+// primaries showing; the last profile actually used for that signal is a
+// better baseline. Only transport fields are remembered; Dolby Vision keeps
+// its own transport defaults.
+function webuiOutputProfileKey(signalMode){return 'pgen.output.lastProfile.'+String(signalMode||'').toLowerCase();}
+function webuiRememberOutputProfile(signalMode,values){
+ const sm=String(signalMode||'').toLowerCase();
+ if(!/^(?:sdr|hdr10|hlg)$/.test(sm)||!values) return;
+ const profile={};
+ ['max_bpc','color_format','rgb_quant_range','colorimetry'].forEach(key=>{if(values[key]!=null&&String(values[key])!=='')profile[key]=String(values[key]);});
+ const body=JSON.stringify(profile);
+ try{ localStorage.setItem(webuiOutputProfileKey(sm),body); return; }
+ catch(e){
+  // A full quota (disposable series data, usually) must not silently lose the
+  // operator's transport profile: reclaim once and retry, as draft saving does.
+  if(typeof meterStorageQuotaError!=='function'||!meterStorageQuotaError(e)) return;
+  if(typeof meterSeriesCacheReclaimSpace!=='function'||!meterSeriesCacheReclaimSpace([])) return;
+  try{ localStorage.setItem(webuiOutputProfileKey(sm),body); }catch(err){}
+ }
+}
+function webuiRememberedOutputProfile(signalMode){
+ try{
+  const value=JSON.parse(localStorage.getItem(webuiOutputProfileKey(signalMode))||'null');
+  return value&&typeof value==='object'&&!Array.isArray(value)?value:null;
+ }catch(e){ return null; }
+}
+function webuiApplyRememberedOutputProfile(signalMode){
+ const remembered=webuiRememberedOutputProfile(signalMode);
+ if(!remembered) return false;
+ const allowed=(id,value)=>{const el=document.getElementById(id);return !!el&&Array.from(el.options||[]).some(o=>o.value===String(value));};
+ // Colour format before bit depth: 4:2:2 only allows 10-bit.
+ ['color_format','max_bpc','rgb_quant_range','colorimetry'].forEach(key=>{if(remembered[key]!=null&&allowed(key,remembered[key]))setVal(key,remembered[key]);});
+ return true;
+}
+
 function webuiAutoColorimetryForSignalMode(signalMode){
  const sm=String(signalMode||'').toLowerCase();
  if(sm==='hdr10'||sm==='hlg'||sm==='dv') return '9';
@@ -538,6 +574,8 @@ function applyConfigState(nextConfig){
  try{ uiEnforceQuantRangeForColorFormat(); }catch(e){}
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
+ // The server's active output is the latest profile used for this signal.
+ webuiRememberOutputProfile(sm,{max_bpc:config.max_bpc,color_format:config.color_format,rgb_quant_range:config.rgb_quant_range,colorimetry:config.colorimetry});
  // The static HTML defaults are SDR values. Before durable meter settings
  // arrive, seed the calibration targets from the restored output mode so a
  // cold HDR start cannot get stuck on BT.709 and BT.1886.
@@ -956,6 +994,8 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   // sufficient and the 4:2:2 bit-perfect rule remains intact.
   setVal('color_format','0');
   setVal('max_bpc','8');
+  // Apply & Restart always sends BT.709 primaries for SDR; show that.
+  setVal('primaries','0');
  }else if(sm==='hdr10'){
   setVal('eotf','2');
   setVal('colorimetry',autoColorimetry);
@@ -981,6 +1021,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('max_bpc',dvTransport.max_bpc);
   setVal('rgb_quant_range','2');
 	 }
+	 if(sm!=='dv') webuiApplyRememberedOutputProfile(sm);
 	 applyMeterTargetGamutDefault(true);
 	 applyMeterTargetGammaDefault(true);
 	 // Output-mode changes establish a new conditioning profile. Force the
@@ -1004,14 +1045,36 @@ document.getElementById('dv_map_mode').addEventListener('change',function(){
  meterQueueOutputSettingsRefresh(true);
 });
 
+// The first load can race the renderer's mode enumeration after a restart,
+// which left the Resolution list empty until the next Apply (P5). Retry
+// quietly a few times; any successful load cancels the retries.
+const loadModesRetry={timer:null,attempts:0,limit:6,delayMs:2000,generation:0};
 async function loadModes(quiet){
+ // Only the newest request may rebuild the list: a slow retry that lands after
+ // Apply's own reload would otherwise reset a Resolution picked in between.
+ const generation=++loadModesRetry.generation;
  const fetched=await fetchJSON('/api/modes',{_quiet:!!quiet,_timeoutMs:10000});
+ if(generation!==loadModesRetry.generation) return;
  if(!Array.isArray(fetched)||!fetched.length){
   if(!quiet) toast('No display modes reported yet',true);
+  if(!loadModesRetry.timer&&loadModesRetry.attempts<loadModesRetry.limit){
+   loadModesRetry.attempts++;
+   loadModesRetry.timer=setTimeout(()=>{loadModesRetry.timer=null;loadModes(true);},loadModesRetry.delayMs);
+  }
   return;
  }
+ if(loadModesRetry.timer){clearTimeout(loadModesRetry.timer);loadModesRetry.timer=null;}
+ loadModesRetry.attempts=0;
  modes=fetched;
  const sel=document.getElementById('mode_idx');
+ // A retry filling a list the page had to show empty (P5): the list itself is
+ // the only change, so the dependent dropdowns are filtered again and, when
+ // the operator had not edited anything, the filled form becomes the applied
+ // state. Otherwise the page would flag unapplied settings, pause config
+ // polling and block measuring until Apply or a reload.
+ const savedBaseline=typeof window!=='undefined'&&window._savedConfig;
+ const filledEmptyList=!!(sel&&!sel.options.length&&savedBaseline);
+ const operatorClean=filledEmptyList&&!(typeof hasUnsavedSettings==='function'&&hasUnsavedSettings());
  sel.innerHTML='';
  modes.forEach(m=>{
   const o=document.createElement('option');
@@ -1021,6 +1084,11 @@ async function loadModes(quiet){
   sel.appendChild(o);
  });
  syncModeSelectValue();
+ if(filledEmptyList){
+  if(typeof updateDropdowns==='function') updateDropdowns();
+  if(operatorClean&&typeof refreshSavedSettingsSnapshot==='function') refreshSavedSettingsSnapshot();
+  else if(typeof checkSettingsChanged==='function') checkSettingsChanged();
+ }
 }
 
 function formatModeLabel(m){
@@ -1283,6 +1351,19 @@ function updateDropdowns(){
  checkSettingsChanged();
 }
 
+// The generator reports a digest of its interface files. The first value a
+// page sees is the interface it is running; a later, different value means
+// the files were redeployed and the daemon restarted, and this page is now
+// running stale JavaScript against a newer server. Offer a reload; never
+// force one, the operator may be mid-edit.
+let _uiBuildSeen=null;
+function noteUiBuild(build){
+ if(typeof build!=='string'||!build) return;
+ if(_uiBuildSeen===null){_uiBuildSeen=build;return;}
+ if(build===_uiBuildSeen) return;
+ const notice=document.getElementById('uiUpdateNotice');
+ if(notice&&notice.hidden) notice.hidden=false;
+}
 async function checkPing(){
 	 if(isCalibrationWorkflowActive()){
 	  setConnectionBusyStatus(lgIsCommandBusy()?'LG TV':'Busy');
@@ -1293,7 +1374,7 @@ async function checkPing(){
  try{
   const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(8000)});
   if(!r.ok) throw new Error(r.status);
-  await r.json();
+  noteUiBuild((await r.json()).ui_build);
   const wasOffline=_pingFailCount>=3||_uiOffline;
   _pingFailCount=0;
   setUiOffline(false);
@@ -2756,7 +2837,7 @@ const PG_METER_CONFIG_COLLAPSE_KEY='pgen.ui.meterConfigCollapsed';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','icc-profile':'Display Profiler','meter-profile':'Meter Profiler',
- 'display-control':'LG Display',connectivity:'Connectivity',session:'Session','ui-settings':'UI Settings',system:'System'
+ 'display-control':'LG Display',automation:'Automation',connectivity:'Connectivity',session:'Session','ui-settings':'UI Settings',system:'System'
 };
 let pgThemeMode='dark';
 let pgLayoutPreference='tablet';
@@ -3109,6 +3190,7 @@ function pgSelectDesktopWorkspace(workspace,options){
  // LG calibration history: only when entering LG Display, not on loadInfo poll.
  try{ if(typeof lgMaybeRefreshCalHistoryForDesktopWorkspace==='function') lgMaybeRefreshCalHistoryForDesktopWorkspace(workspace,workspaceChanged); }catch(e){}
  pgRefreshVisibleWorkspace();
+ if(workspace==='calibration'&&typeof pgAutomationSyncCalibrationView==='function')pgAutomationSyncCalibrationView(pgAutomation.current?.run);
  if(options&&options.focus&&title){
   try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
  }
@@ -4047,6 +4129,67 @@ const METER_SERIES_CACHE_SCHEMA=2;
 const METER_SERIES_CACHE_CHECKPOINT_MS=5000;
 const METER_SERIES_CACHE_READING_CHECKPOINT=25;
 let meterSeriesCacheDirtyKeys=new Set();
+// Report renders borrow the series workspace to draw saved runs; while they
+// do, nothing may be written to browser storage under the operator's keys.
+let meterSeriesCachePersistSuspended=0;
+
+// Browser storage is small (about 5 MB). When a write does not fit, free the
+// least valuable series data first: caches left by earlier appliance boots,
+// then the oldest half of this boot's entries. The active series and any
+// entry about to be written are never evicted. Returns how many were removed.
+// Version 1 kept every series for a boot in one blob. Those blobs are merged
+// into the v2 store on the first boot-id read and are dead weight afterwards,
+// but they are megabytes each, so on an older browser they can hold the whole
+// quota and make every later write fail (P6).
+function meterLegacySeriesCacheKeys(){
+ const keys=[];
+ try{
+  for(let i=localStorage.length-1;i>=0;i--){
+   const key=localStorage.key(i);
+   if(!key||key.indexOf('pgen.meter.')!==0||key.indexOf('.v2.')>=0) continue;
+   if(key==='pgen.meter.seriesCache'||/\.seriesCache$/.test(key)) keys.push(key);
+  }
+ }catch(e){}
+ return keys;
+}
+function meterDropLegacySeriesCaches(){
+ let removed=0;
+ meterLegacySeriesCacheKeys().forEach(key=>{try{localStorage.removeItem(key);removed++;}catch(e){}});
+ return removed;
+}
+function meterSeriesCacheReclaimSpace(keep){
+ let removed=0;
+ try{
+  // Superseded v1 blobs go first: they are never read again once migration has
+  // run, and they are the largest thing in storage on an older browser.
+  removed+=meterDropLegacySeriesCaches();
+  if(removed) return removed;
+  const protectedKeys=new Set([...(keep||[]),meterActiveSeriesKey].filter(Boolean));
+  const current=meterSeriesCacheKey('');
+  // Until the appliance boot is known every stored scope might be this boot's,
+  // so nothing outside the current scope counts as disposable yet.
+  const bootKnown=!!(meterSeriesCacheBootId&&String(meterSeriesCacheBootId).trim());
+  for(let i=bootKnown?localStorage.length-1:-1;i>=0;i--){
+   const key=localStorage.key(i);
+   if(!key||!key.startsWith('pgen.meter.')||key.indexOf('.seriesCache.v2.')<0||key.startsWith(current)) continue;
+   localStorage.removeItem(key);removed++;
+  }
+  if(removed) return removed;
+  const indexKey=meterSeriesCacheKey('seriesCache.v2.index');
+  const index=JSON.parse(localStorage.getItem(indexKey)||'null');
+  if(!index||!index.entries) return 0;
+  const candidates=Object.entries(index.entries).filter(([key])=>!protectedKeys.has(key)).sort((a,b)=>Number(a[1]||0)-Number(b[1]||0));
+  candidates.slice(0,Math.ceil(candidates.length/2)).forEach(([key])=>{
+   localStorage.removeItem(meterSeriesCacheEntryStorageKey(meterSeriesCacheBootId,key));
+   delete index.entries[key];removed++;
+  });
+  if(removed) localStorage.setItem(indexKey,JSON.stringify(index));
+ }catch(e){}
+ return removed;
+}
+function meterStorageQuotaError(e){
+ return !!e&&(e.name==='QuotaExceededError'||e.name==='NS_ERROR_DOM_QUOTA_REACHED'||e.code===22||e.code===1014);
+}
 
 function meterSeriesCacheScopeKey(scope,name){
  return 'pgen.meter.'+(scope||'global')+'.'+name;
@@ -4209,7 +4352,8 @@ function meterSetSeriesCacheBootId(bootId){
   mergeCache(readCache('pgen.meter.seriesCache'));
   mergeCache(memoryCache);
   localStorage.setItem(markerKey,bootId);
-  if(Object.keys(meterSeriesCache).length>0){
+  const migrated=Object.keys(meterSeriesCache).length>0;
+  if(migrated){
    Object.keys(meterSeriesCache).forEach(key=>meterSeriesCacheDirtyKeys.add(key));
    meterPersistSeriesCache();
    const lastCandidates=[
@@ -4228,11 +4372,16 @@ function meterSetSeriesCacheBootId(bootId){
    if(keepKey) localStorage.setItem(meterSeriesCacheKey('lastSeriesKey'),keepKey);
    else localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
   }
+  // The v1 blobs have now been read into the live cache (or held nothing worth
+  // keeping). Drop them unless a write is still pending, so megabytes of dead
+  // storage stop starving queue drafts and output profiles (P6).
+  if(meterSeriesCacheDirtyKeys.size===0) meterDropLegacySeriesCaches();
  }catch(e){}
 }
 
-function meterPersistSeriesCache(){
+function meterPersistSeriesCache(reclaimed){
  if(!meterSeriesCacheBootId) return;
+ if(meterSeriesCachePersistSuspended>0) return;
  const dirty=Array.from(meterSeriesCacheDirtyKeys);
  try{
   const index={schema:METER_SERIES_CACHE_SCHEMA,entries:{}};
@@ -4261,6 +4410,7 @@ function meterPersistSeriesCache(){
   }
   dirty.forEach(key=>meterSeriesCacheDirtyKeys.delete(key));
  }catch(e){
+  if(!reclaimed&&meterStorageQuotaError(e)&&meterSeriesCacheReclaimSpace(dirty)) return meterPersistSeriesCache(true);
   // Keys stay dirty and retry on the next flush; warn so a persistently
   // failing persist (e.g. quota exceeded) is diagnosable.
   console.warn('series cache: persist failed, will retry',e);
@@ -4796,7 +4946,18 @@ function meterReadingsWouldRecoverAsBlackOnly(readings,type,steps){
 // real data was thrown away. A code disagreement now KEEPS the reading, tags
 // it, and is reported.
 let _meterCodeMismatchNotified='';
+let meterActiveSeriesAutomationOwned=false; // series state stamped by the automation runner
 function meterNoteCodeMismatch(mismatched,type){
+ // Historical reports temporarily use the chart workspace. Its current
+ // transport controls are not evidence about the saved run's drive codes.
+ // Keep the measured codes, but do not emit a live-calibration error toast.
+ if(document.body.classList.contains('pg-automation-report-render'))return;
+ // The warning is about a run this browser is driving right now. Restored,
+ // cached or reselected series and automation-driven series use transport
+ // settings the browser controls do not describe, so they never warn. The
+ // ownership flag is recomputed from the live status on every poll.
+ if(typeof meterSeriesRunning==='undefined'||!meterSeriesRunning)return;
+ if(meterActiveSeriesAutomationOwned||document.body.classList.contains('pg-automation-calibration-observer'))return;
  if(!mismatched.length) return;
  const key=String(type||'')+'|'+(typeof meterActiveSeriesKey!=='undefined'?meterActiveSeriesKey:'')+'|'+mismatched.length;
  if(_meterCodeMismatchNotified===key) return;
@@ -5517,6 +5678,8 @@ function meterActiveGamut(){
 }
 
 function meterDvMapModeValue(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.dv_map_mode!=null) return String(report.dv_map_mode);
  const active=(typeof meterActiveSeriesDvMapMode!=='undefined')?String(meterActiveSeriesDvMapMode||''):'';
  if(active) return active;
  const el=document.getElementById('dv_map_mode');
@@ -5566,7 +5729,15 @@ function linRgbToXyz(R,G,B,matrix){
  };
 }
 
+function meterSnapshotReportContext(){
+ return typeof window!=='undefined'&&window._meterSnapshotReportContext||null;
+}
+
 function meterIsLimitedRange(){
+ const report=meterSnapshotReportContext();
+ const saved=report&&(report.transport_signal_range??report.signal_range);
+ if(saved==='1'||saved===1) return true;
+ if(saved==='2'||saved===2) return false;
  const rangeEl=document.getElementById('rgb_quant_range');
  const v=String((rangeEl&&rangeEl.value)||'0');
  if(v==='1') return true;
@@ -5603,6 +5774,8 @@ function uiEnforceQuantRangeForColorFormat(){
 }
 
 function meterOutputFormatValue(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.color_format!=null) return String(report.color_format);
  const fmtEl=document.getElementById('color_format');
  return String((fmtEl&&fmtEl.value) || (config&&config.color_format) || '0');
 }
@@ -5652,6 +5825,10 @@ function meterGreyscaleUsesFullSourceRange(){
 
 function meterPatchUsesVideoRange(){
  if(typeof meterChartIsDv==='function'&&meterChartIsDv()) return true;
+ const report=meterSnapshotReportContext();
+ const saved=report&&(report.pattern_signal_range??report.signal_range);
+ if(saved==='1'||saved===1) return true;
+ if(saved==='2'||saved===2) return false;
  return meterIsLimitedRange();
 }
 
@@ -5704,6 +5881,9 @@ function meterDvRelativeSt2084UsesLegalRange(){
 }
 
 function meterGreyTargetGammaSelection(){
+ // Snapshot rendering spans animation frames. Startup/manual UI restoration
+ // can update selectors in between; the report still owns its saved target.
+ if(typeof window!=='undefined'&&window._meterSnapshotReportTargetGamma)return window._meterSnapshotReportTargetGamma;
  // Active-series snapshot wins during an LG HDR autocal (the solver pins a
  // 2.2 power target and the chart has to grade against the same curve).
  // Outside autocal, the operator's TARGET GAMMA dropdown is the source of
@@ -5738,6 +5918,8 @@ function meterDvRelativeUsesGammaChartMath(){
 }
 
 function meterHdrAutoCalUsesPowerGammaChartMath(){
+ const report=meterSnapshotReportContext();
+ if(report) return report.type==='greyscale'&&(report.signal_mode==='hdr10'||report.signal_mode==='dv')&&report.target_gamma==='2.2';
  const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
  const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
@@ -5787,11 +5969,15 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
 }
 
 function meterGreyChartTargetGammaSelection(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.target_gamma) return report.target_gamma;
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return '2.2';
  return meterGreyTargetGammaSelection();
 }
 
 function meterGreyChartUsesPqTarget(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.target_gamma) return report.target_gamma==='st2084';
  const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
  if(context&&context.caller_policy==='browser_chart') return context.transfer_policy==='pq_absolute';
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
@@ -5866,7 +6052,8 @@ function meterGreyCodeRange(){
 
 function meterPatchBitDepth(){
  if(typeof meterChartIsDv==='function'&&meterChartIsDv()) return 12;
- const bpc=parseInt(getVal('max_bpc')||'8',10);
+ const report=meterSnapshotReportContext();
+ const bpc=parseInt((report&&report.max_bpc)||getVal('max_bpc')||'8',10);
  return bpc===12?10:bpc;
 }
 
@@ -8850,7 +9037,7 @@ function meterLgAutoCalChartReferenceWhite(item){
 	 if(!item||meterActiveSeriesType!=='greyscale') return false;
 	 if(meterReadingDisablesAutoCalTargetReference(item)) return false;
 	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
-	 if(mode==='hdr10') return false;
+	 if(mode==='hdr10'||mode==='dv') return false;
 	 // RGB-Limited AND Full SDR: 100% is the true peak. It must stay on
 	 // thumbs and plot lines. YCbCr-Limited alone treats 100% as a
 	 // legal-white reference step (ddc 99) that is hidden from the body
@@ -10897,7 +11084,10 @@ function meterGreyInverseEotfSignalFromLuminance(luminance,refWhite,blackLevel){
   if(denom>0){
    const a=Math.pow(denom,g);
    const b=lbRoot/denom;
-   return Math.max(0,Math.min(1.1,Math.pow(y/Math.max(a,1e-12),1/g)-b));
+   // This is a chart transform, not a legal signal-code limit. SDR EOTF
+   // charts use a fixed 200-nit reference, so brighter measured whites
+   // legitimately exceed 1.1. Clipping here invented a flat highlight tail.
+   return Math.max(0,Math.pow(y/Math.max(a,1e-12),1/g)-b);
   }
   return Math.pow(ratio,1/g);
  }
@@ -10985,7 +11175,19 @@ function meterUpdateEotfChartLabel(){
  if(!lbl) return;
  const scaled=(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq());
  if(meterEotfNormalizedEnabled()) lbl.textContent=scaled?'EOTF (diffuse)':'EOTF';
- else lbl.textContent=scaled?'EOTF Absolute Error (diffuse)':'EOTF Absolute Error';
+ // The absolute view plots the target EOTF's inverse of each measured
+ // luminance (for PQ, the PQ code of the reading) against the stimulus, so
+ // perfect tracking follows the dashed target line and a panel clip is the
+ // flat top. It is tracking, not an error value (P27).
+ else lbl.textContent=scaled?'EOTF Tracking, absolute (diffuse)':'EOTF Tracking, absolute';
+ // A flat top below 100% is a panel clip only where the target runs past what
+ // the panel can show (HDR10, DV, HLG). SDR targets end at the measured white.
+ const hdrView=(typeof meterChartIsHdr==='function')&&meterChartIsHdr();
+ // Readings are compared with the dashed target line, not the chart diagonal:
+ // the axis is scaled to a fixed reference, so the target only runs along the
+ // diagonal when the measured white happens to match that reference.
+ lbl.title=meterEotfNormalizedEnabled()?'':'Each point is the signal level the target EOTF needs to produce the measured luminance. On-target readings lie on the dashed target line; points above it are brighter than the target and points below are darker.'
+  +(hdrView?' A flat top before 100% is the panel clipping at its peak.':'');
 }
 
 function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
@@ -11101,13 +11303,13 @@ function meterTargetGammaLabel(){
 	 const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
 	 if(autoPower) return 'Gamma 2.2';
 	 if(meterChartIsHlg()) return 'HLG';
-	 if(meterChartIsDv()){
+	 if(meterChartIsDv()||!usesPqTarget){
 	  const tgt=((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'';
 	  if(tgt==='2.2') return 'Gamma 2.2';
 	  if(tgt==='2.4') return 'Gamma 2.4';
 	  if(tgt==='bt1886') return 'BT.1886';
 	  if(tgt==='srgb') return 'sRGB';
-	  return 'ST 2084';
+	  if(meterChartIsDv()) return 'ST 2084';
 	 }
 	 if(!sel) return usesPqTarget ? (meterChartBt2390Enabled()?'PQ + BT.2390':'PQ') : 'Gamma';
  const opt=sel.options[sel.selectedIndex];
@@ -11283,6 +11485,8 @@ function targetGammaValue(){
 }
 
 function meterChartSignalMode(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.signal_mode) return report.signal_mode;
  const liveSel=(document.getElementById('signal_mode')||{}).value;
  if(liveSel) return liveSel;
  if(config&&config.dv_status==='1') return 'dv';
@@ -11291,6 +11495,8 @@ function meterChartSignalMode(){
 }
 
 function meterActiveChartSignalMode(){
+ const report=meterSnapshotReportContext();
+ if(report&&report.signal_mode) return report.signal_mode;
  const active=(typeof meterActiveSeriesSignalMode!=='undefined')?String(meterActiveSeriesSignalMode||'').toLowerCase():'';
  return active||meterChartSignalMode();
 }
@@ -11331,10 +11537,13 @@ function meterCalibrationTargetContextFromSource(source,metaStep,metaReading){
  const explicitTarget=Object.prototype.hasOwnProperty.call(src,'target_gamma')?String(src.target_gamma||'').toLowerCase():'';
  if(stamped&&typeof stamped==='object'&&(!explicitTarget||explicitTarget===String(stamped.target_gamma||'').toLowerCase())){
   const validated=calibrationTargetContext(stamped);
-  if(validated) return validated;
+  // Worker contexts own solver maths, not browser code decoding. In
+  // particular autocal_1d lacks the browser's headroom/range policy; treating
+  // it as browser context clamps distinct 100/105/109 SDR codes to white.
+  if(validated&&validated.caller_policy==='browser_chart') return validated;
  }
- // One-release legacy adapter for snapshots made before context v1. Mutable
- // controls are read only here, while constructing the replacement record.
+ // Adapt worker/legacy records to the browser policy. Saved report transport
+ // helpers are scoped below; manual charts use their current controls.
  const signal=String(src.signal_mode||src.requested_signal_mode||step.signal_mode||reading.signal_mode||meterChartSignalMode()||'sdr').toLowerCase();
  let target=String(src.target_gamma||step.target_gamma||reading.target_gamma||'').toLowerCase();
  if(!target&&signal==='dv'&&typeof meterDvAutoTargetGamma==='function') target=String(meterDvAutoTargetGamma()||'').toLowerCase();
@@ -11350,10 +11559,11 @@ function meterCalibrationTargetContextFromSource(source,metaStep,metaReading){
  const dvInterfaceEl=document.getElementById('dv_interface');
  const dvInterface=src.dv_interface!=null?src.dv_interface:(step.dv_interface!=null?step.dv_interface:(reading.dv_interface!=null?reading.dv_interface:((dvInterfaceEl&&dvInterfaceEl.value)||'')));
  const rangeEl=document.getElementById('rgb_quant_range');
- const transportLimited=String((rangeEl&&rangeEl.value)||'2')==='1';
+ const report=meterSnapshotReportContext();
+ const transportLimited=report?meterIsLimitedRange():String((rangeEl&&rangeEl.value)||'2')==='1';
  const patternLimited=(typeof meterPatchUsesVideoRange==='function')?meterPatchUsesVideoRange():transportLimited;
  const patternBits=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():(signal==='dv'?12:8);
- const transportBits=(()=>{const n=Number((document.getElementById('max_bpc')||{}).value);return [8,10,12].includes(n)?n:patternBits;})();
+ const transportBits=(()=>{const n=Number((report&&report.max_bpc)??(document.getElementById('max_bpc')||{}).value);return [8,10,12].includes(n)?n:patternBits;})();
  let headroom='none',headroomMax=100;
  if(signal==='sdr'&&typeof meterGreyAllowsHeadroomTargets==='function'&&meterGreyAllowsHeadroomTargets()){
   headroom='lg_sdr26_ladder'; headroomMax=109;
@@ -13494,7 +13704,7 @@ function meterRecoverSeries(s){
 	  ?meterInstallServerSeriesSteps(s,type,points,recoveredSelection):null;
 	 if(installedRunSteps&&!recoveredSelection){
 	  steps=installedRunSteps;
-	 }else{
+	 }else if(!s.snapshot_report){
 	  steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
 	  steps=meterRecoveryDisplaySteps(type,points,steps);
 	  steps=meterApplyColorSeriesTargetWhiteReference(steps,type,points);
@@ -13508,6 +13718,7 @@ function meterRecoverSeries(s){
  meterActiveSeriesPoints=points;
  meterSetActiveSeriesChartContext({...s,steps:steps});
  meterActiveSeriesKey=(s&&s.cache_key)?String(s.cache_key):(type+'-'+points);
+ meterActiveSeriesAutomationOwned=!!(s&&s.automation_worker_id);
  meterSharedSeriesId=s.series_id||null;
  if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
    const recoveredSelectedStep=preserveSelection&&Array.isArray(steps)
@@ -13631,7 +13842,7 @@ function meterRecoverSeries(s){
   window.requestAnimationFrame(()=>setTimeout(drawRecoveredCharts,0));
  } else drawRecoveredCharts();
   meterCacheSeriesState(s.status||'complete',s&&s._defer_cache_persist?{deferPersist:true}:null);
-  if(s.status==='running'||s.status==='setup'||s.status==='started'){
+  if(s.series_id&&(s.status==='running'||s.status==='setup'||s.status==='started')){
   // Series is still running — start polling and show stop button
   meterSeriesRunning=true;
   meterSeriesAwaitingReady=!!s.awaiting_ready;
@@ -13645,7 +13856,10 @@ function meterRecoverSeries(s){
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
  } else {
-  // Complete/cancelled/error — just show results, no polling
+  // Cached/report snapshots have no live series identity. Their saved
+  // "running" status is evidence, not permission to poll a different run.
+  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
+  // Complete/cancelled/error or cached results — display only, no polling.
   meterSeriesRunning=false;
   document.getElementById('meterStopBtn').style.display='none';
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -16502,8 +16716,8 @@ async function meterStop(){
  if(meterAutoCalRunning){
   return meterStopAutoCal();
  }
- if(meterFullAutoCalRunning&&!fullReportSeriesActive){
-  return meterFullAutoCalAbort('Full Auto Cal stopped',false);
+ if(meterFullAutoCalRunning){
+  return meterStopAutoCal();
  }
  const hadContinuousStop=meterContinuousActive||meterContinuousSuspendedForLgWrite;
  const hadManualStop=meterManualPromptAwaiting;
@@ -16516,22 +16730,17 @@ async function meterStop(){
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
- const continuousOnlyStop=hadContinuousStop&&!hadSeriesStop&&!hadManualStop;
- // Continuous mode uses the reusable meter_session. Stopping its browser loop
- // must not tear down spotread: let any in-flight read finish, then leave the
- // session idle for the next Read Once/Continuous request. Series and explicit
- // manual/setup stops still call the backend because they own work that must
- // be cooperatively cancelled.
- const needsBackendStop=!continuousOnlyStop;
+ // Explicit Stop tears down the reusable session as well as its browser loop.
+ const needsBackendStop=true; // Explicit Stop releases the meter and TV too.
  if(hadSeriesStop&&meterBuild3dLutPending) meterBuild3dLutMeasureHide();
  if(hadSeriesStop) meterBuild3dLutPending=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
- meterActionPending=hadSeriesStop||hadContinuousStop||hadManualStop;
+ meterActionPending=true;
  // Blocking modal while the stop RTT runs. Without it the series buttons
  // look idle but meterActionPending freezes every click until the helper
  // is actually dead (often several seconds on a mid-read series).
- if(hadSeriesStop||hadContinuousStop||hadManualStop){
+ if(needsBackendStop){
   meterStopModalShow(hadSeriesStop?'series':(hadContinuousStop?'continuous':'meter'));
  }
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
@@ -16578,8 +16787,8 @@ async function meterStop(){
  let patternStopped=false;
  try{
   if(needsBackendStop){
-   const stopResult=await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
-   stopRequestConfirmed=!!(stopResult&&stopResult.status==='ok');
+   await meterStopAndConfirm();
+   stopRequestConfirmed=true;
   }
   // Blank the Pi output or restore the companion alignment pattern immediately,
   // but leave the modal and interaction lock in place until spotread exits.
@@ -16589,9 +16798,7 @@ async function meterStop(){
   }catch(e){}
   if(hadSeriesStop) await waitForSeriesTeardown();
  }catch(e){
-  // A transient request failure is handled by the polling loop's idempotent
-  // stop retry. For non-series stops, preserve the previous best-effort flow.
-  if(hadSeriesStop) await waitForSeriesTeardown();
+  toast(e.message||'Stop cleanup could not be confirmed. Check the TV before another run.',true);
  }finally{
   if(!patternStopped){
    try{
@@ -18664,11 +18871,13 @@ function meterUseLgGreyscale21(points){
 
 function meterUseLgAutoCal26(points){
  const normalized=(points===256)?100:Number(points);
+ const report=meterSnapshotReportContext();
+ if(report) return report.type==='greyscale'&&normalized===26;
  return normalized===26&&meterGreyTvControlsActive();
 }
 
 function meterGreyAllowsHeadroomTargets(){
- const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const mode=meterActiveChartSignalMode();
  const normalized=(Number(meterActiveSeriesPoints)===256)?100:Number(meterActiveSeriesPoints);
  // Only YCbCr-Limited SDR has the super-white ladder (99/105/109). Full and
  // RGB Limited never carry headroom above 100%, so the headroom chart math

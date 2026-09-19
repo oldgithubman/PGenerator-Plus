@@ -1,0 +1,10 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is not installed' if !$node;
+my $output=`"$node" "$Bin/js/output_page_defaults.js" 2>&1`;
+is($?,0,'Output page signal-profile and mode-list regression checks pass') or diag $output;
+like($output,qr/^PASS output page defaults/m,'remembered profiles, SDR primaries and bounded retry exercised');
+done_testing();

@@ -26,10 +26,17 @@ use PGCalibrationMath qw(
  target_linear_for_context target_relative_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
+use PGAutomation ();
+use PGCalibrationLog ();
 use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGAutomationProcessing ();
+use PGLGCapabilities qw(resolve_lg_capabilities lg_scoped_request_payload);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+our $LG_3D_AUTOMATION_TOKEN = "";
+our $LG_3D_REQUEST_CONTEXT = {};
+our $LG_3D_SETTINGS_EPOCH = 0;
 
 my $config_file = shift || "/tmp/meter_lg_3d_autocal_config.json";
 my $state_file = shift || "/tmp/meter_lg_3d_autocal.json";
@@ -47,6 +54,39 @@ sub json_false { return JSON::PP::false; }
 sub json_bool {
  my ($value)=@_;
  return $value ? json_true() : json_false();
+}
+
+sub lg_payload_grid_for_config {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH");
+ my $explicit=int($config->{"payload_lut_size"}||0);
+ return $explicit if(($explicit == 17 || $explicit == 33) && $config->{"fixture_mode"});
+ my $generation=(ref($config->{"lg_generation"}) eq "HASH")
+  ? $config->{"lg_generation"}
+  : ((ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : {});
+ if(ref($generation) eq "HASH" && keys(%{$generation})) {
+  my $resolved=eval { resolve_lg_capabilities($generation) };
+  my $frozen=$config->{"preflight_generation_profile"};
+  if(ref($frozen) eq "HASH") {
+   return 0 if(!ref($resolved) || !$frozen->{"capability_profile_hash"}
+    || $frozen->{"capability_profile_hash"} ne ($resolved->{"capability_profile_hash"}||""));
+  }
+  my $grid=(ref($resolved) eq "HASH" && ref($resolved->{"data"}) eq "HASH"
+   && ref($resolved->{"data"}{"calibration"}) eq "HASH"
+   && ref($resolved->{"data"}{"calibration"}{"three_d_lut"}) eq "HASH")
+   ? int($resolved->{"data"}{"calibration"}{"three_d_lut"}{"grid_size"}||0) : 0;
+  return $grid if($resolved->{"platform_profile_applied"} && ($grid == 17 || $grid == 33));
+ }
+ # Fixtures predate capability manifests and exercise maths, not a TV write.
+ return 33 if($config->{"fixture_mode"});
+ return 0;
+}
+
+sub lg_3d_grid_from_value_count {
+ my ($count)=@_;
+ return 17 if(defined($count) && int($count) == 17**3*3);
+ return 33 if(defined($count) && int($count) == 33**3*3);
+ return 0;
 }
 
 sub ramp_levels { return (0,2,5,8,12,16,20,30,40,50,60,70,80,88,94,98,100); }
@@ -80,7 +120,9 @@ sub describe_and_exit {
   methods => ["matrix","ramp","lattice","skeleton","hybrid","imported"],
   lut_size => 17,
   cube_lut_size => 17,
-  payload_lut_size => 33,
+  payload_lut_size => undef,
+  payload_lut_sizes => [17,33],
+  payload_lut_size_policy => "resolved from the connected LG internal platform",
   payload_bits => 12,
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
@@ -107,8 +149,7 @@ describe_and_exit() if($config_file eq "--describe");
 sub log_line {
  my ($message)=@_;
  $message="" if(!defined($message));
- my @lt=localtime();
- print STDERR sprintf("[%02d:%02d:%02d] %s\n",$lt[2],$lt[1],$lt[0],$message);
+ print STDERR "[".PGCalibrationLog::timestamp()."] $message\n";
 }
 
 sub read_file {
@@ -148,11 +189,13 @@ sub decode_json_safe {
 
 sub write_state {
  my ($state)=@_;
+ PGAutomation::stamp_worker_state($state,$LG_3D_REQUEST_CONTEXT);
  # Never let an unencodable value (scalar/code ref) in $state kill the
  # worker: the error handlers themselves call write_state, so an encode
  # die here cascades straight to process death (seen 2026-07-03: a
  # ref-to-hashref in a pass field killed a full autocal mid-shadow).
  my $encoded;
+ my $published=$state;
  eval { $encoded=$json->encode($state); 1; } or do {
   my $err=$@; $err=~s/[\r\n]+/ /g;
   log_line("write_state: state not encodable, writing minimal state: ".$err);
@@ -164,8 +207,18 @@ sub write_state {
   }
   $fallback{"state_encode_error"}=$err;
   $encoded=$json->encode(\%fallback);
+  $published=\%fallback;
  };
- return write_file($state_file,$encoded,0);
+ my $written=write_file($state_file,$encoded,0);
+ # Automation polls the status route every two seconds and reads only the
+ # keys in PGAutomation::WORKER_STATUS_SUMMARY_KEYS, so a small sidecar beside
+ # the state file serves its summary view, built from the object actually
+ # written. The daemon ignores a sidecar older than the state file, so a
+ # failure here only costs the poller a full decode; it must never break the
+ # state write.
+ eval { write_file("$state_file.summary",$json->encode(PGAutomation::worker_status_summary($published)),0); 1; }
+  or log_line("write_state: summary sidecar not written: ".($@||"unknown error"));
+ return $written;
 }
 
 sub cancelled {
@@ -175,16 +228,32 @@ sub cancelled {
 }
 
 sub api_json {
+ my @args=@_;
+ return PGCalibrationLog::api_call('3D LUT',PGCalibrationLog::from_config($LG_3D_REQUEST_CONTEXT),$args[0]||'GET',$args[1],$args[2],$args[3]||30,
+  sub {api_json_impl(@args)});
+}
+
+sub api_json_impl {
  my ($method,$path,$payload,$timeout)=@_;
  $method ||= "GET";
+ # Recheck processing once after a calibration write, not once per patch.
+ $LG_3D_SETTINGS_EPOCH++ if $method eq 'POST'
+  && $path =~ m{^/api/lg/(?:1d-dpg/upload|hdr-tone-map/upload|3d-lut/(?:upload|reset|probe)|calibration-mode)$};
  $timeout ||= 30;
  $timeout=1 if($timeout < 1);
- my $body=defined($payload) ? $json->encode($payload) : "";
+ my $request_payload=$payload;
+ $request_payload=lg_scoped_request_payload($path,$request_payload,$LG_3D_REQUEST_CONTEXT);
+ if($method ne "GET" && ref($payload) eq "HASH"
+    && $LG_3D_AUTOMATION_TOKEN=~/^[A-Za-z0-9_.:-]{8,200}$/) {
+  $request_payload={%{$request_payload},automation_token=>$LG_3D_AUTOMATION_TOKEN};
+ }
+ my $body=defined($request_payload) ? $json->encode($request_payload) : "";
  my $deadline=time()+$timeout;
  my $socket=IO::Socket::INET->new(PeerHost=>$api_host,PeerPort=>$api_port,Proto=>"tcp",Timeout=>$timeout);
  return { status=>"error", message=>"Web UI API is unavailable" } if(!$socket);
  $socket->autoflush(1);
  my $request="$method $path HTTP/1.1\r\nHost: $api_host\r\nConnection: close\r\nAccept: application/json\r\n";
+ $request .= PGCalibrationLog::header_line();
  if($method ne "GET") {
   $request.="Content-Type: application/json\r\nContent-Length: ".length($body)."\r\n\r\n".$body;
  } else {
@@ -2887,7 +2956,7 @@ sub lg_calibration_end_retry_forbidden {
 
 # ---- Imported-.cube upload path (method=imported) ----
 # No profiling, no solve: parse an operator-supplied .cube (saved on the Pi
-# by /api/3d-lut/import), trilinearly resample it to the LG 33-point payload
+# by /api/3d-lut/import), trilinearly resample it to the LG platform payload
 # and a 17-point export cube, then run the standard probe/upload flow.
 
 sub parse_cube_file {
@@ -2931,7 +3000,7 @@ sub imported_cube_sample {
 }
 
 sub build_imported_lut {
- my ($config,$state,$cube_size)=@_;
+ my ($config,$state,$cube_size,$payload_grid)=@_;
  my $path=$config->{"imported_cube_path"}||"";
  die "Imported .cube path missing\n" if($path eq "");
  die "Imported .cube not found: $path\n" if(!-f $path);
@@ -2972,14 +3041,16 @@ sub build_imported_lut {
   my $v=imported_cube_sample($cube,$r/($csize-1),$g/($csize-1),$b/($csize-1));
   push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
  }}}
- # LG payload (33^3): R-FASTEST fill to match generate_lut_lg_payload.
+ # LG payload (17^3 or 33^3): R-FASTEST fill to match generate_lut_lg_payload.
  # A failed commit retry supplies the exact exported binary from the original
  # solve.  Reuse those bytes instead of reconstructing the payload from the
  # smaller downloadable cube; the exported .cube (17-point by default) cannot
  # reproduce every 33-point node exactly and a retry must be byte-for-byte
  # identical to the first attempt.
  my @payload_u16;
- my $psize=33;
+ my $psize=int($payload_grid||lg_payload_grid_for_config($config));
+ die "LG 3D LUT platform geometry is unknown; refusing to build an upload payload\n"
+  if($psize != 17 && $psize != 33);
  my $exact_payload_path=$config->{"imported_payload_path"}||"";
  if($exact_payload_path ne "") {
   die "Imported LG payload not found: $exact_payload_path\n" if(!-f $exact_payload_path);
@@ -2997,7 +3068,7 @@ sub build_imported_lut {
   $model->{"imported_payload_path"}=$exact_payload_path;
   $model->{"exact_payload_reused"}=json_true();
   $state->{"retry_payload_reused"}=json_true();
-  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize; exact 33-point payload reused from $exact_payload_path");
+  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize; exact ${psize}-point payload reused from $exact_payload_path");
  } else {
   for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
    my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
@@ -3051,7 +3122,8 @@ sub export_lut {
  my $payload_size=0;
  if($have_payload) {
   $binary=pack("v*",@{$payload_u16});
-  $payload_size=33;
+  $payload_size=lg_3d_grid_from_value_count(scalar(@{$payload_u16}));
+  die "LG 3D LUT payload has an unsupported value count\n" if(!$payload_size);
   write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
  }
  write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
@@ -3365,6 +3437,12 @@ sub apply_pattern_insert_before_read {
 # ---------------------------------------------------------------------
 
 sub read_step_once {
+ my @args=@_;
+ return PGCalibrationLog::measurement('3D LUT',PGCalibrationLog::from_config($args[0]),$args[1],$args[2],
+  sub {read_step_once_impl(@args)});
+}
+
+sub read_step_once_impl {
  my ($config,$step)=@_;
  my $delay_ms=int($config->{"delay_ms"}||1000);
  # Settle-delay floor, signal-mode aware -- mirrors the greyscale 1D autocal
@@ -3641,6 +3719,12 @@ sub note_confirmed_zero_reading {
 
 sub read_step {
  my ($config,$step,$state)=@_;
+ if (!$config->{fixture_mode}) {
+  my $ok=eval {PGAutomationProcessing::enforce($config,$state,$LG_3D_SETTINGS_EPOCH,\&api_json,\&log_line)};
+  my $error=$@;
+  write_state($state) if ref($state) eq 'HASH';
+  return (undef,$error||'Unable to verify queued processing settings') if !$ok;
+ }
  my $fixture=fixture_reading_for_step($step,$config);
  if($fixture) {
   $fixture->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
@@ -4239,14 +4323,29 @@ sub hdr20_postcal_prefix_shelf {
  return \@out;
 }
 
+# Matrix key for one TV: generation series plus model name (a seed
+# measured on another panel of the same series must not fire here).
+# Empty when either is missing.
+sub hdr20_postcal_matrix_key {
+ my ($lg_generation)=@_;
+ return "" if(ref($lg_generation) ne "HASH");
+ my $series=lc($lg_generation->{"series"}||"");
+ $series=~s/[^a-z0-9]+//g;
+ my $model=lc($lg_generation->{"model_name"}||"");
+ $model=~s/[^a-z0-9]+//g;
+ return "" if($series eq "" || $model eq "");
+ return $series.$model;
+}
+
 # Load the per-TV seed matrix from disk. Returns the seed magnitude in
-# DPG counts (>= 0). Keys the file by both lg_generation series (preferred
-# when present) and a model string (fallback). Falls back to the
-# configured _seed_counts when no entry matches. No-op when the file is
+# DPG counts (>= 0). Looks up the generation series plus model name;
+# legacy signal-mode entries are not TV-specific and are ignored.
+# Falls back to the configured
+# _seed_counts when no entry matches. No-op when the file is
 # missing/unreadable -- the caller treats "no seed" as 0, which still
 # allows the loop to converge from the live read alone.
 sub hdr20_postcal_load_matrix {
- my ($path,$lg_generation,$model,$seed_counts)=@_;
+ my ($path,$lg_generation,$signal_mode,$seed_counts)=@_;
  $path="" if(!defined($path));
  $path="/etc/PGenerator/hdr20_postcal_shadow_matrix.json" if($path eq "");
  $seed_counts=0 if(!defined($seed_counts) || $seed_counts+0 < 0);
@@ -4258,27 +4357,24 @@ sub hdr20_postcal_load_matrix {
  return $seed_counts if(!defined($data) || ref($data) ne "HASH");
  my $hdr=$data->{"hdr20"};
  return $seed_counts if(ref($hdr) ne "HASH");
- my $series="";
- if(ref($lg_generation) eq "HASH") {
-  $series=lc($lg_generation->{"series"}||"");
-  $series=~s/[^a-z0-9]+//g;
- }
- my $model_str="";
- if(defined($model)) {
-  $model_str=lc($model);
-  $model_str=~s/[^a-z0-9]+//g;
- }
- # Lookup order: series key first, then model string key, then the
- # explicit _seed_counts fallback. Unknown TV falls through to seed_counts
- # so the loop still converges from the live read.
- foreach my $key ($series,$model_str) {
+ my $tv_key=hdr20_postcal_matrix_key($lg_generation);
+ # Lookup order: the series+model key, then the explicit _seed_counts
+ # fallback. A legacy entry under the signal-mode key (written by a run
+ # whose generation record lacked series or model) is never applied: it
+ # would shadow the configured knob for every later run sharing the file.
+ # Unknown TV falls through to seed_counts so the loop still converges
+ # from the live read.
+ foreach my $key ($tv_key) {
   next if($key eq "");
   if(ref($hdr->{$key}) eq "HASH" && defined($hdr->{$key}->{"seed_counts"})) {
    my $entry_seed=$hdr->{$key}->{"seed_counts"}+0;
-   return $entry_seed if($entry_seed >= 0);
+   # List context also returns the matching entry and the key it was
+   # found under, so the caller can check the entry's picture mode and
+   # TV identity before using it.
+   return (wantarray ? ($entry_seed,$hdr->{$key},$key) : $entry_seed) if($entry_seed >= 0);
   }
  }
- return $seed_counts;
+ return wantarray ? ($seed_counts,undef,"") : $seed_counts;
 }
 
 # Persist the converged M back into the matrix for this TV. Loads the
@@ -4287,7 +4383,7 @@ sub hdr20_postcal_load_matrix {
 # is best-effort: a failure is logged but never fatal -- the seed is a
 # performance optimization, not a correctness requirement.
 sub hdr20_postcal_save_matrix {
- my ($path,$lg_generation,$model,$m_counts,$band_top,$taper_top)=@_;
+ my ($path,$lg_generation,$signal_mode,$m_counts,$band_top,$taper_top,$picture_mode)=@_;
  $path="/etc/PGenerator/hdr20_postcal_shadow_matrix.json" if(!defined($path) || $path eq "");
  $m_counts=0 if(!defined($m_counts));
  $m_counts=$m_counts+0;
@@ -4295,13 +4391,11 @@ sub hdr20_postcal_save_matrix {
  $band_top=$band_top+0;
  $taper_top=30 if(!defined($taper_top) || $taper_top+0 <= 0);
  $taper_top=$taper_top+0;
- my $key="";
- if(ref($lg_generation) eq "HASH") {
-  $key=lc($lg_generation->{"series"}||"");
-  $key=~s/[^a-z0-9]+//g;
- }
- if($key eq "" && defined($model)) {
-  $key=lc($model);
+ # Series plus model name; the signal-mode key is the legacy fallback
+ # for a run with no generation (never applied on load).
+ my $key=hdr20_postcal_matrix_key($lg_generation);
+ if($key eq "" && defined($signal_mode)) {
+  $key=lc($signal_mode);
   $key=~s/[^a-z0-9]+//g;
  }
  return 0 if($key eq "");
@@ -4317,6 +4411,8 @@ sub hdr20_postcal_save_matrix {
  $entry->{"band_top_ire"}=$band_top;
  $entry->{"taper_top_ire"}=$taper_top;
  $entry->{"tol"}=0.15;
+ # The seed only makes sense for the picture mode it was measured in.
+ $entry->{"picture_mode"}=$picture_mode if(defined($picture_mode) && $picture_mode ne "");
  $hdr->{$key}=$entry;
  $data->{"hdr20"}=$hdr;
  my $encoded=$json->encode($data);
@@ -4579,7 +4675,34 @@ sub run_hdr20_postcal_shadow_correction {
  my $target5=hdr20_postcal_target5_for_step($step,$peak);
  my $lg_generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : undef;
  my $model_str=(ref($state) eq "HASH") ? ($state->{"signal_mode"}||"hdr10") : "hdr10";
- my $M=hdr20_postcal_load_matrix($matrix_path,$lg_generation,$model_str,$seed_counts_cfg);
+ my ($M,$seed_entry,$seed_key)=hdr20_postcal_load_matrix($matrix_path,$lg_generation,$model_str,$seed_counts_cfg);
+ # The seed is applied to the 5% anchor's first correction (the pass-2
+ # counts) when it is the operator's configured seed_counts, or a
+ # matrix entry found under this TV's series+model key that records
+ # the same picture mode. Pass 1 must stay at zero counts because it is
+ # the baseline the self-gate and revert-if-worse compare against; the
+ # pass-1 read also decides whether the seed fires at all (only when
+ # the anchor is lifted) and caps it at the gain step plus 60.
+ my $seed_apply=0;
+ my $seed_src="";
+ my $seed_why="";
+ if($M > 0) {
+  my $tv_key=hdr20_postcal_matrix_key($lg_generation);
+  my $run_pm=$config->{"picture_mode"}||"";
+  if(ref($seed_entry) ne "HASH") {
+   $seed_apply=1;
+   $seed_src="configured seed_counts";
+  } elsif($tv_key eq "" || $seed_key ne $tv_key) {
+   $seed_why="matrix entry was matched by the fallback key '".$seed_key."', not this TV's series and model";
+  } elsif(($seed_entry->{"picture_mode"}||"") eq "") {
+   $seed_why="matrix entry for ".$seed_key." records no picture mode";
+  } elsif(lc($seed_entry->{"picture_mode"}) ne lc($run_pm)) {
+   $seed_why="matrix entry for ".$seed_key." is for picture mode '".$seed_entry->{"picture_mode"}."', this run is '".$run_pm."'";
+  } else {
+   $seed_apply=1;
+   $seed_src="matrix entry ".$seed_key;
+  }
+ }
 
  # Measure + converge work lives inside an inner eval so any error in
  # this block leaves $corrected = $dpg_base (revert-safe default) and
@@ -4723,6 +4846,7 @@ sub run_hdr20_postcal_shadow_correction {
    for(my $ai=0; $ai<scalar(@anchor_steps); $ai++) {
     die "cancelled\n" if(cancelled());
     my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
+    die "cancelled\n" if(($error||"") eq "cancelled");
     next if($error || !$reading);
     my $xyz=reading_xyz($reading);
     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
@@ -4755,6 +4879,7 @@ sub run_hdr20_postcal_shadow_correction {
     select(undef,undef,undef,$settle_ms/1000.0);
     for my $ai (@todo) {
      my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
+     die "cancelled\n" if(($error||"") eq "cancelled");
      next if($error || !$reading);
      my $xyz=reading_xyz($reading);
      my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
@@ -4766,27 +4891,143 @@ sub run_hdr20_postcal_shadow_correction {
     }
     $lo_prev=$X;
    }
+   # Bracket refinement. One ladder shelf can crush two still-unresolved
+   # anchors at once (the G3 put 10% and 15% in one bracket on 18 and 19
+   # September 2026, which left them two indices apart where the
+   # piecewise profile cannot steer them separately). Bisect every
+   # shared bracket with a prefix shelf at its midpoint, re-reading only
+   # the anchors in that bracket, until each anchor has its own bracket
+   # or the bracket is 4 indices wide or narrower. The cap is global:
+   # at most 3 refinement shelves per probe in total, so several shared
+   # brackets cannot multiply the bind and low-light read cost.
+   my %bracket_hi=%resolved;
+   my %shared;
+   for my $ai (keys %resolved) {
+    push @{$shared{$bracket_lo{$ai}.":".$bracket_hi{$ai}}}, $ai;
+   }
+   my $refine_cap=3;
+   my $refine_capped=0;
+   my @refine_shelves;
+   REFINE: for my $key (sort { (split(/:/,$a))[0] <=> (split(/:/,$b))[0] } keys %shared) {
+    next if(scalar(@{$shared{$key}}) < 2);
+    my ($g_lo,$g_hi)=split(/:/,$key);
+    my @queue=([$g_lo+0,$g_hi+0,[ sort { $a <=> $b } @{$shared{$key}} ]]);
+    while(scalar(@queue)) {
+     my $group=shift @queue;
+     my ($lo,$hi,$members)=@{$group};
+     next if(scalar(@{$members}) < 2 || $hi-$lo <= 4);
+     my $mid=int(($lo+$hi)/2);
+     next if($mid <= $lo || $mid >= $hi || $mid < 14);
+     if(scalar(@refine_shelves) >= $refine_cap) {
+      $refine_capped=1;
+      last REFINE;
+     }
+     die "cancelled\n" if(cancelled());
+     my $shelf=hdr20_postcal_prefix_shelf($dpg_base,$mid,$probe_depth);
+     $shelf=hdr20_postcal_monotone_clamp($shelf) if($shelf);
+     next if(!$shelf); # this bracket keeps its ladder bracket; others may still refine
+     my ($p_resp,$p_bound,$p_msg)=$bind_dpg->($shelf);
+     if(!$p_bound) {
+      $status->{"note"}=($status->{"note"}||"")." zone probe refinement X=$mid bind not real (".$p_msg."); refinement stopped; ";
+      last REFINE;
+     }
+     push @refine_shelves, $mid;
+     select(undef,undef,undef,$settle_ms/1000.0);
+     my @below;
+     my @above;
+     for my $ai (@{$members}) {
+      die "cancelled\n" if(cancelled());
+      my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
+      die "cancelled\n" if(($error||"") eq "cancelled");
+      next if($error || !$reading);
+      my $xyz=reading_xyz($reading);
+      my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+      next if($y <= 0);
+      if($y < 0.88*$probe_base_y{$ai}) {
+       $bracket_hi{$ai}=$mid;
+       push @below, $ai;
+      } else {
+       $bracket_lo{$ai}=$mid;
+       push @above, $ai;
+      }
+     }
+     log_line("HDR20 post-cal shadow zone probe: refinement shelf X=$mid in bracket ".($lo+1)."..".$hi.": "
+      .(scalar(@below) ? "IRE ".join("/",map { $anchor_ire[$_] } @below)." below" : "none below")
+      .", ".(scalar(@above) ? "IRE ".join("/",map { $anchor_ire[$_] } @above)." above" : "none above"));
+     push @queue, [$lo,$mid,\@below] if(scalar(@below) > 1);
+     push @queue, [$mid,$hi,\@above] if(scalar(@above) > 1);
+    }
+   }
+   if($refine_capped) {
+    # Name the shared brackets the cap left unrefined (wider than 4
+    # with more than one anchor); the lowest bracket was served first.
+    my %left;
+    for my $ai (keys %resolved) {
+     push @{$left{$bracket_lo{$ai}.":".$bracket_hi{$ai}}}, $ai;
+    }
+    my @unrefined;
+    for my $key (sort { (split(/:/,$a))[0] <=> (split(/:/,$b))[0] } keys %left) {
+     next if(scalar(@{$left{$key}}) < 2);
+     my ($lo,$hi)=split(/:/,$key);
+     next if($hi-$lo <= 4);
+     push @unrefined, ($lo+1)."..".$hi." (IRE ".join("/",map { $anchor_ire[$_] } sort { $a <=> $b } @{$left{$key}}).")";
+    }
+    log_line("HDR20 post-cal shadow zone probe: refinement cap of $refine_cap shelves reached; unrefined shared brackets: "
+     .(scalar(@unrefined) ? join(", ",@unrefined) : "none"));
+   }
+   $state->{"postcal_shadow_zone_probe_refine"}=join(",",@refine_shelves);
+   $state->{"postcal_shadow_zone_probe_refine_capped"}=$refine_capped ? json_true() : json_false();
    # Assign zones: clamp the prior into the measured bracket; keep the
-   # prior when the anchor never responded. Enforce strictly ascending.
+   # prior when the anchor never responded. Anchors still sharing a
+   # bracket are spread evenly through it (one third and two thirds for
+   # a pair) instead of being clamped onto the same end. Consecutive
+   # anchors keep at least 4 indices between them, moving the higher
+   # IRE up, because closer anchors cannot be trimmed independently.
+   my %share_count;
+   my %share_rank;
+   for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
+    next if(!exists($resolved{$ai}));
+    my $key=$bracket_lo{$ai}.":".$bracket_hi{$ai};
+    $share_rank{$ai}=$share_count{$key}||0;
+    $share_count{$key}=$share_rank{$ai}+1;
+   }
    my @probed_idx;
    my $probe_note="";
    for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
     my $zone=$anchor_idx[$ai];
     if(exists($resolved{$ai})) {
-     my $lo=($bracket_lo{$ai}||13)+1;
-     my $hi=$resolved{$ai};
-     $zone=$lo if($zone < $lo);
-     $zone=$hi if($zone > $hi);
+     my $lo=(defined($bracket_lo{$ai}) ? $bracket_lo{$ai} : 13)+0;
+     my $hi=$bracket_hi{$ai}+0;
+     my $n=$share_count{$lo.":".$hi}||1;
+     if($n > 1) {
+      $zone=$lo+($hi-$lo)*($share_rank{$ai}+1)/($n+1);
+      $zone=$lo+1 if($zone < $lo+1);
+      $probe_note.=$anchor_ire[$ai]."% shared bracket ".($lo+1)."..".$hi." ";
+     } else {
+      $zone=$lo+1 if($zone < $lo+1);
+      $zone=$hi if($zone > $hi);
+     }
     } else {
      $probe_note.=$anchor_ire[$ai]."% unresolved(prior kept) ";
     }
     $zone=int($zone+0.5);
-    $zone=$probed_idx[-1]+2 if(scalar(@probed_idx) && $zone <= $probed_idx[-1]);
+    if(scalar(@probed_idx) && $zone < $probed_idx[-1]+4) {
+     my $spaced=$probed_idx[-1]+4;
+     my $above="";
+     if(exists($resolved{$ai}) && $spaced > $bracket_hi{$ai}+0) {
+      $above=", above its measured bracket ".((defined($bracket_lo{$ai}) ? $bracket_lo{$ai} : 13)+1)."..".$bracket_hi{$ai};
+     }
+     log_line("HDR20 post-cal shadow zone probe: IRE ".$anchor_ire[$ai]." moved from $zone to $spaced to keep 4 indices above IRE ".$anchor_ire[$ai-1].$above);
+     $zone=$spaced;
+    }
     push @probed_idx, $zone;
     $state->{"postcal_shadow_zone_IRE_".$anchor_ire[$ai]}=$zone;
    }
    @anchor_idx=@probed_idx;
-   log_line("HDR20 post-cal shadow zone probe: zones ".join("/",@anchor_idx)." for IRE ".join("/",@anchor_ire).($probe_note ne "" ? " (".$probe_note.")" : ""));
+   log_line("HDR20 post-cal shadow zone probe: zones ".join("/",@anchor_idx)." for IRE ".join("/",@anchor_ire)
+    .(scalar(@refine_shelves) ? " refinement shelves ".join("/",@refine_shelves) : "")
+    .($refine_capped ? " (refinement cap reached)" : "")
+    .($probe_note ne "" ? " (".$probe_note.")" : ""));
    $status->{"zone_probe"}=join(",",@anchor_idx);
    # No base re-bind needed here: pass 1 below binds the all-zero-counts
    # candidate, which IS the base.
@@ -4804,6 +5045,24 @@ sub run_hdr20_postcal_shadow_correction {
   # Anchors whose zone estimate proved wrong for this panel (big count
   # move, no lift response) -- frozen by the dead-anchor guard below.
   my %dead_anchor;
+  # Pass-1 counts per anchor (the cumulative slope's first point) and
+  # the per-anchor best pass so far (lift closest to the target) a
+  # frozen anchor is parked at.
+  my %first_counts;
+  my %anchor_best_counts;
+  my %anchor_best_err;
+  # Hold-and-confirm state: an anchor whose secant was rejected after a
+  # >=25-count move is held at the same counts for one pass and re-read;
+  # hold_counts / hold_lifts keep the point before that move so the
+  # fresh read gives the drift over it. confirm_streak counts the
+  # confirm-driven updates since the last ordinary (secant, median or
+  # gain) pass; after two the anchor degrades to the median slope, so
+  # spillover from a neighbour cannot keep a dead anchor inflating
+  # indefinitely.
+  my %hold;
+  my %hold_counts;
+  my %hold_lifts;
+  my %confirm_streak;
 
   for(my $pass=1; $pass<=$max_passes; $pass++) {
    die "cancelled\n" if(cancelled());
@@ -4814,15 +5073,32 @@ sub run_hdr20_postcal_shadow_correction {
    # keeps the array ascending per channel block.
    my @anchor_list;
    for my $idx (@anchor_idx) { push @anchor_list, [$idx,$counts{$idx}]; }
-   my $candidate=hdr20_postcal_apply_profile($dpg_base,\@anchor_list);
-   $candidate=hdr20_postcal_monotone_clamp($candidate);
+   my $profile=hdr20_postcal_apply_profile($dpg_base,\@anchor_list);
+   my $candidate=hdr20_postcal_monotone_clamp($profile);
+   # The 4-index spacing leaves about 128 counts of headroom between
+   # neighbours on an identity-slope base; say so if the clamp still
+   # had to move the profile at an anchor index.
+   for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
+    my $idx=$anchor_idx[$ai];
+    my @delta;
+    for(my $channel=0;$channel<3;$channel++) {
+     my $d=$candidate->[$channel*1024+$idx]-$profile->[$channel*1024+$idx];
+     push @delta, $d if($d != 0);
+    }
+    if(scalar(@delta)) {
+     log_line("HDR20 post-cal shadow correction pass $pass: monotone clamp raised anchor index $idx (IRE ".$anchor_ire[$ai].") by ".join("/",@delta)." counts");
+    }
+   }
 
    $state->{"phase"}="postcal_shadow";
    $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
-   $state->{"message"}=sprintf("Re-committing DPG (per-anchor trim, worst=%.3f)",($pass==1 ? 1e9 : 0));
+   $state->{"message"}="Re-committing DPG before reading shadow anchors (pass $pass)";
    write_state($state);
    my ($cand_resp,$cand_bound,$cand_msg)=$bind_dpg->($candidate);
    $state->{"postcal_shadow_pass_".$pass."_counts"}={ %counts };
+   # Counts bound for this pass; the early exit below compares the
+   # updated counts against them.
+   my %pass_counts=%counts;
    if(!$cand_bound) {
     $status->{"note"}=($status->{"note"}||"")." pass $pass: bind not real (".$cand_msg."); ";
     last;
@@ -4836,6 +5112,10 @@ sub run_hdr20_postcal_shadow_correction {
     my $atarget=$anchor_targets[$ai];
     my ($reading,$error)=read_step($config,$astep,$state);
     if($error || !$reading) {
+     # A cancelled read comes back as the string "cancelled", not a
+     # die; raise it here (inside the eval, whose handler rethrows) so
+     # the job ends cancelled instead of finalising a best effort.
+     die "cancelled\n" if(($error||"") eq "cancelled" || cancelled());
      $status->{"note"}=($status->{"note"}||"")." pass $pass anchor ".$astep->{"ire"}."%: read failed (".($error||"no reading")."); ";
      last;
     }
@@ -4864,6 +5144,17 @@ sub run_hdr20_postcal_shadow_correction {
    }
    $status->{"passes"}=$pass;
    $state->{"postcal_shadow_pass_".$pass."_worst"}=$worst;
+   # Per-anchor best pass: the counts whose lift came closest to the
+   # target. A frozen anchor is parked here rather than at its last
+   # (possibly overshooting) value.
+   foreach my $idx (@anchor_idx) {
+    next if(!defined($lift_for{$idx}));
+    my $err=abs($lift_for{$idx}-$target_lift);
+    if(!defined($anchor_best_err{$idx}) || $err < $anchor_best_err{$idx}) {
+     $anchor_best_err{$idx}=$err;
+     $anchor_best_counts{$idx}=$counts{$idx};
+    }
+   }
 
    # Track pass-1 lifts for the lift_before status field (the 5%
    # anchor is representative of the lifted shadow region).
@@ -4873,6 +5164,7 @@ sub run_hdr20_postcal_shadow_correction {
     $status->{"lift_before"}=$first_lift if(defined($first_lift));
     foreach my $idx (@anchor_idx) {
      $baseline_lifts{$idx}=$lift_for{$idx} if(defined($lift_for{$idx}));
+     $first_counts{$idx}=$counts{$idx};
     }
     # Self-gating: if pass 1 (counts=0 -> correction=base) is already
     # inside tol across all anchors, apply no correction. The 8-bit run
@@ -4926,7 +5218,13 @@ sub run_hdr20_postcal_shadow_correction {
    #    band; a 5x sensitivity cliff between neighbours is noise --
    #    seen at the 20% anchor on the C1);
    #  - the per-pass move is capped so one bad slope can't blow an
-   #    anchor into deep overshoot.
+   #    anchor into deep overshoot;
+   #  - a secant rejected after a >=25-count move is either one noisy
+   #    read or a dead anchor: the anchor is held at the same counts for
+   #    one pass and re-read, and the drift over the held move then
+   #    either confirms a usable slope or parks the anchor at its best
+   #    pass (the G3 froze a live 10% anchor on one noisy read, and the
+   #    same anchor on the other job was flat over 197 counts).
    my %slope_for;
    my @valid_slopes;
    for my $idx (@anchor_idx) {
@@ -4943,37 +5241,143 @@ sub run_hdr20_postcal_shadow_correction {
     my @ss=sort { $a <=> $b } @valid_slopes;
     $median_slope=$ss[int(scalar(@ss)/2)];
    }
+   # Cumulative slope per anchor from its pass-1 point: the reference a
+   # confirm slope is judged against (median over the OTHER anchors
+   # that have one), so a neighbour's spillover alone cannot pass as
+   # the anchor's own response.
+   my %cum_slope_for;
+   for my $idx (@anchor_idx) {
+    next if(!defined($lift_for{$idx}) || !defined($first_counts{$idx}) || !defined($baseline_lifts{$idx}));
+    my $dc=$counts{$idx}-$first_counts{$idx};
+    next if(abs($dc) < 1);
+    my $s=($lift_for{$idx}-$baseline_lifts{$idx})/$dc;
+    next if($s >= -0.0002);
+    $cum_slope_for{$idx}=$s;
+   }
+   my %slope_src;
    for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
     my $idx=$anchor_idx[$ai];
     my $lift=$lift_for{$idx};
     next if(!defined($lift));
-    # Dead-anchor guard: if this anchor's counts already moved a lot
-    # and its lift barely responded (own measured slope rejected as
-    # near-flat over a >=25-count move), the anchor's zone estimate is
-    # wrong for this panel -- do NOT let the median-slope substitution
-    # keep inflating it (the first zone-table run pushed a dead 15%
-    # anchor to 101 counts with zero effect, leaving an orphan bump in
-    # the DPG). Freeze it at its current value instead.
-    my $own_slope=$slope_for{$idx};
-    if(!defined($own_slope) && defined($prev_counts{$idx}) && defined($prev_lifts{$idx})
-       && abs($counts{$idx}-$prev_counts{$idx}) >= 25) {
-     $dead_anchor{$idx}=($dead_anchor{$idx}||0)+1;
-    }
     if(($dead_anchor{$idx}||0) >= 1) {
-     $state->{"postcal_shadow_dead_anchor_".$idx}=json_true();
      $prev_counts{$idx}=$counts{$idx};
      $prev_lifts{$idx}=$lift;
+     $slope_src{$idx}="dead";
      next;
     }
-    my $slope=$own_slope;
-    if(defined($median_slope) && (!defined($slope) || abs($slope) < 0.5*abs($median_slope))) {
+    my $own_slope=$slope_for{$idx};
+    my $slope=undef;
+    my $src="gain";
+    if($hold{$idx}) {
+     # Confirm pass: the anchor was held at the same counts after a
+     # rejected secant, so this fresh read gives the drift over the
+     # held move without the single read that rejected it. A drift
+     # that is negative and at least 0.0002 in magnitude proves the
+     # anchor alive; a flat or positive one means its zone estimate is
+     # wrong for this panel: declare it dead and park it at the counts
+     # of its best pass so far (lift closest to the target), not its
+     # last value, so the frozen anchor leaves no bump in the DPG (the
+     # first zone-table run pushed a dead 15% anchor to 101 counts
+     # with zero effect).
+     $hold{$idx}=0;
+     my $dc=$counts{$idx}-$hold_counts{$idx};
+     my $confirm=(abs($dc) >= 1) ? ($lift-$hold_lifts{$idx})/$dc : 0;
+     my @peer_cum=map { $cum_slope_for{$_} } grep { $_ != $idx && defined($cum_slope_for{$_}) } @anchor_idx;
+     my $peer_median=undef;
+     if(scalar(@peer_cum)) {
+      my @ss=sort { $a <=> $b } @peer_cum;
+      $peer_median=$ss[int(scalar(@ss)/2)];
+     }
+     if($confirm > -0.0002) {
+      # Flat or positive drift over a held move: the anchor is dead.
+      $dead_anchor{$idx}=1;
+      $state->{"postcal_shadow_dead_anchor_".$idx}=json_true();
+      $prev_counts{$idx}=$counts{$idx};
+      $prev_lifts{$idx}=$lift;
+      $counts{$idx}=defined($anchor_best_counts{$idx}) ? $anchor_best_counts{$idx}+0 : $counts{$idx};
+      $slope_src{$idx}="dead";
+      next;
+     }
+     # A live drift weaker than half the peers' cumulative median is
+     # treated like a flat secant on the ordinary path: the median
+     # slope drives the update instead (the anchor is slow, not dead).
+     my $weak=(defined($peer_median) && abs($confirm) < 0.5*abs($peer_median)) ? 1 : 0;
+     if(($confirm_streak{$idx}||0) >= 2) {
+      # Two confirm-driven updates without an ordinary pass between
+      # them: the anchor is live, but its own slope is not trusted any
+      # further. Degrade to the median-slope update, or sit this pass
+      # out when no peer has one; never declare it dead here. Waiting
+      # keeps the streak so the hold/confirm cycle does not restart.
+      if(defined($median_slope)) {
+       $slope=$median_slope;
+       $src="median";
+      } else {
+       $prev_counts{$idx}=$counts{$idx};
+       $prev_lifts{$idx}=$lift;
+       $slope_src{$idx}="wait";
+       next;
+      }
+     } elsif($weak && defined($median_slope)) {
+      $slope=$median_slope;
+      $src="median";
+     } else {
+      $slope=$confirm;
+      $src="confirmed";
+      $confirm_streak{$idx}=($confirm_streak{$idx}||0)+1;
+     }
+    } elsif(defined($own_slope)) {
+     $slope=$own_slope;
+     $src="secant";
+     if(defined($median_slope) && abs($slope) < 0.5*abs($median_slope)) {
+      $slope=$median_slope;
+      $src="median";
+     }
+    } elsif(defined($prev_counts{$idx}) && defined($prev_lifts{$idx})
+            && abs($counts{$idx}-$prev_counts{$idx}) >= 25) {
+     # Rejected secant after a big move: one noisy read or a dead
+     # anchor. Hold the counts for one pass and re-read instead of
+     # inflating the anchor on a substituted slope; the next pass
+     # confirms the slope or parks the anchor.
+     $hold{$idx}=1;
+     $hold_counts{$idx}=$prev_counts{$idx};
+     $hold_lifts{$idx}=$prev_lifts{$idx};
+     $prev_counts{$idx}=$counts{$idx};
+     $prev_lifts{$idx}=$lift;
+     $slope_src{$idx}="hold";
+     next;
+    } elsif(defined($median_slope)) {
      $slope=$median_slope;
+     $src="median";
     }
+    $slope_src{$idx}=$src;
+    # Any ordinary update (secant, median or gain) ends a confirm
+    # streak; only a hold carries it into the next confirm.
+    $confirm_streak{$idx}=0 if($src ne "confirmed");
     my $next;
     if(defined($slope)) {
      $next=$counts{$idx} + ($target_lift-$lift)/$slope;
+    } elsif($pass == 1 && $ai == 0 && $seed_apply && $M > 0 && $lift > $target_lift) {
+     # First correction of a lifted 5% anchor: start from the seed
+     # (last converged count for this TV and picture mode, or the
+     # configured value) instead of the coarse gain step, but never
+     # more than the gain step plus the 60-count move cap, so a stale
+     # seed cannot be bound uncapped.
+     my $gain_step=$counts{$idx} + $gain*($lift-$target_lift);
+     my $seed_cap=$gain_step+60;
+     $next=($M > $seed_cap) ? $seed_cap : $M;
+     $slope_src{$idx}="seed";
+     log_line("HDR20 post-cal shadow correction: 5% anchor seeded at ".sprintf("%.1f",$next)." counts from the ".$seed_src
+      .(($M > $seed_cap) ? " (seed ".int($M+0.5)." clamped to the gain step plus 60)" : "")
+      ." (picture mode '".($config->{"picture_mode"}||"")."')");
     } else {
      $next=$counts{$idx} + $gain*($lift-$target_lift);
+     if($pass == 1 && $ai == 0 && $M > 0) {
+      if($seed_apply) {
+       log_line("HDR20 post-cal shadow correction: seed not applied: pass-1 lift ".sprintf("%.3f",$lift)." is not above target ".sprintf("%.3f",$target_lift)."; 5% anchor takes the floored gain step");
+      } else {
+       log_line("HDR20 post-cal shadow correction: matrix seed not applied: ".$seed_why."; 5% anchor takes the gain step");
+      }
+     }
     }
     # Cap the secant move per pass; the pass-1 gain step stays uncapped
     # (it is the coarse jump and $slope is never defined on pass 1).
@@ -4986,6 +5390,21 @@ sub run_hdr20_postcal_shadow_correction {
     $prev_counts{$idx}=$counts{$idx};
     $prev_lifts{$idx}=$lift;
     $counts{$idx}=$next+0;
+   }
+   $state->{"postcal_shadow_pass_".$pass."_slope_src"}={ %slope_src };
+   $state->{"postcal_shadow_pass_".$pass."_confirm_streak"}={ %confirm_streak };
+   # Early exit: when no anchor's counts changed by a whole count
+   # (every anchor frozen, floored or converged) another pass would
+   # only cost a bind and six low-light reads for the same result.
+   my $moved=0;
+   for my $idx (@anchor_idx) {
+    $moved=1 if(abs($counts{$idx}-$pass_counts{$idx}) >= 1);
+    $moved=1 if($hold{$idx}); # a held anchor still needs its confirm read
+   }
+   if(!$moved) {
+    $status->{"note"}=($status->{"note"}||"")." early exit after pass $pass: no anchor counts changed; ";
+    log_line("HDR20 post-cal shadow correction: no anchor counts changed after pass $pass; stopping early");
+    last;
    }
   }
 
@@ -5023,13 +5442,15 @@ sub run_hdr20_postcal_shadow_correction {
    for my $idx (@anchor_idx) { push @best_anchor_list, [$idx,$best_counts{$idx}]; }
    $corrected=hdr20_postcal_apply_profile($dpg_base,\@best_anchor_list);
    $corrected=hdr20_postcal_monotone_clamp($corrected);
-   my $seed=$best_counts{$anchor_idx[0]};
-   if(defined($seed) && $seed+0 > 0) {
-    my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$seed,$band_top_ire,$taper_top_ire);
-    $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
-   }
    my $best_status=hdr20_postcal_best_status($improved,$best_worst,$baseline_worst,$tol);
    $status->{"status"}=$best_status;
+   # Persist the 5% count as next time's seed only when this run
+   # converged; a best-effort count is not a trustworthy start.
+   my $seed=$best_counts{$anchor_idx[0]};
+   if(defined($seed) && $seed+0 > 0 && $best_status eq "converged") {
+    my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$seed,$band_top_ire,$taper_top_ire,$config->{"picture_mode"}||"");
+    $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
+   }
    if($best_status eq "converged") {
     $status->{"note"}=($status->{"note"}||"")."converged within tolerance (worst ".sprintf("%.3f",$best_worst).", tolerance ".sprintf("%.3f",$tol).", baseline ".sprintf("%.3f",$baseline_worst).").";
    } else {
@@ -5040,7 +5461,10 @@ sub run_hdr20_postcal_shadow_correction {
  } or do {
   my $inner_err=$@ || "HDR20 post-cal shadow inner eval failed";
   $inner_err=~s/[\r\n]+/ /g;
-  die $inner_err if($inner_err =~ /^cancelled$/i); # let cancellation propagate
+  # Let cancellation propagate in its canonical form: the substitution
+  # above turned "cancelled\n" into "cancelled ", and the outer handlers
+  # match the bare word.
+  die "cancelled\n" if($inner_err =~ /^cancelled\s*$/i);
   # Any non-cancellation error: corrected stays at base DPG, record note,
   # still re-establish below.
   $status->{"status"}="error" if(($status->{"status"}||"") ne "skipped" && ($status->{"status"}||"") ne "self_gated" && ($status->{"status"}||"") ne "converged" && ($status->{"status"}||"") ne "best_effort" && ($status->{"status"}||"") ne "reverted");
@@ -5068,6 +5492,10 @@ sub run_hdr20_postcal_shadow_correction {
 
 unless(caller()) {
 my $config=decode_json_safe(read_file($config_file),{});
+$LG_3D_REQUEST_CONTEXT=$config;
+$LG_3D_AUTOMATION_TOKEN=$config->{automation_token}
+ if(ref($config) eq "HASH" && defined($config->{automation_token})
+    && $config->{automation_token}=~/^[A-Za-z0-9_.:-]{8,200}$/);
 # Calibration-card Target White / Target Black overrides flow into the
 # fixture-mode synthetic readings and the profile target curve.
 if(ref($config) eq "HASH") {
@@ -5190,6 +5618,7 @@ if($retry_upload_only) {
  delete $state->{"elapsed_ms"};
  delete $state->{"terminal_commit_verified"};
 }
+delete $state->{automation_processing_epoch}; # A new worker must obtain fresh evidence.
 if($config->{"full_workflow"}) {
  $state->{"full_workflow"}=json_true();
  $state->{"full_autocal_run_id"}=$config->{"full_autocal_run_id"} if(defined($config->{"full_autocal_run_id"}) && $config->{"full_autocal_run_id"} ne "");
@@ -5345,26 +5774,45 @@ eval {
  # before generate (same idea as greyscale completion pattern cleanup).
  blank_display_for_solve($config,$state);
 
- # Export cube size is operator-selected (17/33). TV upload payload stays 33³.
+ # Export cube size is operator-selected. TV payload geometry is resolved
+ # independently from the connected TV's reviewed platform profile.
  my $cube_size=int($config->{"solve_cube_size"}||17);
  $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ my $payload_grid=lg_payload_grid_for_config($config);
+ die "LG 3D LUT platform geometry is unknown; refusing to generate or upload a TV payload\n"
+  if($upload_requested && !$config->{"fixture_mode"} && !$payload_grid);
+ $payload_grid=33 if(!$payload_grid && $config->{"fixture_mode"});
+ my $capability_generation=(ref($config->{"lg_generation"}) eq "HASH")
+  ? $config->{"lg_generation"}
+  : ((ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : {});
+ my $resolved_capabilities=(keys(%{$capability_generation}) ? eval { resolve_lg_capabilities($capability_generation) } : undef);
+ if(ref($resolved_capabilities) eq "HASH") {
+  $state->{"capability_profile"}={
+   capability_profile_id=>$resolved_capabilities->{"capability_profile_id"},
+   capability_profile_hash=>$resolved_capabilities->{"capability_profile_hash"},
+   capability_match_status=>$resolved_capabilities->{"match_status"},
+   capability_library_version=>$resolved_capabilities->{"library_version"},
+   applied_profiles=>$resolved_capabilities->{"applied_profiles"},
+   calibration=>$resolved_capabilities->{"data"}{"calibration"},
+  };
+ }
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"solve_cube_size"}=$cube_size;
  $state->{"cube_lut_size"}=$cube_size;
  $state->{"solve_progress_pct"}=10;
  $state->{"message"}=($method eq "ramp")
-  ? "Applying drift correction and solving ${cube_size}-point cube plus 33-point LG payload"
+  ? "Applying drift correction and solving ${cube_size}-point cube plus ${payload_grid}-point LG payload"
   : (is_volume_profile_method($method))
-   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", ${cube_size}-point cube plus 33-point LG payload"
+   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", ${cube_size}-point cube plus ${payload_grid}-point LG payload"
    : ($method eq "imported")
-    ? "Resampling imported .cube to ${cube_size}-point cube plus 33-point LG payload"
-    : "Solving matrix ${cube_size}-point cube plus 33-point LG payload";
+    ? "Resampling imported .cube to ${cube_size}-point cube plus ${payload_grid}-point LG payload"
+    : "Solving matrix ${cube_size}-point cube plus ${payload_grid}-point LG payload";
  write_state($state);
 
  my ($model,$cube_u16,$payload_u16,$preview_nodes);
  if($method eq "imported") {
-  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state,$cube_size);
+  ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state,$cube_size,$payload_grid);
  } else {
  # Volume profiling (lattice / skeleton / hybrid) uses the same solve as the
  # offline lattice path: white-preserving matrix baseline from W/R/G/B/K
@@ -5424,16 +5872,16 @@ eval {
   };
   log_line("lattice debug dump error: $@") if($@);
  }
- $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes) plus 33-point LG payload";
+ $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes) plus ${payload_grid}-point LG payload";
  $state->{"current_name"}="Generating ${cube_size}³ cube";
  $state->{"solve_progress_pct"}=40;
  write_state($state);
  ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
- $state->{"message"}="Generating 33-point LG upload payload";
- $state->{"current_name"}="Generating 33³ payload";
+ $state->{"message"}="Generating ${payload_grid}-point LG upload payload";
+ $state->{"current_name"}="Generating ${payload_grid}³ payload";
  $state->{"solve_progress_pct"}=70;
  write_state($state);
- $payload_u16=generate_lut_lg_payload($model,33);
+ $payload_u16=generate_lut_lg_payload($model,$payload_grid);
  }
  my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
  $state->{"export"}=$export;
@@ -5456,7 +5904,7 @@ eval {
  $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
  $state->{"cube_lut_size"}=$cube_size;
  $state->{"solve_cube_size"}=$cube_size;
- $state->{"payload_lut_size"}=33;
+ $state->{"payload_lut_size"}=$payload_grid;
  $state->{"payload_bits"}=12;
  $state->{"payload_axis_order"}="R fastest, G middle, B slowest";
  $state->{"payload_channel_order"}="RGB values per node";
@@ -5486,7 +5934,7 @@ eval {
   } else {
    $state->{"phase"}="upload_probe";
    $state->{"current_name"}="Probing LG 3D LUT upload";
-   $state->{"message"}="Round-tripping a unity 33x33x33 payload before upload";
+   $state->{"message"}="Round-tripping a unity ${payload_grid}x${payload_grid}x${payload_grid} payload before upload";
    write_state($state);
    $probe=api_json("POST","/api/lg/3d-lut/probe",{
     picture_mode => $config->{"picture_mode"}||"",
@@ -5732,7 +6180,9 @@ eval {
   } or do {
    my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
    $shadow_err=~s/[\r\n]+/ /g;
-   die $shadow_err if($shadow_err =~ /^cancelled$/i);
+   # Canonical rethrow: the substitution above turned "cancelled\n" into
+   # "cancelled " and the outermost handler matches the bare word.
+   die "cancelled\n" if($shadow_err =~ /^cancelled\s*$/i);
    if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
    $state->{"hdr20_postcal_shadow"}->{"status"}="error";
    $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
@@ -5896,6 +6346,13 @@ eval {
   }
  }
 
+ # The final smoothing upload also exits CAL mode. Verify queued processing
+ # before returning, so the next stage cannot inherit reset menu defaults.
+ if (!$config->{fixture_mode}) {
+  PGAutomationProcessing::enforce($config,$state,$LG_3D_SETTINGS_EPOCH,\&api_json,\&log_line);
+  write_state($state);
+ }
+
  # Surface any null meter reads that had to be discarded during the run. They
  # were re-measured, so the LUT is sound, but a meter that dropped out once is
  # likely to do it again and the operator should know it happened.
@@ -5932,11 +6389,14 @@ eval {
      tv_message    => $state->{'message'} || '',
      worker_status => $state->{'status'} || '',
     });
-    PGAutoCalRun::run_merge_manifest($rid, { emitted_lut => {
-     lut_grid       => 33,
-     lut_data_count => 35937,
-     lut_bit_depth  => 12,
-    }});
+    PGAutoCalRun::run_merge_manifest($rid, {
+     emitted_lut => {
+      lut_grid       => ($state->{'payload_lut_size'}||0)+0,
+      lut_data_count => (($state->{'payload_lut_size'}||0)**3)*3,
+      lut_bit_depth  => 12,
+     },
+     capability_profile => $state->{'capability_profile'},
+    });
    }
    1;
   };

@@ -14,8 +14,15 @@ Build & release
 - Pi 5 staging: extract packages with tar --keep-directory-symlink and validate usrmerge symlinks (/lib,/bin,/sbin) right after staging.
 - Pi 5 GPU memory is the kernel CMA pool (vc4-kms-v3d cma-, 64–512 MB); gpu_mem is a no-op there.
 - Image builds must strip inherited WiFi credentials.
-- Windows/macOS bundles carry copies of frontend/Perl files; rebuild via build-*-package.sh after changing them.
+- github-deployer/ is outside PR #14 calibration work. Do not modify or rebuild it.
 
 Conventions
 - Keep comment density in the 12–19% range (repo norm).
 - Python lives in usr/bin/ (meter/result helpers); Bash scripts drive the image pipeline.
+- Stop keeps the current signal and picture mode. Stop workers, release the meter, confirm calibration exit and restore TPC/GSR; do not restore original picture settings or tour other signal modes. Show cleanup progress and retain ownership if required cleanup fails.
+
+Calibration logging
+- Every log must provide important detail; every word earns its place.
+- Preserve readable measurement and progress lines. Log decisions, changed state, failures and bounded waits; suppress unchanged polls.
+- Correlate diagnostic events by run, job, stage, worker and operation. Use UTC timestamps and monotonic durations with explicit units.
+- Distinguish requested, accepted, measured, verified and unknown outcomes. Keep large data in artifacts and never log credentials.

@@ -11,6 +11,7 @@ set -o pipefail
 # name (started through PATH) leaves no directory to strip.
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+source "$SCRIPT_DIR/pgen_meter_pattern.sh" || exit 1
 PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
 PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
 PGEN_SERIES_STEPS_HELPER="${PGEN_SERIES_STEPS_HELPER:-$SCRIPT_DIR/pgen_series_steps.py}"
@@ -165,12 +166,14 @@ PY
 # routes the reads onto the ColorChecker CIE chart. Cache the identity once from
 # the seed (before our first overwrite) and re-splice it into every state write.
 SERIES_META_JSON=""
+SERIES_WORKER_META_JSON=""
 SERIES_META_LOADED=""
 load_series_identity_meta() {
  [[ -n "$SERIES_META_LOADED" ]] && return
  SERIES_META_LOADED=1
  [[ -f "$STATE_FILE" ]] || return
- SERIES_META_JSON=$(python - "$STATE_FILE" <<'PY' 2>/dev/null || true
+ local metadata
+ metadata=$(python - "$STATE_FILE" "$$" <<'PY' 2>/dev/null || true
 import json, sys
 try:
     state = json.load(open(sys.argv[1]))
@@ -191,10 +194,23 @@ meta = {"type": stype, "points": points}
 for key in ("signal_mode", "target_gamma", "max_luma", "dv_map_mode", "dv_interface"):
     if key in state and state[key] is not None:
         meta[key] = state[key]
-sys.stdout.write(",".join(json.dumps(key) + ":" + json.dumps(value, separators=(",", ":"))
-                          for key, value in meta.items()))
+worker_meta = {key: state[key] for key in ("automation_worker_id", "full_autocal_run_id")
+               if key in state and state[key] is not None}
+if worker_meta.get("automation_worker_id"):
+    worker_meta["worker_pid"] = int(sys.argv[2])
+    try:
+        worker_meta["worker_start_ticks"] = open("/proc/%s/stat" % sys.argv[2]).read().rsplit(") ", 1)[1].split()[19]
+    except (OSError, IndexError):
+        worker_meta["worker_start_ticks"] = ""
+for values in (meta, worker_meta):
+    print(",".join(json.dumps(key) + ":" + json.dumps(value, separators=(",", ":"))
+                   for key, value in values.items()))
 PY
 )
+ SERIES_META_JSON="${metadata%%$'\n'*}"
+ if [[ "$metadata" == *$'\n'* ]]; then
+  SERIES_WORKER_META_JSON="${metadata#*$'\n'}"
+ fi
 }
 
 write_state_json() {
@@ -204,6 +220,11 @@ write_state_json() {
  load_series_identity_meta
  if [[ -n "$SERIES_META_JSON" && "$payload" != *'"points"'* && "$payload" == *"}" ]]; then
   payload="${payload%\}},$SERIES_META_JSON}"
+ fi
+ # A payload with its own type/points still belongs to this worker attempt.
+ # All state-writer callers own measurements, never these cached identity fields.
+ if [[ -n "$SERIES_WORKER_META_JSON" && "$payload" == *"}" ]]; then
+  payload="${payload%\}},$SERIES_WORKER_META_JSON}"
  fi
  local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
  printf '%s\n' "$payload" > "$tmp" || return 1
@@ -252,10 +273,10 @@ record_series_cancel_usb_suppression() {
 
 series_quit_spotread() {
  local quit_reason="${1:-normal}"
+ local quit_offset=0 quit_confirmed=0 quit_output=""
+ [[ -f "${OUTFILE:-}" ]] && quit_offset=$(output_size)
  if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
   printf "Q" >&3 2>/dev/null || true
-  exec 3>&- 2>/dev/null || true
-  METER_SERIES_FD_OPEN=0
  fi
  # A Stop request is explicit cancellation, not a request to finish the active
  # read. Give spotread a short opportunity to consume Q and close its USB
@@ -267,9 +288,23 @@ series_quit_spotread() {
  local spotread_grace=3
  local waited=0
  while (( waited < spotread_grace * 10 )) && pgrep -x spotread >/dev/null 2>&1; do
+  # spotread first aborts read_sample(), then asks Q again to give up.
+  # Keep the FIFO open for that confirmation instead of forcing TERM on
+  # every normal quit. Inspect only output produced after our first Q.
+  if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" && "$quit_confirmed" == 0 ]]; then
+   quit_output=$(clean_output_since "$quit_offset")
+   if [[ "$quit_output" == *"any other key to retry:"* ]]; then
+    printf "Q" >&3 2>/dev/null || true
+    quit_confirmed=1
+   fi
+  fi
   sleep 0.1
   waited=$((waited + 1))
  done
+ if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
+  exec 3>&- 2>/dev/null || true
+  METER_SERIES_FD_OPEN=0
+ fi
  if pgrep -x spotread >/dev/null 2>&1; then
   echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread exceeded ${spotread_grace}s graceful timeout; sending TERM" >> /tmp/meter_series_debug.log
   # Dark reads can leave spotread blocked inside libusb so an explicit Stop
@@ -344,8 +379,10 @@ post_patch() {
   post_companion_patch "$@"
   return $?
  fi
- curl -s --max-time 8 "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1
+ if ! meter_post_local_patch "$API_BASE" "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")"; then
+  log "$METER_PATTERN_ERROR"
+  series_meter_read_failure_exit "$METER_PATTERN_ERROR" "pattern-request-failed"
+ fi
 }
 
 post_patch_timeout() {
@@ -688,21 +725,81 @@ write_state_on_exit() {
   cur=$(cat "$STATE_FILE" 2>/dev/null) || cur=""
  fi
  if [[ "$cur" == *'"status":"running"'* || "$cur" == *'"status":"setup"'* ]]; then
-  local last_step=0 last_name="Series helper exited unexpectedly"
+  # Another helper owns the state file now: leave its record alone, like
+  # every other writer does. The bash match still sees a foreign owner when
+  # python is unavailable.
+  local file_sid=""
+  if [[ "$cur" =~ \"series_id\":[[:space:]]*\"([^\"]*)\" ]]; then
+   file_sid="${BASH_REMATCH[1]}"
+  fi
+  if [[ -n "$file_sid" && -n "${SERIES_ID:-}" && "$file_sid" != "$SERIES_ID" ]] || series_state_claim_lost; then
+   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+   return 0
+  fi
+  local last_step=0 safe_name="Series helper exited unexpectedly"
   if [[ "$cur" =~ \"current_step\":[[:space:]]*([0-9]+) ]]; then
    last_step="${BASH_REMATCH[1]}"
   fi
   if [[ "$cur" =~ \"current_name\":[[:space:]]*\"([^\"]*)\" ]]; then
-   last_name="${BASH_REMATCH[1]} (exited unexpectedly)"
+   # Cut the patch name, not the marker, so a long name still says why.
+   safe_name="$(printf '%s' "${BASH_REMATCH[1]}" | tr -d '\n\r' | head -c 170) (exited unexpectedly)"
   fi
-  local safe_name
-  safe_name=$(printf '%s' "$last_name" | tr -d '\n\r' | head -c 200)
+  # The flat fallback cannot clean a character cut mid-way without python:
+  # keep it to printable ASCII without quote or backslash so JSON stays valid.
+  local flat_name
+  flat_name=$(printf '%s' "$safe_name" | LC_ALL=C tr -cd '\040\041\043-\133\135-\176')
   local safe_sid="${SERIES_ID:-}"
   safe_sid=$(printf '%s' "$safe_sid" | tr -cd 'A-Za-z0-9_.-')
   local total="${TOTAL:-0}"
-  printf '{"status":"error","series_id":"%s","current_step":%s,"total_steps":%s,"current_name":"%s","readings":[],"white_reading":null,"error":"series_helper_exited_unexpectedly"}\n' \
-   "$safe_sid" "$last_step" "$total" "$safe_name" > "$STATE_FILE" 2>/dev/null || true
-  chmod 666 "$STATE_FILE" 2>/dev/null || true
+  # Keep the worker attempt identity: without it the runner reports a
+  # worker-identity mismatch instead of the crash itself.
+  # The in-place update below keeps it from the file itself; the flat
+  # fallback (no python) can only use what this helper loaded earlier.
+  local worker_meta="${SERIES_WORKER_META_JSON:-}"
+  # Prefer mutating the live state in place: that keeps the readings taken
+  # so far and the identity exactly as written. The flat rewrite below is
+  # only the fallback when python is unavailable or the file is unreadable.
+  local mutated=""
+  mutated=$(python - "$STATE_FILE" "$safe_name" <<'PY' 2>/dev/null
+import io, json, sys
+# Bytes in, ASCII out: independent of the helper's locale and of whether
+# python is 2.7 or 3.x on the appliance.
+try:
+    with io.open(sys.argv[1], "rb") as fh:
+        state = json.loads(fh.read().decode("utf-8", "replace"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(state, dict):
+    raise SystemExit(1)
+name = sys.argv[2]
+if isinstance(name, bytes):
+    name = name.decode("utf-8", "ignore")
+else:
+    # A byte cut mid-character arrives as a lone surrogate; drop it.
+    name = name.encode("utf-8", "surrogateescape").decode("utf-8", "ignore")
+state["status"] = "error"
+state["error"] = "series_helper_exited_unexpectedly"
+state["current_name"] = name
+sys.stdout.write(json.dumps(state, separators=(",", ":")) + "\n")
+PY
+) || mutated=""
+  # Publish by rename, like write_state_json: a poll must never read a
+  # half-written crash record.
+  # A write that fails partway (full /tmp) is discarded, never renamed in.
+  local tmp="${STATE_FILE}.$$.exit.tmp" written=0
+  if [[ -n "$mutated" ]]; then
+   printf '%s\n' "$mutated" > "$tmp" 2>/dev/null && written=1
+  else
+   printf '{"status":"error","series_id":"%s","current_step":%s,"total_steps":%s,"current_name":"%s","readings":[],"white_reading":null,"error":"series_helper_exited_unexpectedly"%s}\n' \
+    "$safe_sid" "$last_step" "$total" "$flat_name" "${worker_meta:+,$worker_meta}" > "$tmp" 2>/dev/null && written=1
+  fi
+  if [[ "$written" == "1" ]]; then
+   chmod 666 "$tmp" 2>/dev/null || true
+   chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
+   mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+   rm -f "$tmp" 2>/dev/null || true
+  fi
  fi
  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
 }
@@ -1435,15 +1532,21 @@ restart_spotread_session() {
   aaa) SR_CMD="$SR_CMD -Y aaa" ;;
  esac
  echo "[$(date '+%H:%M:%S.%3N')] restarting spotread child: step=${STEP_NUM:-?} name=${NAME:-?} low_light=${CURRENT_LOW_LIGHT_MODE:-off}->$requested_mode" >> /tmp/meter_series_debug.log
- if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
-  exec 3>&-
-  METER_SERIES_FD_OPEN=0
- fi
- [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
- pkill -9 -x spotread 2>/dev/null
- pkill -9 -x spotread_sim 2>/dev/null
+ # Integration changes happen between reads. Let the old reader release its
+ # USB handle before reopening it, as the manual session path already does.
+ # Immediate SIGKILL caused a USB reset and failed init on the first black
+ # patch of the 2026-09-13 reference batch.
+ local attempt
+ SPOTREAD_RESTART_ERROR=""
+ for attempt in 1 2; do
+ series_quit_spotread "integration-change"
+ series_stop_requested && series_cancel_exit
  sleep 1.5
- rm -f "$OUTFILE" "$CMDPIPE"
+ local restart_label
+ restart_label=$(json_escape "Preparing meter integration for ${NAME:-patch} (attempt $attempt/2)")
+ write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$restart_label","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
  touch "$OUTFILE"
  mkfifo "$CMDPIPE"
  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
@@ -1456,6 +1559,7 @@ restart_spotread_session() {
   clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
   if echo "$clean" | grep -q "to take a reading:"; then
    CURRENT_LOW_LIGHT_MODE="$requested_mode"
+   SPOTREAD_RESTART_ERROR=""
    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
    return 0
   fi
@@ -1469,13 +1573,15 @@ restart_spotread_session() {
    continue
   fi
   if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
-   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart: instrument error" >> /tmp/meter_series_debug.log
-   return 1
+   break
   fi
   sleep 0.5
   waited=$((waited + 1))
  done
- echo "[$(date '+%H:%M:%S.%3N')] spotread session restart TIMED OUT" >> /tmp/meter_series_debug.log
+ SPOTREAD_RESTART_ERROR=$(printf '%s' "$clean" | tail -n 8 | tr '\r\n\t' '   ' | cut -c 1-1200)
+ [[ -n "$SPOTREAD_RESTART_ERROR" ]] || SPOTREAD_RESTART_ERROR="Meter did not become ready within 40 seconds"
+ echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt $attempt failed: $SPOTREAD_RESTART_ERROR" >> /tmp/meter_series_debug.log
+ done
  return 1
 }
 
@@ -1810,10 +1916,15 @@ capture_series_average_sample() {
     printf " " >&3
     continue
    fi
-   if (( retried_comm == 1 )) && { [[ "$new_output" == *"Spot read failed due to communication problem"* ]] \
-      || [[ "$new_output" == *"to take a reading:"* ]]; }; then
+   if (( retried_comm >= 1 )) && [[ "$new_output" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no averaging result; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
     return 1
+   fi
+   if (( retried_comm == 1 )) && [[ "$new_output" == *"to take a reading:"* ]]; then
+    retried_comm=2
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
    fi
    if prompt_reason=$(manual_ready_prompt_reason "$new_output"); then
     handle_series_manual_prompt "$STEP_NUM" "$NAME" "$prompt_reason" || return 1
@@ -2217,9 +2328,10 @@ EOJSON
  fi
 
  if ! ensure_spotread_low_light_for_step "$i"; then
-  LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed at step $STEP_NUM")
+  LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed at step $STEP_NUM ($NAME) after two attempts. Check the meter USB connection, then resume the queue.")
+  LOW_LIGHT_DEBUG=$(json_escape "${SPOTREAD_RESTART_ERROR:-Meter restart was unavailable}")
   write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","message":"$LOW_LIGHT_ERROR","error_code":"meter-integration-restart-failed","debug":"$LOW_LIGHT_DEBUG","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
   series_quit_spotread
   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
@@ -2320,11 +2432,18 @@ EOJSON
     printf " " >&3
     continue
    fi
-   if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-      || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+   if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result; retiring child step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
     READ_INCOMPLETE=1
     break
+   fi
+   # The first key only acknowledges the error. spotread then re-arms and
+   # prints its ordinary prompt; trigger exactly one replacement read here.
+   if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+    RETRIED_COMM=2
+    SCAN_OFFSET=$(output_size)
+    printf " " >&3
+    continue
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2410,10 +2529,15 @@ EOJSON
       printf " " >&3
       continue
      fi
-     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during no-reading recovery; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
       break
+     fi
+     if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+      RETRIED_COMM=2
+      SCAN_OFFSET=$(output_size)
+      printf " " >&3
+      continue
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2489,10 +2613,15 @@ EOJSON
       printf " " >&3
       continue
      fi
-     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during zero confirmation; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
       break
+     fi
+     if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+      RETRIED_COMM=2
+      SCAN_OFFSET=$(output_size)
+      printf " " >&3
+      continue
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -2672,9 +2801,10 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   if ! ensure_spotread_low_light_for_step 0; then
-   LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed for final white refresh")
+   LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed for final white refresh after two attempts. Check the meter USB connection, then resume the queue.")
+   LOW_LIGHT_DEBUG=$(json_escape "${SPOTREAD_RESTART_ERROR:-Meter restart was unavailable}")
    write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
+{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","message":"$LOW_LIGHT_ERROR","error_code":"meter-integration-restart-failed","debug":"$LOW_LIGHT_DEBUG","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
    series_quit_spotread
    rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
@@ -2720,10 +2850,15 @@ EOJSON
      printf " " >&3
      continue
     fi
-    if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
-       || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+    if (( RETRIED_COMM >= 1 )) && [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no final-white result; retiring child name=$FIRST_NAME" >> /tmp/meter_series_debug.log
      break
+    fi
+    if (( RETRIED_COMM == 1 )) && [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; then
+     RETRIED_COMM=2
+     SCAN_OFFSET=$(output_size)
+     printf " " >&3
+     continue
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log

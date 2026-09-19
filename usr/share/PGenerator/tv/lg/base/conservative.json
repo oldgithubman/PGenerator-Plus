@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "profile_id": "lg/base/conservative-v1",
+    "priority": 0,
+    "match": {},
+    "data": {
+      "runtime": {
+        "reset_method": "ddc_cal_identity",
+        "white_balance_channel": "ddc_1d",
+        "picturemode_readable": false,
+        "readback_supported": false,
+        "hdr_tonemap": false,
+        "dv_mode": "1d_only"
+      },
+      "calibration": {
+        "session": { "support_state": "unknown" },
+        "one_d_lut": {
+          "support_state": "unknown",
+          "points_per_channel": 1024,
+          "channels": 3,
+          "value_minimum": 0,
+          "value_maximum": 32767
+        },
+        "three_d_lut": {
+          "support_state": "unknown",
+          "grid_size": null,
+          "channels": 3,
+          "bit_depth": 12,
+          "value_minimum": 0,
+          "value_maximum": 4095,
+          "axis_order": "R fastest, G middle, B slowest"
+        },
+        "dolby_vision_configuration": {
+          "support_state": "unknown",
+          "format_generation": null
+        }
+      },
+      "settings": {
+        "public_routes": {
+          "read": { "support_state": "unknown", "picture_keys": [] },
+          "write": { "support_state": "unknown", "picture_keys": [] },
+          "grouped_read": { "support_state": "unknown" },
+          "individual_read": { "support_state": "unknown" }
+        },
+        "controls": {
+          "panel_light": {
+            "wire_key": "backlight",
+            "value_schema": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "externalpq.BACKLIGHT_UI_DATA" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          },
+          "brightness": {
+            "wire_key": "brightness",
+            "value_schema": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "externalpq.BRIGHTNESS_UI_DATA" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          },
+          "contrast": {
+            "wire_key": "contrast",
+            "value_schema": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "externalpq.CONTRAST_UI_DATA" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          },
+          "color": {
+            "wire_key": "color",
+            "value_schema": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "externalpq.COLOR_UI_DATA" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          },
+          "energy_saving": {
+            "wire_key": "energySaving",
+            "value_schema": { "type": "enum", "known_values": ["off"], "extensible": true, "note": "Other tokens are firmware-scoped; do not normalize min/med/max into invented long forms." },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "ssap.settings" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          },
+          "hdr_dynamic_tone_mapping": {
+            "wire_key": "hdrDynamicToneMapping",
+            "value_schema": { "type": "enum", "known_values": ["off", "on", "HGIG"] },
+            "read": { "support_state": "unknown", "route": "ssap.settings" },
+            "write": { "support_state": "unknown", "route": "ssap.settings" },
+            "verify": { "support_state": "unknown", "route": "ssap.settings" }
+          }
+        }
+      }
+    },
+    "evidence": [
+      {
+        "source_id": "colourstrue-g3-mode-banks",
+        "strength": "implementation_policy",
+        "scope": "Workflow admission is distinct from picture-mode selection and platform calibration support. HDR Cinema Home has no proved calibration bank; settings/readings remain available. A listed mode still requires the runtime platform and context guards."
+      },
+      {
+        "source_id": "pgenerator-existing-behaviour",
+        "strength": "proposed",
+        "scope": "Fail-closed defaults used when no platform or exact model profile matches."
+      }
+    ]
+  }
+}

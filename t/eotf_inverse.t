@@ -1,0 +1,10 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is not installed' if !$node;
+my $output=`"$node" "$Bin/js/eotf_inverse.js" 2>&1`;
+is($?,0,'production inverse EOTF regression checks pass') or diag $output;
+like($output,qr/^PASS inverse EOTF/,'real highlight and black-aware cases exercised');
+done_testing();

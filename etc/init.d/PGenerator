@@ -52,6 +52,10 @@ case "$1" in
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR/tmp $PGENERATOR_VAR_DIR/images $PGENERATOR_VAR_DIR/video $PGENERATOR_VAR_DIR/video/.diagseq $PGENERATOR_VAR_DIR/ccss $PGENERATOR_VAR_DIR/ccss/custom $PGENERATOR_VAR_DIR/updates 2>/dev/null
         chmod 755 $PGENERATOR_VAR_DIR/tmp $PGENERATOR_VAR_DIR/ccss $PGENERATOR_VAR_DIR/ccss/custom $PGENERATOR_VAR_DIR/updates 2>/dev/null
         chmod 775 $PGENERATOR_VAR_DIR/images $PGENERATOR_VAR_DIR/video $PGENERATOR_VAR_DIR/video/.diagseq 2>/dev/null
+        mkdir -p $PGENERATOR_VAR_DIR/automation/recipes $PGENERATOR_VAR_DIR/automation/queues $PGENERATOR_VAR_DIR/automation/runs 2>/dev/null
+        chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR/automation 2>/dev/null
+        # Automation manifests and archives can carry run capabilities.
+        chmod 700 $PGENERATOR_VAR_DIR/automation $PGENERATOR_VAR_DIR/automation/recipes $PGENERATOR_VAR_DIR/automation/queues $PGENERATOR_VAR_DIR/automation/runs 2>/dev/null
         mkdir -p $PGENERATOR_VAR_DIR/lg $PGENERATOR_VAR_DIR/lg/ddc $PGENERATOR_VAR_DIR/lg/luts $PGENERATOR_VAR_DIR/lg/pin-sessions 2>/dev/null
         chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR/lg 2>/dev/null
         chmod 775 $PGENERATOR_VAR_DIR/lg $PGENERATOR_VAR_DIR/lg/ddc $PGENERATOR_VAR_DIR/lg/luts $PGENERATOR_VAR_DIR/lg/pin-sessions 2>/dev/null

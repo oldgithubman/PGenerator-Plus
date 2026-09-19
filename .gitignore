@@ -4,6 +4,7 @@
 *.tar.gz
 *.7z.*
 *.so
+/Logs/
 Backup/
 v2.1/
 docs/

@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/platform/W20H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W20H"] },
+      "data": { "identity": { "model_year": 2020, "platform_token": "W20H" }, "runtime": { "picturemode_readable": false, "readback_supported": false, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W20H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W20O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W20O"] },
+      "data": { "identity": { "model_year": 2020, "platform_token": "W20O" }, "runtime": { "picturemode_readable": false, "readback_supported": false, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W20O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W21H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W21H"] },
+      "data": { "identity": { "model_year": 2021, "platform_token": "W21H" }, "runtime": { "picturemode_readable": false, "readback_supported": false, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W21H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W21O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W21O"] },
+      "data": { "identity": { "model_year": 2021, "platform_token": "W21O" }, "runtime": { "picturemode_readable": false, "readback_supported": false, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W21O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W22H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W22H"] },
+      "data": { "identity": { "model_year": 2022, "platform_token": "W22H" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W22H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W22O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W22O"] },
+      "data": { "identity": { "model_year": 2022, "platform_token": "W22O" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W22O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W23H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W23H"] },
+      "data": { "identity": { "model_year": 2023, "platform_token": "W23H" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W23H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W23O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W23O"] },
+      "data": { "identity": { "model_year": 2023, "platform_token": "W23O" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W23O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W24H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W24H"] },
+      "data": { "identity": { "model_year": 2024, "platform_token": "W24H" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W24H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W24G",
+      "priority": 30,
+      "match": { "platform_tokens": ["W24G"] },
+      "data": { "identity": { "model_year": 2024, "platform_token": "W24G" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W24G calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W24O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W24O"] },
+      "data": { "identity": { "model_year": 2024, "platform_token": "W24O" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W24O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W25H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W25H"] },
+      "data": { "identity": { "model_year": 2025, "platform_token": "W25H" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W25H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W25G",
+      "priority": 30,
+      "match": { "platform_tokens": ["W25G"] },
+      "data": { "identity": { "model_year": 2025, "platform_token": "W25G" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W25G calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W25O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W25O"] },
+      "data": { "identity": { "model_year": 2025, "platform_token": "W25O" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W25O calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W26H",
+      "priority": 30,
+      "match": { "platform_tokens": ["W26H"] },
+      "data": { "identity": { "model_year": 2026, "platform_token": "W26H" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 17 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W26H calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W26G",
+      "priority": 30,
+      "match": { "platform_tokens": ["W26G"] },
+      "data": { "identity": { "model_year": 2026, "platform_token": "W26G" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W26G calibration geometry and Dolby Vision configuration generation." }]
+    },
+    {
+      "profile_id": "lg/platform/W26O",
+      "priority": 30,
+      "match": { "platform_tokens": ["W26O"] },
+      "data": { "identity": { "model_year": 2026, "platform_token": "W26O" }, "runtime": { "picturemode_readable": true, "readback_supported": true, "hdr_tonemap": true }, "calibration": { "session": { "support_state": "inventory" }, "one_d_lut": { "support_state": "inventory" }, "three_d_lut": { "support_state": "inventory", "grid_size": 33 }, "dolby_vision_configuration": { "support_state": "inventory", "format_generation": 2019 } } },
+      "evidence": [{ "source_id": "lg-calibration-platform-table", "strength": "library_implementation", "scope": "W26O calibration geometry and Dolby Vision configuration generation." }]
+    }
+  ]
+}

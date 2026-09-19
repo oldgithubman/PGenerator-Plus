@@ -15,6 +15,8 @@
 --chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;--chart-annotation:#344255;--chart-eotf-measured:#806600;--chart-gamut-line:#334b70;--meter-bar-track:#f1f3f7;--meter-bar-zero:rgba(70,84,102,.28);
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
 --status-success:#217a36;--status-warning:#a55300;--status-error:#c62828;--status-hdmi:#b51d1d;--status-dv:#7044bd;--status-calibration:#315dd8;--badge-neutral:#d5dce7}
+.ui-update-notice{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px 16px;padding:9px 16px;background:var(--surface-card);border-bottom:2px solid var(--accent);color:var(--text);font-size:.85rem;line-height:1.4}
+.ui-update-notice[hidden]{display:none}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}

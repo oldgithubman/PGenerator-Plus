@@ -1,0 +1,544 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "lg/series/G3/hardware-verified",
+      "priority": 70,
+      "match": {
+        "retail_series": [
+          "G3"
+        ]
+      },
+      "data": {
+        "picture_modes": {
+          "sdr": {
+            "cinema": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "eco": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "expert1": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "expert2": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "filmMaker": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "game": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "normal": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "personalized": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "sports": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "technicolor": {
+              "offered": false,
+              "selection": {
+                "support_state": "unsupported"
+              }
+            },
+            "vivid": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            }
+          },
+          "hdr10": {
+            "hdrCinema": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrCinemaBright": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrEco": {
+              "offered": false,
+              "selection": {
+                "support_state": "unsupported"
+              }
+            },
+            "hdrFilmMaker": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrGame": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrPersonalized": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrStandard": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrTechnicolor": {
+              "offered": false,
+              "selection": {
+                "support_state": "unsupported"
+              }
+            },
+            "hdrVivid": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            }
+          },
+          "dv": {
+            "dolbyVisionCinema": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionCinemaBright": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionFilmMaker": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionGame": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionPersonalized": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionStandard": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "dolbyVisionVivid": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            }
+          },
+          "hlg": {
+            "hdrCinema": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrCinemaBright": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrEco": {
+              "offered": false,
+              "selection": {
+                "support_state": "unsupported"
+              }
+            },
+            "hdrFilmMaker": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrGame": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrPersonalized": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrStandard": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            },
+            "hdrTechnicolor": {
+              "offered": false,
+              "selection": {
+                "support_state": "unsupported"
+              }
+            },
+            "hdrVivid": {
+              "selection": {
+                "support_state": "verified"
+              },
+              "readback": {
+                "support_state": "verified"
+              }
+            }
+          }
+        },
+        "settings": {
+          "controls": {
+            "blackFrameInsertion": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "blackLevelAdjust": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "colorDepth": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "deBlur": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "deJudder": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "eyeComfortMode": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "hSharpness": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "localDimming": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "oledLight": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "oledPixelBrightness": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "truMotionMode": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "vSharpness": {
+              "read": {
+                "support_state": "unsupported"
+              },
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "whiteBalanceLuminance": {
+              "write": {
+                "support_state": "unsupported"
+              }
+            },
+            "adjustingLuminance": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "colorGamut": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "gamma": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "hdrDynamicToneMapping": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "whiteBalanceBlue": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "whiteBalanceGreen": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "whiteBalanceIre": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "whiteBalanceMethod": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            },
+            "whiteBalanceRed": {
+              "signals": [
+                "sdr",
+                "hdr10",
+                "dv",
+                "hlg"
+              ]
+            }
+          },
+          "mode_availability": {
+            "signals": {
+              "sdr": {
+                "modes": [
+                  "cinema",
+                  "eco",
+                  "expert1",
+                  "expert2",
+                  "filmMaker",
+                  "game",
+                  "normal",
+                  "personalized",
+                  "sports",
+                  "vivid"
+                ]
+              },
+              "hdr10": {
+                "modes": [
+                  "hdrCinema",
+                  "hdrCinemaBright",
+                  "hdrFilmMaker",
+                  "hdrGame",
+                  "hdrPersonalized",
+                  "hdrStandard",
+                  "hdrVivid"
+                ]
+              },
+              "dv": {
+                "modes": [
+                  "dolbyHdrCinema",
+                  "dolbyHdrCinemaBright",
+                  "dolbyHdrGame",
+                  "dolbyHdrPersonalized",
+                  "dolbyHdrStandard",
+                  "dolbyHdrVivid"
+                ]
+              },
+              "hlg": {
+                "modes": [
+                  "hdrCinema",
+                  "hdrCinemaBright",
+                  "hdrFilmMaker",
+                  "hdrGame",
+                  "hdrPersonalized",
+                  "hdrStandard",
+                  "hdrVivid"
+                ]
+              }
+            },
+            "shared_settings": {
+              "hlg": "hdr10"
+            }
+          }
+        },
+        "runtime": {
+          "dimension_reads_follow_active_mode": true
+        }
+      },
+      "evidence": [
+        {
+          "source_id": "owner-g3-sweep-20260918",
+          "strength": "hardware_verified",
+          "scope": "G3 firmware 23.25.55 over its API on HDMI: 30 picture modes selected across SDR, HDR10, DV, HLG; every public picture key read and written at its limits and every listed value with readback and restore in each mode. Unsupported controls were refused on every route; read-only controls refused every changed value."
+        }
+      ]
+    }
+  ]
+}

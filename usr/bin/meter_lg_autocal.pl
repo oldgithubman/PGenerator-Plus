@@ -23,7 +23,10 @@ use PGCalibrationMath qw(
  target_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
+use PGAutomation ();
+use PGCalibrationLog ();
 use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGLGCapabilities qw(lg_recipe lg_setting_values_agree lg_scoped_request_payload lg_setting_write_accepted);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -47,6 +50,7 @@ our $LG_AUTOCAL_DDC_LAYOUT = "sdr26";
 our $LG_AUTOCAL_DARK_DETAIL = 0;
 our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
+our $LG_AUTOCAL_COMMAND_FAILURE;
 our $LG_AUTOCAL_TARGET_CONTEXT;
 our $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS = [];
 # Active-range lowest-body DPG seed index(es) for the SDR26 1D spline.
@@ -78,8 +82,7 @@ $SIG{INT} = sub { $cancelled = 1; };
 sub log_line {
  my ($message)=@_;
  $message="" if(!defined($message));
- my @lt=localtime();
- my $stamp=sprintf("%02d:%02d:%02d",$lt[2],$lt[1],$lt[0]);
+ my $stamp=PGCalibrationLog::timestamp();
  print STDERR "[$stamp] $message\n";
 }
 
@@ -241,11 +244,25 @@ sub decode_json_safe {
 }
 
 sub api_json {
+ my @args=@_;
+ return PGCalibrationLog::api_call('Greyscale',PGCalibrationLog::from_config($LG_AUTOCAL_CONFIG),$args[0]||'GET',$args[1],$args[2],$args[3]||30,
+  sub {api_json_impl(@args)});
+}
+
+sub api_json_impl {
  my ($method,$path,$payload,$timeout)=@_;
  $method ||= "GET";
  $timeout ||= 30;
  $timeout=1 if($timeout < 1);
- my $body = defined($payload) ? $json->encode($payload) : "";
+ my $request_payload=$payload;
+ $request_payload=lg_scoped_request_payload($path,$request_payload,$LG_AUTOCAL_CONFIG);
+ if($method ne "GET" && ref($payload) eq "HASH"
+    && ref($LG_AUTOCAL_CONFIG) eq "HASH"
+    && defined($LG_AUTOCAL_CONFIG->{automation_token})
+    && $LG_AUTOCAL_CONFIG->{automation_token}=~/^[A-Za-z0-9_.:-]{8,200}$/) {
+  $request_payload={%{$request_payload},automation_token=>$LG_AUTOCAL_CONFIG->{automation_token}};
+ }
+ my $body = defined($request_payload) ? $json->encode($request_payload) : "";
  my $deadline=time()+$timeout;
  my $socket = IO::Socket::INET->new(
   PeerHost => $api_host,
@@ -256,6 +273,7 @@ sub api_json {
  return { status=>"error", message=>"Web UI API is unavailable" } if(!$socket);
  $socket->autoflush(1);
  my $request = "$method $path HTTP/1.1\r\nHost: $api_host\r\nConnection: close\r\nAccept: application/json\r\n";
+ $request .= PGCalibrationLog::header_line();
  if($method ne "GET") {
   $request .= "Content-Type: application/json\r\nContent-Length: ".length($body)."\r\n\r\n".$body;
  } else {
@@ -290,6 +308,10 @@ sub api_json {
  $content="" if(!defined($content));
  my $result=decode_json_safe($content,{});
  if(ref($result) eq "HASH" && %{$result}) {
+  if(($result->{status}||'') eq 'error') {
+   $LG_AUTOCAL_COMMAND_FAILURE={operation=>"$method $path",message=>$result->{message}||'',error_code=>$result->{error_code}||'',time=>time()};
+   log_line('LG command failed: '.$json->encode($LG_AUTOCAL_COMMAND_FAILURE));
+  }
   return $result;
  }
  log_line("$method $path returned an invalid response");
@@ -336,7 +358,13 @@ sub lg_helper_json {
  my $raw=`$cmd`;
  my $exit_status=$? >> 8;
  my $result=decode_json_safe($raw,{});
- return $result if(ref($result) eq "HASH" && ($result->{"status"}||"") ne "");
+ if(ref($result) eq 'HASH' && ($result->{status}||'') ne '') {
+  if(($result->{status}||'') eq 'error') {
+   $LG_AUTOCAL_COMMAND_FAILURE={operation=>'LG helper '.($request->{action}||$request->{command}||'picture control'),message=>$result->{message}||'',error_code=>$result->{error_code}||'',time=>time()};
+   log_line('LG command failed: '.$json->encode($LG_AUTOCAL_COMMAND_FAILURE));
+  }
+  return $result;
+ }
  return { status=>"error", message=>"LG TV did not finish the white-balance write" } if($exit_status == 124 || $exit_status == 137);
  $raw=~s/[\r\n]+/ /g;
  $raw=~s/\s+/ /g;
@@ -350,6 +378,13 @@ sub lg_clients {
  return decode_json_safe(read_file("/var/lib/PGenerator/lg/clients.json"),{});
 }
 
+sub lg_helper_setting_context {
+ my ($config)=@_;
+ $config=$LG_AUTOCAL_CONFIG if(ref($config) ne "HASH");
+ $config={} if(ref($config) ne "HASH");
+ return %{lg_scoped_request_payload('/api/lg/picture-settings/set',{category=>'picture'},$config)};
+}
+
 sub lg_helper_picture_set {
 	 my ($settings,$picture_mode,$calibration_mode_active,$verify_ddc_upload,$keep_calibration_mode)=@_;
 	 $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
@@ -359,6 +394,7 @@ sub lg_helper_picture_set {
  return undef if($ip eq "" || $client_key eq "");
  return lg_helper_json({
   action => "picture_set",
+  lg_helper_setting_context(),
 	  ip => $ip,
 	  client_key => $client_key,
 	  settings => $settings,
@@ -381,6 +417,8 @@ sub lg_helper_picture_get {
  return undef if($ip eq "" || $client_key eq "");
  return lg_helper_json({
   action => "picture_get",
+  lg_helper_setting_context(),
+  include_current_input=>JSON::PP::true,
   ip => $ip,
 	  client_key => $client_key,
 	  keys => $keys,
@@ -575,12 +613,35 @@ sub sdr26_merge_dark_detail_ladder {
  return scalar(@add);
 }
 
+# The panel's DDC white-balance array is a fixed-length hardware structure:
+# 20 points on the hdr20 ladder, 26 on sdr26. Its length never changes with
+# Dark Detail -- the fillers ddc_slots_for_layout merges in are extra *meter
+# reading* IREs interpolated between these slots, not additional DDC storage.
+# The webOS setSystemSettings schema caps whiteBalance/adjustingLuminance at 26
+# items for exactly this reason. Anything that uploads a whole DDC array to the
+# TV (the baseline resets) must size it from this base ladder, NOT from the
+# Dark-Detail-merged ddc_slot_count(); measurement-domain masks and per-slot
+# loops keep using the merged count.
+sub ddc_baseline_slots_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return ($layout eq "hdr20")
+  ? (1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100)
+  : (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+}
+
+sub ddc_baseline_slot_count {
+ my ($layout)=@_;
+ # Force list context before counting: scalar() on a list-returning sub yields
+ # the list's last element via the comma operator, not its length.
+ my @slots=ddc_baseline_slots_for_layout(defined($layout) ? $layout : $LG_AUTOCAL_DDC_LAYOUT);
+ return scalar(@slots);
+}
+
 sub ddc_slots_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- my @base=($layout eq "hdr20")
-  ? (1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100)
-  : (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+ my @base=ddc_baseline_slots_for_layout($layout);
  return @base if(!ddc_dark_detail_enabled());
  # Merge the fillers in ascending order. The caller that drives the run sorts
  # descending itself, and every other consumer treats this as an unordered set
@@ -3291,6 +3352,23 @@ sub autocal_dpg_terminal_error {
  return "$label upload failed".($detail ne "" ? ": $detail" : "") if($upload_failed);
  return "$label white reference did not converge; the generated curve was not committed" if(!$white_converged);
  return undef;
+}
+
+# Both DPG solvers must abort through the normal top-level CAL_END cleanup
+# on a failed physical read, including failures after an earlier good sample.
+# Do not continue on stale readings or claim a finished curve / final dE.
+sub autocal_dpg_read_failure {
+ my ($state,$prefix,$patch,$reason)=@_;
+ my $label=$prefix eq "hdr20" ? "HDR20" : "SDR26";
+ my $message="$label 1D DPG measurement failed at $patch: ".($reason||"No usable meter reading");
+ $state->{"${prefix}_1d_dpg_exit_reason"}="read_failed";
+ $state->{"${prefix}_1d_dpg_uploaded"}=JSON::PP::false;
+ $state->{"${prefix}_1d_dpg_final_de"}=undef;
+ $state->{"phase"}="error";
+ $state->{"message"}=$message;
+ write_state($state);
+ log_line($message);
+ die "$message\n";
 }
 
 sub committed_polish_far_from_target {
@@ -12656,11 +12734,57 @@ sub mark_autocal_diagnostic_reading {
  return $reading;
 }
 
+# A small event buffer bridges the worker's fast updates to the automation poll.
+# Emit at measurement/write boundaries, never infer an adjustment from a later
+# reading. The same events are saved in the standalone worker log.
+sub autocal_activity_event {
+ my ($state,$message)=@_;
+ return if(ref($state) ne 'HASH');
+ $message =~ s/[\r\n]+/ /g;
+ my $events=$state->{activity_events} ||= [];
+ push @$events,{seq=>++$state->{activity_sequence},time=>time(),message=>$message};
+ splice(@$events,0,@$events-$PGAutomation::WORKER_ACTIVITY_EVENT_LIMIT) if(@$events>$PGAutomation::WORKER_ACTIVITY_EVENT_LIMIT);
+ log_line($message);
+ write_state($state);
+}
+
+sub autocal_activity_reading {
+ my ($state,$label,$iteration,$budget,$de,$best,$target,$y,$target_y,$requested)=@_;
+ my $message=sprintf('%s | Attempt %d/%d | dE %s; target <=%.2f',
+  $label,$iteration,$budget,defined($de)?sprintf('%.3f',$de):'unavailable',$target);
+ $message.=sprintf('; previous best %.3f',$best) if(defined($best));
+ $message.=sprintf('; requested target %.2f (near-black allowance active)',$requested) if(defined($requested)&&abs($requested-$target)>0.00001);
+ $message.=sprintf(' | Y %.4f cd/m2',$y) if(defined($y));
+ $message.=sprintf('; luminance error %+.1f%%',100*($y/$target_y-1)) if(defined($y)&&defined($target_y)&&$target_y>0);
+ autocal_activity_event($state,$message);
+}
+
+sub autocal_activity_point_finished {
+ my ($state,$label,$status,$best_de,$refinement_de)=@_;
+ my $result=defined($refinement_de) ? sprintf(' | Accepted refinement dE %.3f',$refinement_de)
+  : defined($best_de) ? sprintf(' | Best measured dE %.3f',$best_de) : ' | No usable result';
+ autocal_activity_event($state,$label.' | Point '.$status.$result);
+}
+
+sub autocal_activity_upload {
+ my ($state,$label,$iteration,$before,$after,$idx,$ok)=@_;
+ my $changes=join(', ',map {sprintf('%s %s->%d',('R','G','B')[$_],defined($before->[$_])?$before->[$_]:'unknown',$after->[$idx+1024*$_])} 0..2);
+ autocal_activity_event($state,"$label | Attempt $iteration | ".($ok?'LUT upload accepted':'LUT upload failed')." | LUT codes: $changes".($ok?' | Not yet measured':''));
+}
+
 sub write_state {
  my ($state)=@_;
  $state={} if(ref($state) ne "HASH");
+ PGAutomation::stamp_worker_state($state,$LG_AUTOCAL_CONFIG);
  $state->{"autocal"}=JSON::PP::true;
  write_file($state_file,$json->encode($state));
+ # Automation polls the status route every two seconds and reads only the
+ # keys in PGAutomation::WORKER_STATUS_SUMMARY_KEYS, so a small sidecar beside
+ # the state file serves its summary view. The daemon ignores a sidecar older
+ # than the state file, so a failure here only costs the poller a full
+ # decode; it must never break the state write.
+ eval { write_file("$state_file.summary",$json->encode(PGAutomation::worker_status_summary($state))); 1; }
+  or log_line("write_state: summary sidecar not written: ".($@||"unknown error"));
  # Per-write trace (opt-in via PGEN_AUTOCAL_TRACE=1). Captures every
  # write_state call so a worker death between the last write_state and
  # exit can be diagnosed by replaying the trace against the state file.
@@ -12849,20 +12973,26 @@ sub lg_autocal_26_queue_sdr_1d_dpg_upload {
 sub set_picture_values {
  my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode)=@_;
  $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
+ # Upload the base DDC ladder only (20 on hdr20, 26 on sdr26): the webOS schema
+ # caps these arrays at 26 items and the helper reads them by physical slot
+ # position. The Dark-Detail-merged ddc_slot_count() (31/32) is a reading
+ # ladder; an array that long is refused as "array has too many items" before
+ # the first measurement. Positions past the base ladder are dropped here,
+ # exactly as the helper always did (FAB-038 covers the filler mapping).
 	my $settings={
 		  whiteBalanceMethod => "22",
 		  whiteBalanceIre => $target->{"write_ire"}||$target->{"array_ire"}||$target->{"ire"},
 		  ddc_layout => $LG_AUTOCAL_DDC_LAYOUT,
-		  whiteBalanceRed => $arrays->{"whiteBalanceRed"},
-		  whiteBalanceGreen => $arrays->{"whiteBalanceGreen"},
-		  whiteBalanceBlue => $arrays->{"whiteBalanceBlue"},
+		  (map { ($_ => (ref($arrays->{$_}) eq "ARRAY" ? numeric_array($arrays->{$_},ddc_baseline_slot_count()) : $arrays->{$_})) }
+		   qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)),
 		 };
-	 $settings->{"adjustingLuminance"}=$arrays->{"adjustingLuminance"} if(ref($arrays->{"adjustingLuminance"}) eq "ARRAY");
+	 $settings->{"adjustingLuminance"}=numeric_array($arrays->{"adjustingLuminance"},ddc_baseline_slot_count()) if(ref($arrays->{"adjustingLuminance"}) eq "ARRAY");
 	 my $attempts=4;
 	 my $last_message="LG white-balance write failed";
 	 for(my $attempt=1;$attempt<=$attempts;$attempt++) {
 			 my $response=lg_helper_picture_set($settings,$picture_mode || ($picture->{"pictureMode"}||""),$calibration_mode_active,$verify_ddc_upload,$keep_calibration_mode);
 		 $response=api_json("POST","/api/lg/picture-settings/set",{
+		  lg_helper_setting_context(),
 		  settings => $settings,
 		  picture_mode => $picture_mode || ($picture->{"pictureMode"}||""),
 			  keep_calibration_mode => $keep_calibration_mode ? JSON::PP::true : JSON::PP::false,
@@ -12878,6 +13008,7 @@ sub set_picture_values {
 	  }
 	  if(ref($state) eq "HASH") {
 	   $state->{"ddc_1d_lut"}=JSON::PP::true if($response->{"ddc_1d_lut"});
+	   $state->{"setting_verification_state"}=$response->{"verification_state"}||"acknowledged_unverified";
 	   $state->{"ddc_upload_verified"}=$response->{"ddc_upload_verified"} ? JSON::PP::true : JSON::PP::false
 	    if(exists($response->{"ddc_upload_verified"}) || $verify_ddc_upload);
 	   $state->{"ddc_upload_verify_contract"}=$response->{"ddc_upload_verify_contract"}||""
@@ -12891,20 +13022,20 @@ sub set_picture_values {
 	  set_state_calibration_mode($state,$response->{"calibration_mode"} ? 1 : 0,$response->{"calibration_picture_mode"}||$picture_mode||($picture->{"pictureMode"}||"")) if(exists($response->{"calibration_mode"}));
 	  my $pic=$response->{"picture_settings"};
 		  if(ref($pic) eq "HASH") {
-		   $arrays->{"whiteBalanceRed"}=numeric_array($pic->{"whiteBalanceRed"},ddc_slot_count());
-		   $arrays->{"whiteBalanceGreen"}=numeric_array($pic->{"whiteBalanceGreen"},ddc_slot_count());
-		   $arrays->{"whiteBalanceBlue"}=numeric_array($pic->{"whiteBalanceBlue"},ddc_slot_count());
-		   $arrays->{"adjustingLuminance"}=numeric_array($pic->{"adjustingLuminance"},ddc_slot_count());
+		   $arrays->{"whiteBalanceRed"}=numeric_array($pic->{"whiteBalanceRed"},ddc_baseline_slot_count());
+		   $arrays->{"whiteBalanceGreen"}=numeric_array($pic->{"whiteBalanceGreen"},ddc_baseline_slot_count());
+		   $arrays->{"whiteBalanceBlue"}=numeric_array($pic->{"whiteBalanceBlue"},ddc_baseline_slot_count());
+		   $arrays->{"adjustingLuminance"}=numeric_array($pic->{"adjustingLuminance"},ddc_baseline_slot_count());
 		   return ($pic,undef);
 		  }
 	  my $next_picture=clone_picture($picture);
 	  $next_picture->{"pictureMode"}=$picture_mode if(defined($picture_mode) && $picture_mode ne "");
 	  $next_picture->{"whiteBalanceMethod"}=$settings->{"whiteBalanceMethod"};
 	  $next_picture->{"whiteBalanceIre"}=$settings->{"whiteBalanceIre"};
-		  $next_picture->{"whiteBalanceRed"}=numeric_array($arrays->{"whiteBalanceRed"},ddc_slot_count());
-		  $next_picture->{"whiteBalanceGreen"}=numeric_array($arrays->{"whiteBalanceGreen"},ddc_slot_count());
-		  $next_picture->{"whiteBalanceBlue"}=numeric_array($arrays->{"whiteBalanceBlue"},ddc_slot_count());
-		  $next_picture->{"adjustingLuminance"}=numeric_array($arrays->{"adjustingLuminance"},ddc_slot_count());
+		  $next_picture->{"whiteBalanceRed"}=numeric_array($arrays->{"whiteBalanceRed"},ddc_baseline_slot_count());
+		  $next_picture->{"whiteBalanceGreen"}=numeric_array($arrays->{"whiteBalanceGreen"},ddc_baseline_slot_count());
+		  $next_picture->{"whiteBalanceBlue"}=numeric_array($arrays->{"whiteBalanceBlue"},ddc_baseline_slot_count());
+		  $next_picture->{"adjustingLuminance"}=numeric_array($arrays->{"adjustingLuminance"},ddc_baseline_slot_count());
 		  return ($next_picture,undef);
 	 }
 	 $last_message=(ref($response) eq "HASH") ? ($response->{"message"}||"LG white-balance write failed") : "LG white-balance write failed";
@@ -14965,6 +15096,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		clear_state_step_measurements($state);
 		write_state($state);
 		my ($wr,$werr)=read_step($config,$rs,$state);
+		autocal_dpg_read_failure($state,"hdr20","100% white reference",$werr) if($werr || ref($wr) ne "HASH");
 		if(!$werr && ref($wr) eq "HASH") {
 			my $wy=luminance($wr);
 			$white_ref=$wy if(defined($wy) && $wy+0 > 0);
@@ -15138,6 +15270,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# floor, then run the normal loop from that resolvable point.
 		{
 			my ($probe_rd,$probe_err)=read_step($config,$rs,$state);
+			autocal_dpg_read_failure($state,"hdr20",$label,$probe_err) if($probe_err || ref($probe_rd) ne "HASH");
 			# Log the INITIAL probe read separately from the post-probe-up read
 			# so an operator can tell whether the read itself was inaccurate (a
 			# settling / pattern-insertion / DPG-modulation race) or whether the
@@ -15194,7 +15327,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					my ($puk,$pmsg)=$upload_dpg->($current_dpg);
 					return (undef,undef) if(!$puk);
 					my ($rd,$err)=read_step($config,$rs,$state);
-					return (undef,undef) if($err || ref($rd) ne "HASH");
+					autocal_dpg_read_failure($state,"hdr20",$label,$err) if($err || ref($rd) ne "HASH");
 					my $y=luminance($rd);
 					return ($rd,(defined($y)?$y+0:undef));
 				};
@@ -15265,8 +15398,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			write_state($state);
 			my ($reading,$err)=read_step($config,$rs,$state);
 			if($err || ref($reading) ne "HASH") {
-				log_line("HDR20 1D DPG greyscale: read failed at ".$label." (".$i."): ".($err||"no reading"));
-				last;
+				autocal_dpg_read_failure($state,"hdr20",$label,$err);
 			}
 			$last_reading=$reading;
 			# Target luminance per anchor on the 2.2 curve vs the peak white_ref,
@@ -15291,6 +15423,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_luminance"}=luminance($reading);
 			my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
+			autocal_activity_reading($state,$label,$i,$budget,$de,$best_de,$_effective_target_de,luminance($reading),$tl,$target_de);
 			# Trajectory max (kept as-is, includes reverted overshoots). Useful in
 			# transient / per-iter logs so the operator can see the worst move the
 			# worker tried. The headline max dE is updated from $best_de only
@@ -15428,6 +15561,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						my $_vd=undef;
 						if($bok && !cancelled()) {
 							my ($arr,$are)=read_step($config,$rs,$state);
+							autocal_dpg_read_failure($state,"hdr20",$label,$are) if($are || ref($arr) ne "HASH");
 							if(!$are && ref($arr) eq "HASH") {
 								$last_reading=$arr;
 								my $_tl=luminance($arr);
@@ -15461,7 +15595,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# consecutive reverts the move is 0.125x -- effectively no change
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
-					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
+					autocal_activity_event($state,sprintf('%s | Attempt %d | Result worsened (dE %.3f); restoring best %.3f and reducing step size',$label,$i,$de,$best_de));
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					# Noise-limited early stop (SDR26 port). A low-IRE anchor already
 					# inside the noise band around its effective target gains nothing
@@ -15475,7 +15609,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de)
 					   && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor
 					   && $consecutive_reverts >= 2) {
-						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
+						autocal_activity_event($state,sprintf('%s | Stopping refinement after %d reversions near target; best measured dE %.3f',$label,$consecutive_reverts,$best_de));
 						last;
 					}
 					if($consecutive_reverts >= $_revert_budget) {
@@ -15506,9 +15640,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				# against the most recent measurement, not best_de.
 				$prev_de=$de+0;
 			}
-			# Per-read audit line: lets the operator tail the log in real time and
-			# confirm every read is recorded + which is the running best.
-			log_line("HDR20 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
 			# Per-iter state push: lets the next-run investigation see the
 			# full trajectory in the state JSON without reconstructing from
 			# the spotread session log. Each row is one iter; rows accumulate
@@ -15594,6 +15725,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					my ($auk,$aumsg)=$upload_dpg->($current_dpg);
 					if($auk) {
 						my ($arr,$are)=read_step($config,$rs,$state);
+						autocal_dpg_read_failure($state,"hdr20",$label,$are) if($are || ref($arr) ne "HASH");
 						if(!$are && ref($arr) eq "HASH") {
 							$reading=$arr;
 							$last_reading=$arr;
@@ -15716,6 +15848,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  my $_vd=undef;
 			  if($bok && !cancelled()) {
 			   my ($arr,$are)=read_step($config,$rs,$state);
+			   autocal_dpg_read_failure($state,"hdr20",$label,$are) if($are || ref($arr) ne "HASH");
 			   if(!$are && ref($arr) eq "HASH") {
 			    $last_reading=$arr;
 			    my $_tl=luminance($arr);
@@ -15776,6 +15909,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 }
 			}
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
+			my @activity_before=map {($panel_out_of_sync||$upload_fail_streak)?undef:$current_dpg->[$idx+1024*$_]} 0..2;
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
@@ -15788,11 +15922,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"hdr20_1d_dpg_iteration"}=$total_inner_iters+0;
 			$state->{"hdr20_1d_dpg_max_de"}=$max_de_overall+0;
 			my ($uploaded,$umsg)=$upload_dpg->($current_dpg);
+			autocal_activity_upload($state,$label,$i,\@activity_before,$current_dpg,$idx,$uploaded);
 			$state->{"hdr20_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
 			$state->{"hdr20_1d_dpg_upload_message"}=$umsg;
-			$state->{"message"}=$uploaded
-				? sprintf("HDR20 1D DPG %s %d/%d uploaded (max dE=%.3f, target<=%.2f)",$label,$i,$budget,$max_de_overall,$target_de)
-				: sprintf("HDR20 1D DPG %s %d/%d upload failed after retries (max dE=%.3f)",$label,$i,$budget,$max_de_overall);
+			# Headline the point's own result. The run-wide worst value on its
+			# own read as a calibration failure on the live card.
+			$state->{"message"}=autocal_dpg_upload_headline("HDR20",$label,$i,$budget,$uploaded,$de,$best_de,"run max",$max_de_overall,$target_de);
 			write_state($state);
 			# Per-iter trace: push (iter, measured Y, target Y, dE, gain, damp, DPG idx
 			# values) into the state JSON so a run that stalls at 1.4% / 4% IRE is
@@ -15912,10 +16047,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					}
 				}
 				write_state($state);
-				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (charted best reading, no re-read)":" (no best reading to chart)"));
+				autocal_activity_event($state,$label.' | Restore best curve: '.($bok?'upload accepted':'FAILED: '.($bmsg//'unknown')).sprintf(' | Best measured dE %.3f',$best_de).' | No fresh verification measurement');
 			}
 		}
 		$max_de_overall_committed=autocal_committed_max($max_de_overall_committed,$best_de);
+		autocal_activity_point_finished($state,$label,cancelled()?'stopped':$upload_failed?'failed':'finished',$best_de);
 		return ($converged,$last_reading);
 	};
 
@@ -16534,6 +16670,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $_osc_damp=1.0;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
+ my $accepted_refinement_de=undef; # Reporting only; never changes curve selection.
  my $accepted_best_dpg=undef;
  my $accepted_best_anchors=undef;
 
@@ -16598,8 +16735,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   write_state($state);
   my ($reading,$err)=read_step($config,$rs,$state);
   if($err || ref($reading) ne "HASH") {
-   log_line("SDR26 1D DPG greyscale: read failed at ".$label." (".$i."): ".($err||"no reading"));
-   last;
+   autocal_dpg_read_failure($state,"sdr",$label,$err);
   }
   $last_reading=$reading;
   # Peak is chroma-only (Limited 109 legal / Full 100): targets OWN measured Y
@@ -16618,7 +16754,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
   # Peak normalises to itself (autocal_white_y = its own Y); body normalises
   # to the calibrated peak white_ref. Mirrors the HDR pattern.
-  log_line("SDR26 1D DPG greyscale: legal_peak_check anchor_ire=".sprintf("%.4f",$_anchor_ire+0)." is_legal_peak=".($_is_legal_peak?1:0)." target_Yn_will_equal_measured=".($_is_legal_peak?1:0)." tl_source=".($_is_legal_peak?"measured_luminance":"curve_via_white_ref")." chroma_only=".($_is_legal_peak?1:0)) if($_is_legal_peak);
+  log_line("SDR26 1D DPG: $label anchors peak white; correcting white balance only") if($_is_legal_peak && $i==1);
   annotate_reading_target($reading,($_is_legal_peak ? $tl : $white_ref),$tl,$target_x,$target_y);
   # Tag the peak reading so charts/tooltips treat it as the white reference
   # (no gamma-derived target Y line that drifts with each move). Limited 109
@@ -16667,6 +16803,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $state->{"current_luminance"}=luminance($reading);
    my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
    $state->{"current_delta_e"}=defined($de)?$de:undef;
+   autocal_activity_reading($state,$label,$i,$budget,$de,$best_de,$_effective_target_de,luminance($reading),$tl,$target_de);
    # Trajectory max (kept as-is, includes reverted overshoots). Useful in
    # transient / per-iter logs so the operator can see the worst move the
    # worker tried. The HEADLINE max dE reported to the caller (and ultimately
@@ -16780,14 +16917,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $panel_out_of_sync=1;
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
-    log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".(($_anchor_ire+0 >= $high_ire_threshold+0)?"high-IRE":"low-IRE").")");
+    autocal_activity_event($state,sprintf('%s | Attempt %d | Result worsened (dE %.3f); restoring best %.3f and reducing step size',$label,$i,$de,$best_de));
     # Noise-limited early stop: a low-IRE anchor already near its
     # effective target is meter-noise-limited -- once a move has failed to
     # beat the best twice, further reverts only scatter the dE (and the
     # final restore charts the committed best anyway). Keep the best and
     # move on instead of burning the whole revert budget on large bad moves.
     if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
-     log_line("SDR26 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
+     autocal_activity_event($state,sprintf('%s | Stopping refinement after %d reversions near target; best measured dE %.3f',$label,$consecutive_reverts,$best_de));
      last;
     }
     if($consecutive_reverts >= $revert_budget) {
@@ -16811,7 +16948,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # the high-band threshold is lowered via conf).
    $prev_de=$de+0;
   }
-  log_line("SDR26 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
   # Per-iter state push for diagnostic parity with HDR.
   {
    my $hist=$state->{"sdr_1d_dpg_anchor_history"};
@@ -16886,6 +17022,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # fall through: the build below makes the one-more move
   } elsif($acceptance_pending) {
    if(defined($de) && $de+0 < $accepted_best_de+0) {
+    $accepted_refinement_de=$de+0;
     log_line("SDR26 1D DPG greyscale: ".$label." one-more move improved to dE=".sprintf("%.4f",$de+0).", moving on");
    } else {
     @{$current_dpg_ref}=@{$accepted_best_dpg};
@@ -16895,6 +17032,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     my ($auk,$aumsg)=$upload_dpg->($current_dpg_ref);
     if($auk) {
      my ($arr,$are)=read_step($config,$rs,$state);
+     autocal_dpg_read_failure($state,"sdr",$label,$are) if($are || ref($arr) ne "HASH");
      if(!$are && ref($arr) eq "HASH") {
       $reading=$arr;
       $last_reading=$arr;
@@ -17244,6 +17382,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      $label,$i,$idx+0,$sr+0,$sg+0,$sb+0,$_y_log,$_tl_log,$_before,$_after));
    }
   }
+  my @activity_before=map {($panel_out_of_sync||$upload_fail_streak)?undef:$current_dpg_ref->[$idx+1024*$_]} 0..2;
   @{$current_dpg_ref}=@{$new_dpg};
   if(ref($state) eq "HASH") {
    $state->{"sdr_1d_dpg_data"}=$current_dpg_ref;
@@ -17251,12 +17390,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $state->{"sdr_1d_dpg_computed_at"}=int(time()*1000);
   }
   my ($uploaded,$umsg)=$upload_dpg->($current_dpg_ref);
+  autocal_activity_upload($state,$label,$i,\@activity_before,$current_dpg_ref,$idx,$uploaded);
   if(ref($state) eq "HASH") {
    $state->{"sdr_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
    $state->{"sdr_1d_dpg_upload_message"}=$umsg;
-   $state->{"message"}=$uploaded
-    ? sprintf("SDR26 1D DPG %s %d/%d uploaded (max dE=%.3f, target<=%.2f)",$label,$i,$budget,$max_de_anchor,$target_de)
-    : sprintf("SDR26 1D DPG %s %d/%d upload failed after retries (max dE=%.3f)",$label,$i,$budget,$max_de_anchor);
+   # Headline the point's own result, as the HDR20 path does; the anchor's
+   # worst attempt on its own read as a calibration failure.
+   $state->{"message"}=autocal_dpg_upload_headline("SDR26",$label,$i,$budget,$uploaded,$de,$best_de,"anchor max",$max_de_anchor,$target_de);
    write_state($state);
   }
   if(!$uploaded) {
@@ -17325,11 +17465,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    }
    $state->{"current_delta_e"}=$_restored_de if(ref($state) eq "HASH");
    write_state($state) if(ref($state) eq "HASH");
-   my $_reread_suffix=$_restored_ok ? " (charted best reading, no re-read)" : " (no best reading to chart)";
-   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).((($_differs || $panel_out_of_sync))?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").$_reread_suffix);
+   autocal_activity_event($state,$label.' | Restore best curve: '.(($_differs || $panel_out_of_sync)?($bok?'upload accepted':'FAILED: '.($bmsg//'unknown')):'already selected').sprintf(' | Best measured dE %.3f',$best_de).' | No fresh verification measurement');
   }
  }
  $max_de_anchor_committed=autocal_committed_max(0,$best_de);
+ autocal_activity_point_finished($state,$label,cancelled()?'stopped':$upload_failed?'failed':'finished',$best_de,$accepted_refinement_de);
  # Return the headline-committed max (not the trajectory max). The caller
  # binds this to its own $max_de_overall, which then feeds $state's final_de
  # and the run summary's "final max dE=..." log line. The trajectory max
@@ -17452,13 +17592,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     push @sdr26_codes,$code;
    }
   } else {
-   # 8-bit codes are already formula-derived over the merged labels.
+   # Keep 100% at legal white (235), with 105/109 in the 235..255
+   # headroom segment. A 239-span formula below 100% drove every body
+   # patch too high and collapsed both 105% and 109% onto code 255.
+   my $policy=signal_code_policy({
+    signal_mode=>"sdr",pattern_range=>"limited",max_bpc=>8,
+    color_format=>$sdr26_color_format,autocal_26_codes=>1,
+   });
+   return "Unable to resolve 8-bit SDR YCbCr signal policy" if(!defined($policy));
    for(my $k=0;$k<@sdr26_labels;$k++) {
     my $ire=$sdr26_labels[$k]+0;
-    my $code=int($ire/100*239+16+0.5);
-    $code=255 if($code > 255);
-    $code=16 if($code < 16);
-    push @sdr26_codes,$code;
+    my $encoded=signal_percent_to_code($policy,$ire);
+    return "Unable to encode 8-bit SDR YCbCr anchor $ire" if(ref($encoded) ne "HASH");
+    push @sdr26_codes,$encoded->{"code"};
    }
   }
  } else {
@@ -17515,7 +17661,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    if($sdr26_rgb_limited && $sdr26_bits >= 10) {
     $idx=lg_autocal_sdr26_dpg_sample_index_for_limited_code($code,$sdr26_dpg_max_idx);
    } elsif($sdr26_rgb_limited) {
-    my $code10=int(64+($code+0)*(940-64)/(235-16)+0.5);
+    my $code10=int(64+($code-16)*(940-64)/(235-16)+0.5);
     $code10=940 if($code10 > 940);
     $idx=lg_autocal_sdr26_dpg_sample_index_for_limited_code($code10,$sdr26_dpg_max_idx);
    } else {
@@ -18843,6 +18989,10 @@ sub start_calibration_mode {
  my $signal_mode=(ref($state) eq "HASH")
   ? ($state->{"requested_signal_mode"}||$state->{"signal_mode"}||"")
   : "";
+ if(ref($state) eq "HASH") {
+  $state->{"message"}="Entering LG calibration mode for ".($picture_mode||"the active picture mode");
+  write_state($state);
+ }
  my $result=api_json("POST","/api/lg/calibration-mode",{
   enabled => JSON::PP::true,
   picture_mode => $picture_mode||"",
@@ -18854,6 +19004,7 @@ sub start_calibration_mode {
   return undef;
  }
  my $error=(ref($result) eq "HASH") ? ($result->{"message"}||"LG TV rejected calibration mode start.") : "LG TV rejected calibration mode start.";
+ $state->{"error_code"}=$result->{"error_code"}||"lg-calibration-start-rejected" if(ref($state) eq "HASH" && ref($result) eq "HASH");
  log_line("CAL_START failed: $error");
  return $error;
 }
@@ -21320,6 +21471,23 @@ sub end_calibration_mode {
  return $result;
 }
 
+sub autocal_error_calibration_cleanup {
+ my ($state,$picture_mode)=@_;
+ my $result=lg_calibration_end_retry_forbidden($state) ? undef : end_calibration_mode($picture_mode);
+ my $closed=ref($result) eq "HASH" && ($result->{status}||"") eq "ok"
+  && exists($result->{calibration_mode}) && !$result->{calibration_mode};
+ if($closed) {
+  set_state_calibration_mode($state,0,"");
+  return 1;
+ }
+ set_state_calibration_mode($state,1,$picture_mode);
+ $state->{calibration_mode_end_unconfirmed}=JSON::PP::true;
+ $state->{calibration_recovery_message}||="TV calibration exit was not confirmed: ".
+  (ref($result) eq "HASH" ? ($result->{message}||"missing exit acknowledgement") : "no exit acknowledgement").
+  ". Stop and confirm recovery before starting another calibration.";
+ return 0;
+}
+
 sub autocal_completion_pattern_cleanup {
  my ($config,$state)=@_;
  return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
@@ -21425,6 +21593,7 @@ sub read_step {
  $attempts=1 if($attempts < 1);
  $attempts=5 if($attempts > 5);
  my $last_error="";
+ delete $state_ref->{"measurement_retry"} if(ref($state_ref) eq "HASH");
 	 # When the operator's low-light handler already repeats this patch
 	 # (2/3/5 samples reduced in linear XYZ), the low-shadow median ladder is
 	 # deliberately stood down: stacking both would read the patch up to 15
@@ -21439,10 +21608,14 @@ sub read_step {
 	  my $sample_count=low_shadow_sample_count_for_step($config,$step);
 	  my $sample_timeout=low_shadow_sample_read_timeout($config,$step);
 	  my $max_sample_attempts=$sample_count+2;
+	  my $sample_attempts=0;
 	  for(my $sample=1;$sample<=$max_sample_attempts && @samples < $sample_count;$sample++) {
+	   $sample_attempts=$sample;
 	   my $sample_index=@samples+1;
 	   if(ref($state_ref) eq "HASH") {
-	    $state_ref->{"message"}="Reading ".($step->{"name"}||"low shadow")." sample $sample_index/$sample_count";
+	    $state_ref->{"message"}=$state_ref->{"measurement_retry"}
+       ? "Retrying invalid measurement for ".($step->{"name"}||"patch")." ($sample/$max_sample_attempts); waiting for a valid sample"
+       : "Reading ".($step->{"name"}||"low shadow")." sample $sample_index/$sample_count";
 	    write_state($state_ref);
 	   }
 	   my ($reading,$error)=read_step_once($config,$step,$sample,{ read_timeout=>$sample_timeout, low_shadow_sample=>1 });
@@ -21450,12 +21623,14 @@ sub read_step {
 	    if(invalid_low_shadow_reading($reading,$step)) {
 	     log_line("Discarding invalid low-shadow sample for ".($step->{"name"}||format_percent($step->{"ire"}||0)."%"));
 	     if(ref($state_ref) eq "HASH") {
-	      $state_ref->{"message"}="Discarded invalid low-shadow sample; rereading ".($step->{"name"}||"patch");
+	      $state_ref->{"measurement_retry"}={patch=>$step->{"name"}||"patch",attempt=>$sample,limit=>$max_sample_attempts,reason=>"No usable shadow measurement"};
+	      $state_ref->{"message"}="Invalid shadow measurement for ".($step->{"name"}||"patch")." ($sample/$max_sample_attempts); checking again before any adjustment";
 	      write_state($state_ref);
 	     }
 	     select(undef,undef,undef,0.4);
 	     next;
 	    }
+	    delete $state_ref->{"measurement_retry"} if(ref($state_ref) eq "HASH");
 	    push @samples,$reading;
 	    next;
 	   }
@@ -21464,25 +21639,29 @@ sub read_step {
    reset_meter_session_after_read_error($error) if(defined($error) && transient_read_error($error));
    last if(defined($error) && !transient_read_error($error));
   }
+  delete $state_ref->{"measurement_retry"} if(@samples && ref($state_ref) eq "HASH");
   return (median_autocal_readings(\@samples),undef) if(@samples >= 2);
   return ($samples[0],undef) if(@samples == 1);
+  # Exhausting the shadow ladder must not fall through to a fresh read that
+  # accepts exactly the zero-valued sample we just rejected. Both DPG solvers
+  # propagate this read failure through their normal calibration-exit cleanup.
+  my $label=$step->{"name"}||"shadow patch";
+  return (undef,"No usable meter measurement for $label after $sample_attempts sample attempts; check the signal range, displayed patch and meter alignment".($last_error ne "" ? ": $last_error" : ""));
  }
 	 for(my $attempt=1;$attempt<=$attempts;$attempt++) {
 	  my ($reading,$error)=read_step_once($config,$step,$attempt);
 	  if(!$error) {
 	   # An all-zero reading the meter session already re-measured and could not
-	   # clear. Inside the shadow ladder that can be a genuinely crushed output,
-	   # and the sampling path above handles it by discarding samples rather than
-	   # aborting a calibration that exists to fix exactly that. Above the ladder
-	   # a lit patch cannot legitimately measure zero, so stop with something the
-	   # operator can act on instead of baking the zero into a DPG or a LUT. The
+   # clear. The median ladder above has its own bounded validity checks. When
+   # that ladder is disabled (including application averaging), reject the same
+   # unusable shadow data here. True black is still valid. The
 	   # wording deliberately avoids the transient_read_error vocabulary: this is
 	   # not a retryable hiccup, the session already retried.
-	   if(session_flagged_null_reading($reading) && !autocal_step_is_low_shadow($step) && !autocal_step_is_true_black($step)) {
+   if(!autocal_step_is_true_black($step) && (session_flagged_null_reading($reading) || invalid_low_shadow_reading($reading,$step))) {
 	    my $label=$step->{"name"}||format_percent($step->{"ire"}||0)."%";
 	    my $retries=($reading->{"null_read_retries"}||0)+0;
 	    log_line("Rejecting null meter reading for $label that survived $retries re-measures");
-	    return (undef,"Meter returned an unusable all-zero reading for $label that survived $retries re-measures; check the meter is aimed at the patch, awake, and still connected");
+    return (undef,"Meter returned an unusable reading for $label after $retries session re-measures; check the signal range, displayed patch and meter alignment");
 	   }
 	   delete $state_ref->{"meter_read_retry"} if(ref($state_ref) eq "HASH");
 	   reset_meter_session_success();
@@ -21560,6 +21739,8 @@ sub read_initial_picture_settings {
    write_state($state);
   }
   my $picture_response=api_json("POST","/api/lg/picture-settings",{
+	   lg_helper_setting_context($config),
+	   include_current_input=>JSON::PP::true,
 	   keys=>$keys,
 	   picture_mode=>$picture_mode,
 	   force_ddc_white_balance=>JSON::PP::true,
@@ -21597,12 +21778,17 @@ sub restore_factory_levels_for_autocal {
  my $signal_mode=lc($config->{"signal_mode"}||"sdr");
  return undef if($signal_mode ne "" && $signal_mode ne "sdr");
  my $picture_mode=$config->{"picture_mode"}||"";
- my $contrast=defined($config->{"factory_contrast"}) ? int($config->{"factory_contrast"}) : 85;
- my $brightness=defined($config->{"factory_brightness"}) ? int($config->{"factory_brightness"}) : 50;
- $contrast=0 if($contrast < 0);
- $contrast=100 if($contrast > 100);
- $brightness=0 if($brightness < 0);
- $brightness=100 if($brightness > 100);
+ my $recipe=lg_recipe($signal_mode||"sdr");
+ return "The reviewed LG AutoCal settings recipe is unavailable" if(ref($recipe) ne "HASH");
+ my %levels=map {$_->{wire_key}=>$_->{value}} @{$recipe->{settings}||[]};
+ my ($contrast,$brightness)=@levels{qw(contrast brightness)};
+ return "The reviewed LG AutoCal recipe is missing brightness or contrast" if(!defined($contrast) || !defined($brightness));
+ foreach my $key (qw(contrast brightness)) {
+  return "The requested factory_$key conflicts with the reviewed LG AutoCal recipe"
+   if(defined($config->{"factory_$key"}) && !lg_setting_values_agree(
+    {verify=>{comparator=>'numeric',tolerance=>0}},$config->{"factory_$key"},$levels{$key}));
+ }
+ $state->{"calibration_settings_recipe"}=$recipe->{recipe_id} if(ref($state) eq "HASH");
  my $last_message="Unable to restore LG factory brightness/contrast";
  for(my $attempt=1;$attempt<=3;$attempt++) {
   if(ref($state) eq "HASH") {
@@ -21617,14 +21803,34 @@ sub restore_factory_levels_for_autocal {
     brightness => $brightness,
    },
    picture_mode => $picture_mode,
+   signal_mode => $signal_mode,
    helper_timeout => 90,
    readback_keys => ["pictureMode","contrast","brightness"],
   },120);
   if(ref($response) eq "HASH" && ($response->{"status"}||"") eq "ok") {
    my $pic=$response->{"picture_settings"};
-   my $actual_contrast=(ref($pic) eq "HASH" && defined($pic->{"contrast"})) ? int($pic->{"contrast"}) : $contrast;
-   my $actual_brightness=(ref($pic) eq "HASH" && defined($pic->{"brightness"})) ? int($pic->{"brightness"}) : $brightness;
-   return undef if($actual_contrast == $contrast && $actual_brightness == $brightness);
+   my $actual_contrast=(ref($pic) eq "HASH" && defined($pic->{"contrast"})) ? 0+$pic->{"contrast"} : undef;
+   my $actual_brightness=(ref($pic) eq "HASH" && defined($pic->{"brightness"})) ? 0+$pic->{"brightness"} : undef;
+   return undef if(defined($actual_contrast) && defined($actual_brightness) && $actual_contrast == $contrast && $actual_brightness == $brightness);
+   my $accepted=1;
+   for my $key (qw(contrast brightness)) {
+    my $actual=ref($pic) eq 'HASH' ? $pic->{$key} : undef;
+    $accepted=0 if(defined($actual)
+     ? !lg_setting_values_agree({verify=>{comparator=>'numeric',tolerance=>0}},$levels{$key},$actual)
+     : !lg_setting_write_accepted($response,$key,$levels{$key}));
+   }
+   if($accepted) {
+    my $warning='Factory brightness/contrast writes were accepted, but not all values could be read back under this TV matrix. Settings remain unverified.';
+    if(ref($state) eq 'HASH') {
+     $state->{factory_levels_verification_state}='acknowledged_unverified';
+     $state->{factory_levels_warning}=$warning;
+     write_state($state);
+    }
+    log_line($warning);
+    return undef;
+   }
+   $actual_contrast="unavailable" if(!defined($actual_contrast));
+   $actual_brightness="unavailable" if(!defined($actual_brightness));
    $last_message="LG reported contrast $actual_contrast and brightness $actual_brightness after factory-level restore";
   } else {
    $last_message=(ref($response) eq "HASH") ? ($response->{"message"}||$last_message) : $last_message;
@@ -21659,7 +21865,10 @@ sub reset_hdr20_luminance_baseline_if_needed {
  # cycle and race the first 0% read). Skipping this leaves the previous run's
  # adjustingLuminance on the panel (e.g. -30 at the 5% slot -> ~0.06 cd/m2 against a
  # ~1.0 target -> dE ~80 on the first read, then minutes spent climbing out).
- my @zero=map { 0 } (1..ddc_slot_count());
+ # Size the array from the base DDC ladder, not ddc_slot_count(): with Dark
+ # Detail on the merged count is 31 (hdr20), which the 26-item webOS schema
+ # rejects as "array has too many items" and aborts the whole HDR10 job.
+ my @zero=map { 0 } (1..ddc_baseline_slot_count());
  my $picture_mode=$config->{"picture_mode"}||"";
  my $last_message="Unable to reset LG HDR luminance baseline";
  for(my $attempt=1;$attempt<=3;$attempt++) {
@@ -21718,7 +21927,11 @@ sub reset_ddc_baseline_for_autocal {
  # DV also does its DDC/identity reset via the JS preflight (dv-calman-reset),
  # so skip the worker-side reset here too and avoid racing the first read.
  return undef if(lc(($config->{"signal_mode"}||"")) eq "hdr10" || lc(($config->{"signal_mode"}||"")) eq "dv");
-	 my @zero=map { 0 } (1..ddc_slot_count());
+	 # Base DDC ladder, not the Dark-Detail-merged ddc_slot_count(): sdr26 merges
+	 # to 32 slots, over the 26-item schema cap. This path is reached only when a
+	 # config sets reset_ddc_baseline=true (the automation runner keeps it false),
+	 # but keep it schema-safe so a manual or hand-edited SDR reset cannot abort.
+	 my @zero=map { 0 } (1..ddc_baseline_slot_count());
  my $picture_mode=$config->{"picture_mode"}||"";
  my $last_message="Unable to reset LG DDC baseline";
  if(ref($state) eq "HASH") {
@@ -21807,6 +22020,12 @@ sub autocal_ddc_reset_diag_log (@) {
 }
 
 sub read_step_once {
+ my @args=@_;
+ return PGCalibrationLog::measurement('Greyscale',PGCalibrationLog::from_config($args[0]),$args[1],$args[2],
+  sub {read_step_once_impl(@args)});
+}
+
+sub read_step_once_impl {
 		 my ($config,$step,$attempt,$opts)=@_;
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
 		 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : 100;
@@ -21962,6 +22181,20 @@ sub read_step_once {
   sleep(0.35);
  }
 	 return (undef,"Meter read timed out");
+}
+
+# Live worker headline for one 1D DPG upload (P25). The run- or anchor-wide
+# worst value on its own read as a calibration failure on the live card, so
+# lead with this point's own dE and its best so far. "best" can never read
+# worse than the point, and a missing value prints n/a rather than -1.
+sub autocal_dpg_upload_headline {
+	my ($family,$label,$i,$budget,$uploaded,$de,$best_de,$max_name,$max_de,$target_de)=@_;
+	my $point=defined($de) ? $de+0 : (defined($best_de) ? $best_de+0 : undef);
+	my $best=(defined($best_de) && (!defined($point) || $best_de+0 < $point)) ? $best_de+0 : $point;
+	my $text=sub { defined($_[0]) ? sprintf("%.3f",$_[0]) : 'n/a' };
+	return $uploaded
+		? sprintf("%s 1D DPG %s %d/%d uploaded (point dE=%s, best=%s, %s=%.3f, target<=%.2f)",$family,$label,$i,$budget,$text->($point),$text->($best),$max_name,$max_de,$target_de)
+		: sprintf("%s 1D DPG %s %d/%d upload failed after retries (point dE=%s, %s=%.3f)",$family,$label,$i,$budget,$text->($point),$max_name,$max_de);
 }
 
 unless(caller()) {
@@ -22138,10 +22371,10 @@ eval {
  my $picture_mode=$config->{"picture_mode"}||$picture->{"pictureMode"}||"";
  $active_picture_mode_for_cleanup=$picture_mode;
 	 my $arrays={
-			  whiteBalanceRed => numeric_array($picture->{"whiteBalanceRed"},ddc_slot_count()),
-			  whiteBalanceGreen => numeric_array($picture->{"whiteBalanceGreen"},ddc_slot_count()),
-			  whiteBalanceBlue => numeric_array($picture->{"whiteBalanceBlue"},ddc_slot_count()),
-			  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
+			  whiteBalanceRed => numeric_array($picture->{"whiteBalanceRed"},ddc_baseline_slot_count()),
+			  whiteBalanceGreen => numeric_array($picture->{"whiteBalanceGreen"},ddc_baseline_slot_count()),
+			  whiteBalanceBlue => numeric_array($picture->{"whiteBalanceBlue"},ddc_baseline_slot_count()),
+			  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_baseline_slot_count()),
 			 };
 		 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
 			 if(autocal_config_is_post_series_revert($config)) {
@@ -26950,13 +27183,15 @@ eval {
 } or do {
  my $err=$@ || "Auto Cal failed";
  $err=~s/[\r\n]+/ /g;
- log_line("autocal eval die caught: err=\"".$err."\" calibration_mode_active_before=".($calibration_mode_active?1:0)." cancelled=".cancelled()?1:0);
- if($calibration_mode_active && !lg_calibration_end_retry_forbidden($state)) {
-  end_calibration_mode($active_picture_mode_for_cleanup);
-  $calibration_mode_active=0;
-  set_state_calibration_mode($state,0,"");
- } elsif($calibration_mode_active) {
-  set_state_calibration_mode($state,1,$active_picture_mode_for_cleanup || ($state->{"calibration_picture_mode"}||""));
+ # Capture before cleanup overwrites phase, message or the last command.
+ $state->{failure_detail}={raw_message=>$err,phase=>$state->{phase}||'',operation_label=>$state->{current_name}||'',
+  current_step=>$state->{current_step},total_steps=>$state->{total_steps},picture_mode=>$active_picture_mode_for_cleanup||$config->{picture_mode}||'',signal_mode=>$signal_mode,
+  (ref($LG_AUTOCAL_COMMAND_FAILURE) eq 'HASH' && time()-$LG_AUTOCAL_COMMAND_FAILURE->{time}<30 ? (command=>{%$LG_AUTOCAL_COMMAND_FAILURE}) : ())};
+ log_line("autocal eval die caught: err=\"".$err."\" calibration_mode_active_before=".($calibration_mode_active?1:0)." cancelled=".(cancelled()?1:0));
+ if($calibration_mode_active || $state->{calibration_mode}) {
+  my $closed=autocal_error_calibration_cleanup($state,$active_picture_mode_for_cleanup || $state->{calibration_picture_mode} || "");
+  $calibration_mode_active=$closed ? 0 : 1;
+  $err.=" ".$state->{calibration_recovery_message} if(!$closed);
  }
  $state->{"status"}=cancelled() ? "cancelled" : "error";
  $state->{"current_name"}=cancelled() ? "Auto Cal cancelled" : "Auto Cal error";

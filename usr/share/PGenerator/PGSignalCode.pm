@@ -315,11 +315,12 @@ sub signal_percent_to_code {
   foreach my $slot (keys %HDR20_8_LIMITED) {
    if(abs(($slot+0)-$value)<0.01) { $slot_key=$slot; last; }
   }
-  my $minimum=($bits==10 && $policy->{hdr20_use_limited}
-   && $policy->{hdr20_full}) ? 0 : ($bits==8 ? 0 : 64);
-  my $span=$bits==10
-   ? (($policy->{hdr20_use_limited} && $policy->{hdr20_full}) ? 1023 : 876)
-   : 255;
+  # Off-table Dark Detail points must use the SAME domain as the selected
+  # HDR20 table. Using 0..255 for 8-bit Limited drove shadows below black
+  # and made interleaved filler/table codes non-monotonic.
+  my $full=$policy->{hdr20_use_limited} && $policy->{hdr20_full};
+  my $minimum=$full ? 0 : ($bits==8 ? 16 : 64);
+  my $span=$full ? $input_max : ($bits==8 ? 219 : 876);
   $code=exists($table->{$slot_key}) ? $table->{$slot_key}
    : _positive_half_up($minimum+$value/100*$span);
   $code=_clamp($code,$minimum,$minimum+$span);

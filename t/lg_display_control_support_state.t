@@ -22,7 +22,7 @@ plan skip_all => "driver missing: $driver" unless(-f $driver);
 my $node = `sh -c 'command -v node || command -v nodejs' 2>/dev/null`;
 chomp($node);
 plan skip_all => "Node is not installed; JS behavior not exercised" if($node eq "");
-plan tests => 17;
+plan tests => 19;
 
 my $json = `"$node" "$driver" 2>&1`;
 ok($? == 0, 'the Node driver ran') or diag($json);
@@ -69,3 +69,5 @@ like(why('reverse'), qr/available as OLED Light/,
      'when backlight is the empty key the hint names OLED Light');
 unlike(why('refusedNoSibling'), qr/available as/i,
      'no brightness hint when no sibling is reporting a value');
+is(bool('matrixReadOnly'),'false','explicit matrix write prohibition disables a readable control');
+is(bool('matrixWrongSignal'),'false','signal-inapplicable matrix control stays disabled even with a stale value');

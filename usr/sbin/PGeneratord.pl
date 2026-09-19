@@ -102,6 +102,7 @@ do "serial.pm"        || die "Error";
 # a different set blocks every request for up to the LG helper timeout (~60s)
 # - the "WebUI keeps going offline" symptom. Reconnect is now user-initiated.
 &lg_mark_disconnected();
+&webui_automation_boot_recover();
 
 #############################################
 #                  Bash                     #

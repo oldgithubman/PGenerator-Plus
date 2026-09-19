@@ -253,15 +253,16 @@ const LG_DISPLAY_CONTROL_ITEMS=[
  {key:'peakBrightness',label:'Peak Brightness',type:'select',options:['off','low','medium','high']},
  {key:'color',label:'Color',type:'number',min:0,max:100,step:1},
  {key:'colorDepth',label:'Color Depth',type:'number',min:0,max:100,step:1},
- {key:'tint',label:'Tint',type:'number',min:0,max:100,step:1},
- {key:'sharpness',label:'Sharpness',type:'number',min:0,max:100,step:1},
- {key:'hSharpness',label:'H Sharpness',type:'number',min:0,max:100,step:1},
- {key:'vSharpness',label:'V Sharpness',type:'number',min:0,max:100,step:1},
+ {key:'tint',label:'Tint',type:'number',min:-50,max:50,step:1},
+ {key:'sharpness',label:'Sharpness',type:'number',min:0,max:50,step:1},
+ {key:'hSharpness',label:'H Sharpness',type:'number',min:0,max:50,step:1},
+ {key:'vSharpness',label:'V Sharpness',type:'number',min:0,max:50,step:1},
  {key:'gamma',label:'Gamma',type:'select',options:['1.9','2.2','2.4','bt1886','BT.1886']},
  {key:'colorTemperature',label:'Color Temperature',type:'select',options:['cool','medium','warm','warm1','warm2','warm3','expert1','expert2']},
  {key:'colorGamut',label:'Color Gamut',type:'select',options:['auto','native','extended','wide']},
  {key:'energySaving',label:'Energy Saving',type:'select',options:['off','minimum','medium','maximum','auto','screenOff']},
  {key:'dynamicContrast',label:'Dynamic Contrast',type:'select',options:['off','low','medium','high']},
+ {key:'hdrDynamicToneMapping',label:'HDR Dynamic Tone Mapping',type:'select',options:['off','on','hGiG']},
  {key:'dynamicColor',label:'Dynamic Color',type:'select',options:['off','low','medium','high']},
  {key:'localDimming',label:'Local Dimming',type:'select',options:['off','low','medium','high']},
  {key:'noiseReduction',label:'Noise Reduction',type:'select',options:['off','low','medium','high','auto']},
@@ -277,16 +278,17 @@ const LG_DISPLAY_CONTROL_ITEMS=[
 ];
 const LG_DISPLAY_CONTROL_KEYS=LG_DISPLAY_CONTROL_ITEMS.map(item=>item.key);
 
-// Some controls in this list are ones a given TV never reports a value for. A
-// 2021 C1 on webOS 6.5.3 refuses a read of oledLight ("Some keys are not
-// allowed for the request"), and lg_picture_settings reports that back as
-// unsupported_picture_keys; other keys are simply absent for the active
-// picture mode. lgDisplayControlRefresh already stored this in
+// Some controls in this list are ones a given TV never reports a value for.
+// A TV can refuse a read of oledLight ("Some keys are not allowed for the
+// request", the same refusal the G5 returns for applyToAllInput reads), and
+// the helper reports that back as unsupported_picture_keys via
+// webui_lg_picture_settings in lg.pm; other keys are simply absent for the
+// active picture mode. lgDisplayControlRefresh already stored this in
 // lgDisplayControlCapabilities -- but nothing read it, so a control with no
 // value rendered as a dead slider showing "--" with no explanation and no
-// pointer to the control that IS reporting (on the C1, panel brightness reads
-// back as Backlight, two cells away). Operators reasonably read the dead
-// slider as broken and reach for the TV remote.
+// pointer to the control that IS reporting (panel brightness may read back
+// under the neighbouring Backlight cell instead). Operators reasonably read
+// the dead slider as broken and reach for the TV remote.
 //
 // This annotates WHY a control has no value. It is scoped to exactly that:
 // a read refusal is not a write refusal -- the daemon reaches these keys over
@@ -328,6 +330,11 @@ function lgDisplayControlWorkingEquivalent(key,vals){
 function lgDisplayControlSupportState(key,values,caps){
  const vals=(values&&typeof values==='object')?values:{};
  const capabilities=(caps&&typeof caps==='object')?caps:{};
+ const contracts=(capabilities.settingContracts&&typeof capabilities.settingContracts==='object')?capabilities.settingContracts:{};
+ const contract=(contracts[key]&&typeof contracts[key]==='object')?contracts[key]:{};
+ const writeDecision=String(contract.write_decision||'');
+ if(writeDecision==='blocked') return {supported:false,reason:'The resolved TV and firmware profile marks this control as read-only or unsupported.'};
+ if(writeDecision==='not_applicable') return {supported:false,reason:'This control does not apply to the current signal mode.'};
  const unsupported=(capabilities.unsupportedKeys&&typeof capabilities.unsupportedKeys==='object')?capabilities.unsupportedKeys:{};
  const supportedKeys=Array.isArray(capabilities.supportedKeys)?capabilities.supportedKeys:[];
  const hasValue=Object.prototype.hasOwnProperty.call(vals,key)&&vals[key]!==null&&vals[key]!==undefined;
@@ -344,9 +351,129 @@ function lgDisplayControlSupportState(key,values,caps){
 }
 let lgDisplayControlPending=false;
 let lgDisplayControlValues={};
-let lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
+let lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{},settingContracts:{}};
 let lgDisplayControlLoaded=false;
 let lgDisplayControlError='';
+// While automation owns the TV the card shows remembered values. Say which
+// context they came from; values from another input, signal or picture mode
+// are not this context's readings (P21).
+let lgDisplayControlCacheNote='';
+let lgDisplayControlOtherContext=false;
+// The signal and picture mode the shown values were read for. Remembered
+// values merge only into values from that same context; otherwise they replace.
+let lgDisplayControlValuesContext='';
+// While an automation run owns the TV the daemon answers picture-settings
+// reads from its last live read (flagged cached) instead of spawning a TV
+// helper. Hold the periodic pollers for a minute after such an answer so they
+// stop queueing behind the runner; a forced refresh still goes through.
+let lgAutomationCachedUntil=0;
+function lgNoteAutomationCached(r){
+ if(r&&r.cached&&r.automation_active){lgAutomationCachedUntil=Date.now()+60000;return true;}
+ return false;
+}
+function lgAutomationHoldsPollers(){return Date.now()<lgAutomationCachedUntil;}
+let lgDisplayControlSnapshot=null;
+let lgVerification={busy:false,complete:false,rows:{},message:''};
+
+// The TV decides what the card offers: a control the capability data marks
+// hidden (the TV's API refuses it on this model, for this signal or in this
+// picture mode) is left off the card rather than shown dead.
+function lgDisplayControlVisibleItems(values,caps){
+ const binding=(caps||{}).logicalControls?.panel_light;
+ const contracts=(caps||{}).settingContracts||{};
+ const shown=meta=>contracts[meta.key]?.hidden!==true;
+ if(!binding) return LG_DISPLAY_CONTROL_ITEMS.filter(shown);
+ const panelKeys=['backlight','oledLight','oledPixelBrightness'];
+ return LG_DISPLAY_CONTROL_ITEMS.flatMap(meta=>{
+  if(meta.key==='backlight') return [{...meta,key:binding.wire_key||'backlight',label:binding.label||'Panel brightness',logicalId:'panel_light'}];
+  return panelKeys.includes(meta.key)?[]:[meta];
+ }).filter(shown);
+}
+
+function lgVerificationEvidence(key,values,contracts,binding){
+ const c=contracts[key]||{},present=values[key]!==undefined&&values[key]!==null;
+ if(binding?.wire_key&&binding.aliases?.includes(key)&&key!==binding.wire_key&&!present)return 'Alternate API name; uses '+binding.wire_key;
+ if(c.write_decision==='not_applicable'||c.read_decision==='not_applicable')return 'Not applicable to this signal';
+ if(c.availability==='unsupported')return 'Not offered by this TV';
+ if(c.availability==='hidden_in_mode')return 'Refused by this TV in this picture mode';
+ if(c.availability==='read_only'&&present)return 'Readable; this TV refuses changes';
+ if(c.observation?.roundtrip?.status==='restore_failed')return 'Restoration needs attention';
+ if(!present)return 'No value returned; write unverified';
+ if(c.write_decision==='blocked')return 'Readable; write blocked by profile';
+ if(c.observation?.roundtrip?.status==='verified')return 'Write + restoration verified';
+ if(c.observation?.verify?.status==='verified')return 'Write verified by readback';
+ if(c.availability==='available')return 'Readable; writes proved on this TV model in this mode';
+ return 'Readable; write unverified';
+}
+
+function lgVerificationScanKeys(profile){
+ const p=profile||{};
+ const wireKeys=Object.entries(p.controls||{}).map(([key,contract])=>contract.wire_key||key);
+ return [...new Set([...LG_DISPLAY_CONTROL_KEYS,...(p.public_routes?.read?.picture_keys||[]),...wireKeys])].filter(k=>/^[A-Za-z][A-Za-z0-9_]{0,80}$/.test(k));
+}
+
+function lgVerificationRender(){
+ const host=document.getElementById('lgVerificationReport');
+ const scan=document.getElementById('lgVerifyTvBtn'),test=document.getElementById('lgVerifyPanelLightBtn');
+ if(scan){scan.disabled=lgVerification.busy||lgDisplayControlPending||!lgDisplayControlConnected();scan.textContent=lgVerification.busy?'Verifying…':'Verify this TV';}
+ if(test)test.disabled=lgVerification.busy||lgDisplayControlPending||!lgDisplayControlConnected()||!lgVerification.complete||!lgDisplayControlCapabilities.logicalControls?.panel_light?.writable;
+ if(!host)return;
+ if(!lgVerification.context){host.textContent='Verify this TV reads setting capabilities for the current input and picture mode. It does not change settings.';return;}
+ const rows=Object.values(lgVerification.rows),ctx=lgVerification.context;
+ const readable=rows.filter(r=>r.readable).length;
+ const verified=rows.filter(r=>/^Write/.test(r.evidence)).length;
+ const html='<p>'+lgEscapeHtml(lgVerification.model||'LG TV')+' · '+lgEscapeHtml(ctx.tv_input)+' · '+lgEscapeHtml(ctx.picture_mode)+' · '+lgEscapeHtml(ctx.signal_mode.toUpperCase())+'</p>'
+  +'<p role="status" style="color:'+(lgVerification.error?'var(--red)':'var(--text2)')+'">'+lgEscapeHtml(lgVerification.message||'')+'</p>'
+  +'<p>'+readable+' readable · '+verified+' write-verified · '+rows.length+' API keys checked. Read success alone does not prove write support.</p>'
+  +'<details><summary>Setting evidence and API names</summary><div style="overflow:auto;max-height:300px"><table style="width:100%;text-align:left;font-size:.75rem"><thead><tr><th>API key</th><th>Evidence in this context</th></tr></thead><tbody>'
+  +rows.map(r=>'<tr><td>'+lgEscapeHtml(r.key)+'</td><td>'+lgEscapeHtml(r.evidence)+'</td></tr>').join('')+'</tbody></table></div></details>';
+ if(host.dataset.renderedHtml!==html){const open=host.querySelector('details')?.open;host.innerHTML=html;host.dataset.renderedHtml=html;if(open)host.querySelector('details').open=true;}
+}
+
+async function lgVerifyThisTv(){
+ if(lgVerification.busy||lgDisplayControlPending||!lgDisplayControlConnected())return;
+ await lgDisplayControlRefresh(true);
+ const initial=lgDisplayControlSnapshot;
+ if(!initial||!initial.settings_matrix?.context_confirmed){toast('The current TV input and picture mode could not be confirmed. Refresh before scanning.','err');return;}
+ const ctx={tv_input:initial.current_input,picture_mode:initial.picture_settings.pictureMode,signal_mode:lgSignalModeKey(),expected_tv_input:initial.current_input,expected_profile_hash:initial.generation_profile?.capability_profile_hash};
+ if(!ctx.tv_input||!ctx.picture_mode||!ctx.expected_profile_hash){toast('The TV did not provide a complete compatibility signature.','err');return;}
+ lgVerification={busy:true,complete:false,context:ctx,model:initial.lg_generation?.model_name,rows:{},message:'Reading settings. No values will be changed.'};
+ const handle=lgBeginCommand('Reading TV setting capabilities');
+ const binding=initial.logical_controls?.panel_light;
+ const collect=r=>{for(const key of new Set([...(r.requested_picture_keys||[]),...Object.keys(r.setting_contracts||{})]))lgVerification.rows[key]={key,readable:r.picture_settings?.[key]!==undefined&&r.picture_settings?.[key]!==null,evidence:lgVerificationEvidence(key,r.picture_settings||{},r.setting_contracts||{},binding)};};
+ collect(initial);lgDisplayControlRender();
+ try{
+  const p=initial.generation_profile?.settings_capabilities||{};
+  const keys=lgVerificationScanKeys(p).filter(k=>!lgVerification.rows[k]).slice(0,128);
+  for(let offset=0;offset<keys.length;offset+=10){
+   const r=await fetchJSON('/api/lg/picture-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...ctx,keys:['pictureMode',...keys.slice(offset,offset+10)],verification_scan:true,include_current_input:true,category:'picture',ignore_calibration_picture_mode:true}),_timeoutMs:65000});
+   if(!r||r.status!=='ok'||!r.settings_matrix?.context_confirmed||r.generation_profile?.capability_profile_hash!==ctx.expected_profile_hash||r.current_input!==ctx.tv_input||r.picture_settings?.pictureMode!==ctx.picture_mode)throw Error(r?.message||'TV context changed or could not be confirmed. Scan stopped.');
+   collect(r);lgVerification.message=Object.keys(lgVerification.rows).length+' keys checked; continuing read-only scan.';lgVerificationRender();
+  }
+  lgVerification.complete=true;lgVerification.completedAt=new Date().toISOString();lgVerification.message='Read-only scan complete. Evidence is stored for this TV, firmware, input and picture mode. No settings changed.';
+ }catch(e){lgVerification.error=true;lgVerification.message='Scan incomplete: '+(e.message||'TV read failed');}
+ finally{lgVerification.busy=false;lgEndCommand(handle);lgDisplayControlRender();}
+}
+
+async function lgVerifyPanelLight(){
+ if(lgVerification.busy||lgDisplayControlPending||!lgDisplayControlConnected()||!lgVerification.complete)return;
+ if(!confirm('Temporarily change panel brightness by one step, read it back, then restore and verify the original value?\n\nThe server performs restoration even if this page closes. No LUTs or picture modes are reset. Do not change TV input or picture mode during the test.'))return;
+ lgVerification.busy=true;lgVerification.error=false;lgVerification.message='Testing panel light and restoring its original value…';lgVerificationRender();
+ lgDisplayControlPending=true;lgDisplayControlRender();
+ const handle=lgBeginCommand('Verifying panel-light change and restoration');
+ try{
+  const r=await fetchJSON('/api/lg/verify-panel-light',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...lgVerification.context,confirm_reversible_test:true}),_timeoutMs:240000});
+  lgVerification.test=r;lgVerification.error=r?.status!=='ok';lgVerification.message=r?.message||'Verification response unavailable. Check the original panel-light value in the TV menu.';
+  if(r?.status==='ok'&&!r.evidence_saved)lgVerification.message+=' Verification succeeded, but its evidence could not be saved.';
+ }catch(e){lgVerification.error=true;lgVerification.message='Response unavailable. The server attempts restoration independently; check panel brightness before continuing.';}
+ finally{
+  lgVerification.busy=false;lgDisplayControlPending=false;lgEndCommand(handle);
+  await lgDisplayControlRefresh(true);
+  const r=lgDisplayControlSnapshot,key=r?.logical_controls?.panel_light?.wire_key;
+  if(key)lgVerification.rows[key]={key,readable:r.picture_settings?.[key]!==undefined,evidence:lgVerificationEvidence(key,r.picture_settings||{},r.setting_contracts||{},r.logical_controls.panel_light)};
+  lgVerificationRender();
+ }
+}
 
 function lgEscapeHtml(value){
  return String(value==null?'':value).replace(/[&<>"']/g,(ch)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -372,11 +499,23 @@ function lgUses2018Or2019PictureModeMap(){
  return /OLED\d*(?:A|B|C|E|G|R|W|Z)(?:8|9)/.test(model);
 }
 
+// The last catalogue read from this TV. A refresh clears the snapshot while it
+// runs, and the hardcoded lists below offer modes a given TV refuses (the G3
+// has no hdrEco), so keep offering what this model reported until it changes.
+let lgLastPictureModeCatalogue={model:'',catalogue:null};
+function lgCurrentModelName(){
+ const state=window.lgStatusState||{};
+ return String(state.modelName||state.model_name||state.displayName||'');
+}
+
 function lgPictureModesForSignal(signalMode){
  const signal=String(signalMode||'sdr');
+ const cached=lgLastPictureModeCatalogue.model&&lgLastPictureModeCatalogue.model===lgCurrentModelName()?lgLastPictureModeCatalogue.catalogue:null;
+ const catalogue=lgDisplayControlSnapshot?.generation_profile?.picture_mode_catalogue||cached;
  if(lgUses2018Or2019PictureModeMap()&&LG_2018_2019_PICTURE_MODES_BY_SIGNAL[signal]){
   return LG_2018_2019_PICTURE_MODES_BY_SIGNAL[signal];
  }
+ if(catalogue?.[signal]) return Object.values(catalogue[signal]).filter(row=>row.offered).map(row=>[row.value,row.label]);
  if(lgUsesPre2022PictureModeMap()&&LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal]){
   return LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal];
  }
@@ -385,6 +524,7 @@ function lgPictureModesForSignal(signalMode){
 
 function lgPictureModeEntries(){
  return [
+  ...Object.values(lgDisplayControlSnapshot?.generation_profile?.picture_mode_catalogue||{}).flatMap(rows=>Object.values(rows).map(row=>[row.value,row.label])),
   ...LG_PICTURE_MODES_BY_SIGNAL.sdr,
   ...LG_PICTURE_MODES_BY_SIGNAL.hdr10,
   ...LG_PICTURE_MODES_BY_SIGNAL.dv,
@@ -407,6 +547,12 @@ function lgPictureModeCanonicalValue(value){
  const exact=lgPictureModeEntries().find(item=>item[0]===raw);
  if(exact) return exact[0];
  const token=lgPictureModeToken(raw);
+ const catalogue=lgDisplayControlSnapshot?.generation_profile?.picture_mode_catalogue;
+ if(catalogue){
+  const matches=Object.values(catalogue).flatMap(rows=>Object.values(rows)).filter(row=>[row.value,row.settings_value,...(row.aliases||[])].some(value=>lgPictureModeToken(value)===token));
+  const values=[...new Set(matches.map(row=>row.value))];
+  if(values.length===1)return values[0];
+ }
  const aliases={
   isfexpert1:'expert1',
   isfexpertbright:'expert1',
@@ -1016,7 +1162,26 @@ function lgCloseDisplayControl(){
 }
 
 function lgDisplayControlCurrentValue(key){
- return Object.prototype.hasOwnProperty.call(lgDisplayControlValues,key)?lgDisplayControlValues[key]:null;
+ const value=Object.prototype.hasOwnProperty.call(lgDisplayControlValues,key)?lgDisplayControlValues[key]:null;
+ if(key==='blackLevel'&&value&&typeof value==='object'&&!Array.isArray(value))return value.unknown??null;
+ return value;
+}
+
+function lgDisplayControlEffectiveMeta(meta){
+ const contracts=lgDisplayControlCapabilities.settingContracts||{};
+ const contract=contracts[meta.key]||{};
+ const schema=contract.value_schema||{};
+ const effective={...meta};
+ if(schema.type==='integer'||schema.type==='integer_or_string_integer'||(schema.type==='integer_or_enum'&&Number.isFinite(Number(lgDisplayControlCurrentValue(meta.key))))){
+  effective.type='number';
+  if(Number.isFinite(Number(schema.minimum))) effective.min=Number(schema.minimum);
+  if(Number.isFinite(Number(schema.maximum))) effective.max=Number(schema.maximum);
+  effective.step=1;
+ }else if(schema.type==='enum'||schema.type==='enum_or_legacy_map'){
+  effective.type='select';
+  if(Array.isArray(schema.known_values)&&schema.known_values.length) effective.options=[...schema.known_values];
+ }
+ return effective;
 }
 
 function lgDisplayControlOptionHtml(meta,value){
@@ -1037,8 +1202,13 @@ function lgDisplayControlOptionHtml(meta,value){
 function lgDisplayControlInvalidate(){
  lgDisplayControlLoaded=false;
  lgDisplayControlValues={};
- lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
+ lgDisplayControlValuesContext='';
+ lgDisplayControlOtherContext=false;
+ lgDisplayControlCacheNote='';
+ lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{},settingContracts:{}};
  lgDisplayControlError='';
+ lgDisplayControlSnapshot=null;
+ if(!lgVerification.busy){lgVerification.complete=false;lgVerification.message='TV context changed. Run Verify this TV again.';}
  lgDisplayControlRender();
 }
 
@@ -1047,28 +1217,33 @@ function lgDisplayControlRender(){
  const refreshBtn=document.getElementById('lgDisplayControlRefreshBtn');
  const resetBtn=document.getElementById('lgDisplayControlResetBtn');
  const applyAllBtn=document.getElementById('lgApplyAllInputsBtn');
- if(refreshBtn) refreshBtn.disabled=lgDisplayControlPending||!lgDisplayControlConnected();
- const modeActionsDisabled=lgDisplayControlPending||!lgDisplayControlConnected()||lgPictureModePending||lgCalibrationModePending||lgApplyAllInputsPending;
+ if(refreshBtn) refreshBtn.disabled=lgDisplayControlPending||lgVerification.busy||!lgDisplayControlConnected();
+ const modeActionsDisabled=lgDisplayControlPending||lgVerification.busy||!lgDisplayControlConnected()||lgPictureModePending||lgCalibrationModePending||lgApplyAllInputsPending;
  if(resetBtn) resetBtn.disabled=modeActionsDisabled;
  if(applyAllBtn) applyAllBtn.disabled=modeActionsDisabled;
+ lgVerificationRender();
  if(!grid) return;
  const connected=lgDisplayControlConnected();
  if(!connected){
   grid.innerHTML='';
+  grid.dataset.renderedHtml='';
+  grid.dataset.valueContext='';
+  grid.style.opacity='';
   lgDisplayControlSetStatus('Connect display',false);
   return;
  }
  let html='';
- LG_DISPLAY_CONTROL_ITEMS.forEach(meta=>{
+ lgDisplayControlVisibleItems(lgDisplayControlValues,lgDisplayControlCapabilities).forEach(baseMeta=>{
+  const meta=lgDisplayControlEffectiveMeta(baseMeta);
   const value=lgDisplayControlCurrentValue(meta.key);
   const state=lgDisplayControlSupportState(meta.key,lgDisplayControlValues,lgDisplayControlCapabilities);
   const supported=state.supported;
-  const disabled=(!supported||lgDisplayControlPending)?' disabled':'';
+  const disabled=(!supported||lgDisplayControlPending||lgVerification.busy)?' disabled':'';
   const displayValue=supported?String(value):'--';
   // Only annotate once a real load has populated values/capabilities. Before
   // that (modal just opened, or mid-refresh) every control has no value yet,
-  // and rendering 30 identical notes would be noise that reflows on load.
-  const reason=(!supported&&lgDisplayControlLoaded)?String(state.reason||''):'';
+  // and rendering 31 identical notes would be noise that reflows on load.
+  const reason=(!supported&&lgDisplayControlLoaded)?String(state.reason||''):(baseMeta.logicalId==='panel_light'&&supported?'TV API: '+meta.key+'. Readback is required for changes.':'');
   const titleAttr=reason?' title="'+lgEscapeHtml(reason)+'"':'';
   html+='<div class="lg-display-control-item'+(supported?'':' lg-display-control-unavailable')+'" data-lg-display-control="'+lgEscapeHtml(meta.key)+'"'+titleAttr+'>';
   html+='<div class="lg-display-control-top"><div class="lg-display-control-label">'+lgEscapeHtml(meta.label)+'</div><div class="lg-display-control-value" id="lgDcValue_'+lgEscapeHtml(meta.key)+'">'+lgEscapeHtml(displayValue)+'</div></div>';
@@ -1085,8 +1260,17 @@ function lgDisplayControlRender(){
   if(reason) html+='<div class="lg-display-control-note">'+lgEscapeHtml(reason)+'</div>';
   html+='</div>';
  });
- grid.innerHTML=html;
- lgDisplayControlSetStatus(lgDisplayControlError||(lgDisplayControlLoaded?'Picture controls loaded':'Refresh settings'),!!lgDisplayControlError);
+ // Status polling must not replace focused controls or open native dropdowns
+ // when the rendered values and availability have not changed.
+ if(grid.dataset.renderedHtml!==html){grid.innerHTML=html;grid.dataset.renderedHtml=html;}
+ // The mark stays until a live read replaces the values, even after the hold lapses.
+ const otherContext=lgDisplayControlOtherContext;
+ grid.dataset.valueContext=otherContext?'other':'';
+ grid.style.opacity=otherContext?'0.6':'';
+ const shared=lgDisplayControlSnapshot?.generation_profile?.settings_capabilities?.mode_availability?.shared_settings||{};
+ const signalNow=String(lgSignalModeKey()||'');
+ const sharedNote=shared[signalNow]?' '+signalNow.toUpperCase()+' modes share their settings with the '+String(shared[signalNow]).toUpperCase()+' modes of the same name on this TV.':'';
+ lgDisplayControlSetStatus(lgDisplayControlError||((lgAutomationHoldsPollers()||otherContext)?(lgDisplayControlCacheNote||'Values from the last read; refresh paused while automation runs'):(lgDisplayControlLoaded?'Picture controls loaded.'+sharedNote:'Refresh settings')),!!lgDisplayControlError);
 }
 
 function lgDisplayControlSyncNumber(key,value){
@@ -1104,30 +1288,64 @@ function lgDisplayControlSyncRange(key,value){
 }
 
 async function lgDisplayControlRefresh(force){
- if(lgDisplayControlPending) return;
+ if(lgDisplayControlPending||lgVerification.busy) return;
  if(!lgDisplayControlConnected()){
   lgDisplayControlInvalidate();
   return;
  }
- if(!force&&lgDisplayControlLoaded) return;
+ // Values shown from another TV context are not a load: read live as soon as the hold allows.
+ if(!force&&lgDisplayControlLoaded&&!lgDisplayControlOtherContext) return;
+ if(!force&&lgAutomationHoldsPollers()) return;
  lgDisplayControlPending=true;
+ lgDisplayControlSnapshot=null;
  lgDisplayControlError='';
  lgDisplayControlRender();
+ const requestPictureMode=lgDisplayControlPictureMode(),requestSignalMode=lgSignalModeKey();
+ const requestContext=JSON.stringify([String(requestSignalMode||''),String(requestPictureMode||'')]);
  try{
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
+   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:requestPictureMode,signal_mode:requestSignalMode,include_current_input:true,category:'picture',ignore_calibration_picture_mode:true}),
    _quiet:true,
-   _timeoutMs:18000
+   _timeoutMs:65000
   });
+	  const cached=lgNoteAutomationCached(r);
 	  if(r&&r.status==='ok'&&r.picture_settings){
+	   lgUpdateCurrentInput(r);
+	   if(cached){
+	    // Remembered values only: they must not redefine what this TV can do
+	    // nor count as a load, so the next live refresh rebuilds the card.
+	    if(r.cache_context_available===false){
+	     const shown=Object.keys(lgDisplayControlValues||{}).length>0;
+	     lgDisplayControlOtherContext=shown;
+	     lgDisplayControlCacheNote=!shown
+	      ?'No values have been read in this TV context yet. Live reads resume when automation finishes.'
+	      :r.cache_present===false
+	       ?'Showing values from before automation took the TV; they may not apply to the current input, signal or picture mode. Live reads resume when automation finishes.'
+	       :'Showing values read in a different TV context (input, signal or picture mode); they may not apply here. Live reads resume when automation finishes.';
+	    }else{
+	     // Never mix this context's remembered values into another context's.
+	     const sameContext=!lgDisplayControlOtherContext&&lgDisplayControlValuesContext===requestContext;
+	     lgDisplayControlValues=sameContext?{...lgDisplayControlValues,...r.picture_settings}:{...r.picture_settings};
+	     lgDisplayControlValuesContext=requestContext;
+	     lgDisplayControlOtherContext=false;
+	     lgDisplayControlCacheNote='Values from the last read in this TV context; refresh paused while automation runs.';
+	    }
+	   }else{
+	   lgDisplayControlOtherContext=false;lgDisplayControlCacheNote='';
 	   lgDisplayControlValues=r.picture_settings||{};
+	   lgDisplayControlValuesContext=requestContext;
+	   lgDisplayControlSnapshot=r;
+	   if(r.generation_profile?.picture_mode_catalogue) lgLastPictureModeCatalogue={model:lgCurrentModelName(),catalogue:r.generation_profile.picture_mode_catalogue};
 	   lgDisplayControlCapabilities={
 	    supportedKeys:Array.isArray(r.supported_picture_keys)?r.supported_picture_keys:[],
-	    unsupportedKeys:(r.unsupported_picture_keys&&typeof r.unsupported_picture_keys==='object')?r.unsupported_picture_keys:{}
+	    unsupportedKeys:(r.unsupported_picture_keys&&typeof r.unsupported_picture_keys==='object')?r.unsupported_picture_keys:{},
+	    settingContracts:(r.setting_contracts&&typeof r.setting_contracts==='object')?r.setting_contracts:{},
+     logicalControls:r.logical_controls||{}
 	   };
 	   lgDisplayControlLoaded=true;
+	   }
    lgDisplayControlError='';
    // Same rule as lgRefreshPictureMode: a ddc_only set answers
    // virtual_picture_settings, where pictureMode is PGenerator's own resolved
@@ -1139,7 +1357,7 @@ async function lgDisplayControlRefresh(force){
     const signal=lgPictureModeEffectiveSignal(mode);
     lgPictureModeValue=mode;
     lgPictureModeSignalMode=signal;
-    lgRememberPictureMode(mode,signal);
+    if(!cached) lgRememberPictureMode(mode,signal);
     lgPopulatePictureModeSelect(mode);
    }
   }else{
@@ -1154,8 +1372,9 @@ async function lgDisplayControlRefresh(force){
 }
 
 async function lgDisplayControlCommit(key){
- const meta=LG_DISPLAY_CONTROL_ITEMS.find(item=>item.key===key);
- if(!meta||!lgDisplayControlConnected()||lgDisplayControlPending) return;
+ const baseMeta=lgDisplayControlVisibleItems(lgDisplayControlValues,lgDisplayControlCapabilities).find(item=>item.key===key);
+ const meta=baseMeta?lgDisplayControlEffectiveMeta(baseMeta):null;
+ if(!meta||!lgDisplayControlConnected()||lgDisplayControlPending||lgVerification.busy) return;
  const input=document.getElementById('lgDcInput_'+key);
  if(!input) return;
  let value=meta.type==='number'?Number(input.value):input.value;
@@ -1176,10 +1395,10 @@ async function lgDisplayControlCommit(key){
   const r=await fetchJSON('/api/lg/picture-settings/set',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true,readback_keys:[key,'pictureMode']}),
+   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),tv_input:(window.lgStatusState||{}).currentInput||'',category:'picture',ignore_calibration_picture_mode:true,readback_keys:[key,'pictureMode']}),
    _timeoutMs:30000
   });
-  if(r&&r.status==='ok'){
+  if(r&&r.status==='ok'&&r.verification_state==='verified'){
    const picture=r.picture_settings||{};
    lgDisplayControlValues[key]=(picture[key]!==undefined)?picture[key]:value;
    // Do not persist a synthesized (virtual_picture_settings) mode -- same
@@ -1195,7 +1414,7 @@ async function lgDisplayControlCommit(key){
    toast(meta.label+' updated');
   }else{
    lgDisplayControlValues[key]=previousValue;
-   toast((r&&r.message)||('Unable to update '+meta.label),'err');
+   toast((r&&r.message)||(r&&r.status==='ok'?'The TV accepted the command but did not verify the new value.':('Unable to update '+meta.label)),'err');
    refreshAfter=true;
   }
  }catch(e){
@@ -1676,7 +1895,9 @@ async function lgRefreshPictureMode(force){
 		  return;
 		 }
 	 if(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy()) return;
+ if(lgDisplayControlPending||lgVerification.busy||document.activeElement?.closest?.('#lgDisplayControlGrid')) return;
 	 if(lgPictureModePending) return;
+	 if(!force&&lgAutomationHoldsPollers()) return;
 	 const currentInputFresh=!!(state.currentInputChecked&&state.currentInputUpdatedAt&&(Date.now()-state.currentInputUpdatedAt)<15000);
 	 if(!force&&currentInputFresh&&lgPictureModeValue&&lgPictureModeSignalMode===configured
     && lgPictureModeMatchesSignal(lgPictureModeValue,configured)){
@@ -1693,7 +1914,9 @@ async function lgRefreshPictureMode(force){
    _quiet:true,
    _timeoutMs:9000
   });
+  const cached=lgNoteAutomationCached(r);
   if(r&&r.status==='ok'&&r.picture_settings){
+   const previousInput=state.currentInput||'';
    lgUpdateCurrentInput(r);
    const mode=lgPictureModeCanonicalValue(r.picture_settings.pictureMode||'');
    // A ddc_only set answers virtual_picture_settings, and pictureMode there is
@@ -1711,11 +1934,18 @@ async function lgRefreshPictureMode(force){
    // latch, or pre-switch read), pinning that value collapses the card to
    // the SDR list and AutoCal DV reset fails.
    if(readback && lgPictureModeMatchesSignal(readback,configured)){
+    const changed=readback!==lgPictureModeValue||lgPictureModeSignalMode!==configured
+     || (previousInput&&r.current_input&&previousInput!==r.current_input)
+     || (lgDisplayControlSnapshot?.generation_profile?.capability_profile_hash&&r.generation_profile?.capability_profile_hash
+      &&lgDisplayControlSnapshot.generation_profile.capability_profile_hash!==r.generation_profile.capability_profile_hash);
     lgPictureModeValue=readback;
     lgPictureModeSignalMode=configured;
-    lgRememberPictureMode(readback,configured);
-    lgDisplayControlInvalidate();
-    setTimeout(()=>lgDisplayControlRefresh(true),650);
+    // A remembered value is display-only: never persist it as the operator's
+    // preference and never let it trigger a forced capability reload.
+    if(!cached){
+     lgRememberPictureMode(readback,configured);
+     if(changed){lgDisplayControlInvalidate();setTimeout(()=>lgDisplayControlRefresh(true),650);}
+    }
    } else if(readback){
     // Keep DV/HDR options visible; fall back to per-signal stored preference.
     const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(configured));
@@ -1877,7 +2107,7 @@ async function lgApplyAllInputsConfirmed(){
    // Green only when the TV reported the action done or accepted the
    // request outright; a bare alert-bridge dispatch is a warning, not a
    // result.
-   toast(r.message||'Applied picture settings to all inputs',!(r.confirmed||r.acknowledged));
+   toast(r.message||'Applied picture settings to all inputs',!(r.confirmed||r.acknowledged||r.confirmation_unavailable));
   }else{
    toast(r&&r.message?r.message:'Unable to apply picture settings to all inputs','err');
   }
@@ -1928,6 +2158,9 @@ async function lgResetPictureMode(){
     msg='Picture-settings reset is limited on this TV model; core defaults were applied via the calibration path.';
    }else if(!basicOk){
     msg=r.message||'LG picture mode reset only partially applied. Check picture mode selection and try again.';
+   }
+   if(r.verification_state==='acknowledged_unverified'){
+    msg='LG accepted the reset requests; not every resulting default could be verified. Check the TV settings before calibration.';
    }
    toast(msg,!basicOk&&!bestEffort);
    // r.active_picture_mode is not always a readback: on a ddc_only set with an
@@ -2092,7 +2325,7 @@ function lgRenderCalHistoryInto(el){
   list.forEach(it=>{
    const de=(it.de!=null&&isFinite(it.de))?' · best dE '+Number(it.de).toFixed(3):'';
    const note=it.note?('<small style="color:var(--orange)">'+String(it.note).replace(/</g,'&lt;')+'</small>'):'';
-   const canUp=!(it.type==='dv'&&it.reuploadable===0);
+   const canUp=it.reuploadable!==0;
    html+='<div class="lg-cal-hist-item" data-id="'+String(it.id||'').replace(/"/g,'&quot;')+'">'
     +'<div class="lg-cal-hist-meta"><strong>'+lgCalHistoryTypeLabel(it.type)+'</strong> '
     +String(it.label||it.id||'').replace(/</g,'&lt;')
@@ -2110,29 +2343,50 @@ function lgRenderCalHistoryInto(el){
  el.innerHTML=html;
 }
 
+let lgCalHistoryRefreshInFlight=null;
 async function lgRefreshCalHistory(){
- const hosts=[document.getElementById('lgCalHistoryBodyDesktop'),document.getElementById('lgCalHistoryBodyModal')];
- hosts.forEach(h=>{ if(h) h.innerHTML='Loading history...'; });
- try{
-  const r=await fetchJSON('/api/lg/calibration-history?_='+Date.now(),{_quiet:true,_timeoutMs:12000,cache:'no-store'});
-  lgCalHistoryCache=(r&&r.status==='ok'&&Array.isArray(r.items))?r.items:[];
- }catch(e){
-  lgCalHistoryCache=[];
-  hosts.forEach(h=>{ if(h) h.innerHTML='<div class="lg-cal-hist-empty">Unable to load history.</div>'; });
-  return;
- }
- hosts.forEach(h=>lgRenderCalHistoryInto(h));
+ // One scan at a time: entering the workspace and opening the modal both
+ // call this, and each scan holds the single TV lane for 15-20 s on the Pi.
+ if(lgCalHistoryRefreshInFlight) return lgCalHistoryRefreshInFlight;
+ lgCalHistoryRefreshInFlight=(async()=>{
+  const hosts=[document.getElementById('lgCalHistoryBodyDesktop'),document.getElementById('lgCalHistoryBodyModal')];
+  hosts.forEach(h=>{ if(h) h.innerHTML='Loading history...'; });
+  let r=null;
+  try{
+   r=await fetchJSON('/api/lg/calibration-history?_='+Date.now(),{_quiet:true,_timeoutMs:120000,cache:'no-store'});
+  }catch(e){ r=null; }
+  // fetchJSON swallows its own timeout and network errors and returns null,
+  // so a failed scan must not be rendered as "no artifacts found".
+  if(!r||r.status!=='ok'||!Array.isArray(r.items)){
+   lgCalHistoryCache=[];
+   const why=!r?'The generator did not answer (timeout, connection error or unreadable reply).':(r.message||'The generator reported an error.');
+   hosts.forEach(h=>{ if(h) h.innerHTML='<div class="lg-cal-hist-empty">Unable to load history. '+lgEscapeHtml(why)+'</div>'; });
+   return;
+  }
+  lgCalHistoryCache=r.items;
+  hosts.forEach(h=>lgRenderCalHistoryInto(h));
+ })().finally(()=>{ lgCalHistoryRefreshInFlight=null; });
+ return lgCalHistoryRefreshInFlight;
 }
 
 async function lgCalHistoryReupload(id){
  if(lgCalHistoryBusy) return;
  const item=lgCalHistoryCache.find(x=>x&&x.id===id);
  if(!item){ toast('History item not found','err'); return; }
- if(item.type==='dv'&&item.reuploadable===0){ toast(item.note||'Cannot reupload this DV config','err'); return; }
- if(!window.confirm('Reupload this '+lgCalHistoryTypeLabel(item.type)+' to the TV?\n\nCalibration mode will be enabled, the payload uploaded, then calibration mode disabled.')) return;
+ if(item.reuploadable===0){ toast(item.note||'Cannot reupload this artifact','err'); return; }
+ if(!window.confirm('Reupload this '+lgCalHistoryTypeLabel(item.type)+' to '+(item.picture_mode||'the TV')+' ('+(item.signal_mode||'unknown signal')+')?\n\nSelect that signal on the generator first. Calibration mode will be enabled, the payload uploaded, then calibration mode disabled.\n\nThis restores only the selected artifact, not the entire picture mode. A Dolby Vision profile does not restore its separate 1D LUT.')) return;
  lgCalHistoryBusy=true;
  try{
   if(typeof lgBeginCommand==='function') lgBeginCommand('Reuploading '+lgCalHistoryTypeLabel(item.type));
+  // Dolby Vision calibration entry (CAL_START) is rejected in Absolute DV map
+  // mode, so a DV reupload must switch to Relative first -- the same step the DV
+  // AutoCal path takes (meterDvAutoCalSetMapMode). Without it the TV returns an
+  // opaque "500 Driver error". The server guards this too, but switching here is
+  // what actually lets the reupload succeed.
+  if((item.type==='dv'||item.signal_mode==='dv')&&typeof meterDvAutoCalSetMapMode==='function'){
+   const relative=await meterDvAutoCalSetMapMode('2');
+   if(!relative){ toast('Could not switch the display to Relative DV map mode, which a Dolby Vision reupload requires.','err'); return; }
+  }
   const body={id:id,picture_mode:item.picture_mode||'',signal_mode:item.signal_mode||'',enable_calibration:true,disable_calibration:true};
   const r=await fetchJSON('/api/lg/calibration-history/reupload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:180000});
   if(r&&r.status==='ok') toast(lgCalHistoryTypeLabel(item.type)+' reuploaded to TV');
@@ -2173,4 +2427,3 @@ async function lgCalHistoryDownload(id){
 // Calibration history loads only on demand:
 // - tablet: History button -> lgOpenCalHistoryModal()
 // - desktop: navigating to LG Display workspace (pgSelectDesktopWorkspace)
-

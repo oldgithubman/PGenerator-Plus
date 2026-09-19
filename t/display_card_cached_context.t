@@ -1,0 +1,10 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is not installed' if !$node;
+my $output=`"$node" "$Bin/js/display_card_cached_context.js" 2>&1`;
+is($?,0,'Display card cached-context regression checks pass') or diag $output;
+like($output,qr/^PASS display card cached context/m,'other-context, same-context and live-read labels exercised');
+done_testing();

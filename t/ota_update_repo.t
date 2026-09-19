@@ -220,7 +220,9 @@ ok($blocked_sub, 'webui.pm apply-blocked helper present');
 # parse regex and the denylist lines from the source (not copies) so
 # the test cannot drift from the implementation.
 # Slice the write loop out of webui_apply_config and check its skip lines.
-my ($write_loop) = $pm_src =~ /(foreach my \$k \(sort keys %changes\) \{.*?\n   \&sudo\("SET_PGENERATOR_CONF",\$k,\$changes\{\$k\}\);)/s;
+# The write may carry a trailing condition (the automation branch skips an
+# unchanged value); the denylist must still sit between the loop head and it.
+my ($write_loop) = $pm_src =~ /(foreach my \$k \(sort keys %changes\) \{.*?\n   \&sudo\("SET_PGENERATOR_CONF",\$k,\$changes\{\$k\}\)(?: if\([^\n]*\))?;)/s;
 ok($write_loop, 'generic config write loop extracted');
 ok($write_loop && $write_loop =~ /next if\(\$k eq "ota_repo" \|\| \$k eq "ota_repo_trusted"\)/,
    'generic config writer denylists ota_repo and ota_repo_trusted');

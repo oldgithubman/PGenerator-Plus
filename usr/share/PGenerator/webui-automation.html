@@ -1,0 +1,452 @@
+<section class="card span2" id="automationCard" data-widget="automation" data-desktop-workspace="automation" data-desktop-order="10" draggable="true">
+ <style>
+ #automationCard{min-width:0;font-size:.82rem;line-height:1.5;overflow-wrap:anywhere}
+ #automationCard h2{color:var(--text);gap:10px;flex-wrap:wrap}
+ #automationCard h3{font-size:.95rem;font-weight:600;line-height:1.4;margin:0 0 8px}
+ #automationCard h4{font-size:.82rem;font-weight:600;margin:16px 0 5px}
+ #automationCard button,#automationCard input,#automationCard select,#automationCard textarea{font-family:inherit}
+ #automationCard :is(button,input,select,textarea,summary,[tabindex]):focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+ #automationCard .btn-secondary:hover{background:var(--hover-bg)}
+ #automationCard .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+ #automationCard .auto-state-badge{font-size:.68rem;font-weight:600;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface-inset);color:var(--text2)}
+ #automationCard .auto-muted{color:var(--text2);font-size:.78rem;line-height:1.5}
+ #automationCard .auto-progress{border:1px solid var(--border);background:var(--surface-inset);border-radius:8px;padding:14px;margin:12px 0;overflow-wrap:anywhere}
+ #automationCard .auto-progress>strong{display:block;font-size:.95rem;font-weight:600;margin-bottom:4px}
+ #automationCard .auto-progress>.btn{margin-top:10px}
+ #automationCard .auto-progress progress{width:100%;height:10px;margin:8px 0;accent-color:var(--accent)}
+ #automationCard .auto-progress-label{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px 16px;margin-top:10px;font-size:.8rem}
+ #automationCard .auto-progress progress.auto-progress-overall{height:4px;margin-top:5px;opacity:.7}
+ /* Time readouts: fixed slots that never appear or disappear during a run,
+    whole-minute clocks and rounded estimates. Built to be left on screen. */
+ #automationCard .auto-readouts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 18px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+ #automationCard .auto-readouts-left{display:contents}
+ #automationCard .auto-readouts-left>.auto-readout:first-child{border-left:1px solid var(--border);padding-left:18px}
+ #automationCard .auto-readout{min-width:0;display:flex;flex-direction:column;gap:3px}
+ #automationCard .auto-readout-value{font-size:clamp(1.15rem,3.2vw,1.5rem);font-weight:500;line-height:1.15;letter-spacing:-.01em;font-variant-numeric:tabular-nums;color:var(--text);overflow-wrap:anywhere}
+ #automationCard .auto-readout-label{font-size:.72rem;line-height:1.35;color:var(--text2)}
+ #automationCard .auto-progress-status{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:12px}
+ #automationCard .auto-progress-status>span:empty{display:none}
+ #automationCard .auto-live{display:inline-flex;align-items:center;gap:7px}
+ #automationCard .auto-live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--text2);flex:none}
+ #automationCard .auto-live[data-state=live]::before{background:var(--green);animation:pgAutomationBreathe 4s ease-in-out infinite}
+ #automationCard .auto-live[data-state=delayed]::before{background:var(--orange)}
+ #automationCard .auto-live[data-state=lost]::before{background:var(--red)}
+ @keyframes pgAutomationBreathe{0%,100%{opacity:1}50%{opacity:.35}}
+ @media (prefers-reduced-motion:reduce){#automationCard .auto-live::before{animation:none}}
+ @media (max-width:700px){
+  #automationCard .auto-readouts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #automationCard .auto-readouts-left>.auto-readout:first-child{border-left:0;padding-left:0}
+ }
+ #automationCard .auto-progress[data-error=true]{border-color:var(--red)}
+ #automationCard .auto-progress[data-error=true]>strong{color:var(--red)}
+ #automationCard .auto-run-current{border-left:3px solid var(--accent);padding-left:10px;background:var(--surface-inset)}
+ #automationCard .auto-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
+ #automationCard .auto-toolbar .field{flex:1;min-width:180px;margin:0}
+ #automationCard .auto-run-actions{padding:14px 0;border-bottom:1px solid var(--border);gap:12px}
+ #automationCard #pgAutomationStartButton:focus-visible{outline:2px solid var(--text);outline-offset:3px}
+ #automationCard .auto-tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin:16px 0;padding-bottom:8px}
+ #automationCard .auto-tabs button[aria-selected="true"]{background:var(--accent);color:#fff}
+ #automationCard .auto-item{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:12px;padding:18px 0;border-bottom:1px solid var(--border);align-items:start}
+ #automationCard .auto-number{border:1px solid var(--border);border-radius:50%;width:28px;height:28px;display:grid;place-items:center;color:var(--text2)}
+ #automationCard .auto-reorder{display:block;touch-action:none;cursor:grab;color:var(--text2);background:var(--surface-inset);border:1px solid var(--border);border-radius:5px;min-width:30px;min-height:36px;margin-top:8px;font-size:1rem}
+ #automationCard .auto-reorder:active{cursor:grabbing}
+ #automationCard .auto-item.auto-dragging{opacity:.45}
+ #automationCard .auto-item[data-drop=before]{box-shadow:0 -3px var(--accent)}
+ #automationCard .auto-item[data-drop=after]{box-shadow:0 3px var(--accent)}
+ #automationCard .auto-log{height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:7px;background:var(--surface-inset);padding:10px;font: .78rem/1.6 ui-monospace,monospace;overflow-wrap:anywhere;white-space:pre-wrap}
+ #automationCard .auto-log [data-level=error]{color:var(--red)}
+ #automationCard .auto-log [data-level=warning]{color:var(--orange)}
+ #automationCard .auto-log time{color:var(--text2)}
+ #automationCard .auto-issues{max-height:180px;overflow:auto;overscroll-behavior:contain}
+ #automationCard .auto-issues [data-level=warning],#automationCard .auto-readiness-problems [data-level=warning]{color:var(--orange)}
+ /* A reminder to check a menu the TV does not expose is a note, not a problem. */
+ #automationCard .auto-issues [data-level=note],#automationCard .auto-readiness-problems [data-level=note],#automationCard .auto-log [data-level=note]{color:var(--text2)}
+ #automationCard .auto-readiness-problems{padding-left:20px;margin:10px 0}
+ #automationCard .auto-readiness-problems li{padding:3px 0}
+ #automationCard .auto-readiness-problems [data-level=error]{color:var(--red)}
+ #automationCard .auto-readiness-details{margin:8px 0}
+ #automationCard .auto-readiness-details>summary{cursor:pointer;color:var(--text2)}
+ #automationCard .auto-readiness-job{margin:8px 0 0 12px}
+ #automationCard .auto-readiness-job h5{margin:6px 0 2px;font-size:inherit;font-weight:600}
+ #automationCard .auto-readiness-job .auto-readiness-problems{margin:2px 0 6px}
+ #automationCard .auto-run-warnings>summary,#automationCard .auto-warning-note{color:var(--orange)}
+ #automationCard .auto-run-warnings ul{padding-left:20px;max-height:180px;overflow:auto}
+ #automationCard .auto-run-warnings li{padding:4px 0;color:var(--text2)}
+ #automationCard .auto-pills{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}
+ #automationCard .auto-pill{padding:3px 8px;background:var(--surface-inset);border:1px solid var(--border);border-radius:5px;font-size:.75rem}
+ #automationCard .auto-empty{padding:32px 18px;border:1px dashed var(--border);border-radius:8px;text-align:center}
+ #automationCard .auto-queue-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin:22px 0 10px}
+ #automationCard .auto-queue-header>div{min-width:0;max-width:100%;overflow-wrap:anywhere}
+ #automationCard .auto-queue-header h3{margin:0 0 5px;font-size:1rem}
+ #automationCard .auto-menu{position:relative;margin:0}
+ #automationCard .auto-menu>summary{padding:6px 10px;font-size:.8rem}
+ #automationCard .auto-menu-panel{position:absolute;right:0;top:100%;z-index:3;display:grid;gap:6px;min-width:155px;padding:10px;background:var(--surface-modal);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px var(--shadow)}
+ #automationCard .auto-job-summary{font-size:.8rem;color:var(--text2);line-height:1.6;margin-top:6px}
+ #automationCard .auto-job-details{margin:8px 0 0}
+ #automationCard .auto-job-details>summary{font-size:.78rem;padding:3px 0;color:var(--text2)}
+ #pgAutomationQueueDialog,#pgAutomationConfirmDialog{position:fixed;inset:0;margin:auto;color:var(--text);background:var(--surface-modal);border:1px solid var(--border);border-radius:12px;padding:22px;width:min(440px,calc(100vw - 32px));max-height:90vh;overflow:auto;box-sizing:border-box}
+ #pgAutomationQueueDialog::backdrop,#pgAutomationConfirmDialog::backdrop{background:rgba(0,0,0,.7)}
+ /* Engines without <dialog> render it as an always-visible block; keep a closed dialog hidden. */
+ #pgAutomationEditor:not([open]),#pgAutomationQueueDialog:not([open]),#pgAutomationConfirmDialog:not([open]){display:none}
+ #pgAutomationConfirmDialog p{margin:0 0 18px;line-height:1.45}
+ #pgAutomationQueueDialog .field{margin:18px 0}
+ #automationCard .auto-editor-section{padding:16px 0;border-bottom:1px solid var(--border)}
+ #automationCard .auto-editor-section h3{font-size:.95rem;margin:0 0 12px}
+ #automationCard .auto-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:12px}
+ #automationCard .auto-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px}
+ #automationCard .auto-fields>.field,#automationCard .auto-settings>.field{min-width:0}
+ #automationCard .auto-editor-section>p{max-width:80ch;margin:8px 0 12px}
+ #pgAutomationWorkflowOptions{margin-top:16px}
+ #pgAutomationWorkflowOptions>.auto-muted,#pgAutomationShadowFixField>.auto-muted{margin:5px 0 14px;max-width:80ch}
+ #pgAutomationEditor .field>label{line-height:1.5}
+ #pgAutomationEditor input[type=checkbox],#pgAutomationEditor input[type=radio]{accent-color:var(--accent)}
+ #automationCard .auto-stage{display:block;padding:12px;border:1px solid var(--border);border-radius:7px}
+ #automationCard .auto-stage strong{display:block;margin-bottom:5px}
+ #automationCard .auto-stage input{margin-right:6px}
+ #automationCard .auto-stage>.meter-toggle{display:flex;margin-top:10px}
+ #pgAutomationEditor{counter-reset:auto-step}
+ #automationCard .auto-step>h3::before{counter-increment:auto-step;content:counter(auto-step) ". ";color:var(--accent)}
+ #automationCard .auto-choice{display:block;padding:12px;border:1px solid var(--border);border-radius:8px;cursor:pointer}
+ #automationCard .auto-choice:has(input:checked){border-color:var(--accent);background:var(--surface-inset)}
+ #automationCard .auto-choice strong{display:block;margin-bottom:6px}
+ #automationCard .auto-choice input{margin-right:6px}
+ #automationCard .auto-luminance-control{display:flex;align-items:center;gap:16px}
+ #automationCard .auto-luminance-control input[type=range]{flex:1;min-width:80px}
+ #automationCard .auto-luminance-control input[type=number]{width:90px}
+ #automationCard .auto-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+ #automationCard .auto-compatibility{--compatibility-color:var(--status-warning);display:flex;align-items:center;flex-wrap:wrap;gap:12px 18px;margin:16px 0;padding:14px 16px;border:1px solid var(--border);border-inline-start:4px solid var(--compatibility-color);border-radius:8px;background:var(--surface-inset)}
+ #automationCard .auto-compatibility[data-state=checking]{--compatibility-color:var(--accent)}
+ #automationCard .auto-compatibility[data-state=checked]{--compatibility-color:var(--status-success)}
+ #automationCard .auto-compatibility[data-state=error]{--compatibility-color:var(--status-error)}
+ #automationCard .auto-compatibility-copy{flex:1 1 330px;min-width:0}
+ #automationCard .auto-compatibility-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;margin-bottom:6px}
+ #automationCard .auto-compatibility-heading h3{margin:0}
+ #automationCard .auto-compatibility-state{font-weight:600;color:var(--compatibility-color)}
+ #automationCard .auto-compatibility p{margin:0;line-height:1.5}
+ #automationCard .auto-compatibility .btn{min-height:36px;white-space:normal}
+ #automationCard .auto-editor-actions{position:sticky;bottom:-20px;padding:14px 0;margin-bottom:0;background:var(--surface-modal);border-top:1px solid var(--border);z-index:2}
+ #automationCard details{margin:12px 0}
+ #automationCard summary{cursor:pointer;font-weight:600;padding:8px 0}
+ #automationCard table{width:100%;border-collapse:collapse;font-size:.85rem}
+ #automationCard th,#automationCard td{text-align:left;padding:8px;border-bottom:1px solid var(--border)}
+ #automationCard td input[type="number"]{width:85px;background:var(--surface-field);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:.82rem;outline:none}
+ #automationCard td input[type="number"]:focus{border-color:var(--accent)}
+ #automationCard .auto-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+ #automationCard .auto-history-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:14px 0;border-bottom:1px solid var(--border)}
+ #automationCard .auto-history-row>div:first-child{min-width:0;flex:1 1 220px}
+ #automationCard .auto-history-row small{display:block;color:var(--text2);font-size:.75rem;margin-top:3px}
+ #automationCard .meter-toggle{align-items:center;min-height:0}
+ #pgAutomationEditor{position:fixed;inset:0;margin:auto;color:var(--text);background:var(--surface-modal);border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 60px var(--shadow);width:min(860px,calc(100vw - 32px));max-height:90vh;padding:20px;box-sizing:border-box;overflow:auto}
+ #pgAutomationEditor::backdrop{background:rgba(0,0,0,.7)}
+ body.pg-automation-report-render #meterCard{display:block!important;position:fixed!important;left:-20000px!important;top:0!important;width:var(--automation-report-width,1100px)!important;pointer-events:none!important}
+ body.pg-automation-report-render #meterCharts{display:block!important}
+ /* Export from a predictable landscape canvas, not the desktop workspace's
+    narrow, stretched right-hand EOTF/luminance column. Scope this to the
+    off-screen snapshot pass so the operator's chart layout is unchanged. */
+ body.pg-automation-report-render #chartsGreyscaleFullWrap{display:block!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{display:block!important;padding-top:0!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterGammaBlock{margin:0!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{display:block!important;contain:none!important;height:auto!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterEotfBlock,
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterLuminanceBlock{display:block!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterEotfScroller,
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #meterLuminanceScroller{height:300px!important}
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #chartEOTF,
+ body.pg-automation-report-render #chartsGreyscaleFullWrap #chartGamma{width:100%!important;height:300px!important}
+ #pgAutomationHistoryReport .report-section{margin-top:20px;padding:16px;border:1px solid var(--border);border-radius:10px}
+ #pgAutomationHistoryReport .report-section-title{font-size:1.1rem;font-weight:700}
+ #pgAutomationHistoryReport .report-section-meta,#pgAutomationHistoryReport .report-stat-label{font-size:.8rem;color:var(--text2);margin:6px 0}
+ #pgAutomationHistoryReport .report-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:16px 0}
+ #pgAutomationHistoryReport .report-stat{padding:12px;background:var(--surface-inset);border-radius:8px}
+ #pgAutomationHistoryReport .report-stat-value{font-weight:700}
+ #pgAutomationHistoryReport .report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+ #pgAutomationHistoryReport .report-span-full{grid-column:1/-1}
+ #pgAutomationHistoryReport .report-chart-title,#pgAutomationHistoryReport .report-table-title{margin:14px 0 8px;font-weight:600}
+ #pgAutomationHistoryReport .report-table-wrap{overflow-x:auto}
+ #pgAutomationHistoryReport img{max-width:100%}
+ @media(max-width:600px){#automationCard .auto-item{grid-template-columns:28px 1fr}#automationCard .auto-actions{grid-column:2;justify-content:flex-start}#automationCard .auto-tabs{flex-wrap:wrap}}
+ </style>
+ <h2><span class="drag-handle">&#9776;</span>Automation <span id="pgAutomationState" class="auto-state-badge" role="status">Idle</span></h2>
+ <p class="auto-muted">Configure each TV setup, then run the batch in order. Every item keeps its own results.</p>
+ <div id="pgAutomationNotice" role="status" style="display:none;padding:10px;border:1px solid var(--border);border-radius:6px;white-space:pre-wrap"></div>
+ <div id="pgAutomationProgress" class="auto-progress" role="status" aria-live="polite" style="display:none"></div>
+ <details id="pgAutomationActivity" ontoggle="if(this.open&&pgAutomation.logFollow)pgAutomationLogLatest()">
+  <summary>Activity log <span id="pgAutomationLogCount" class="auto-muted"></span></summary>
+  <div class="auto-toolbar"><span id="pgAutomationLogContext" class="auto-muted">Startup checks and batch output</span><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationLogLatest()">Jump to latest</button><span id="pgAutomationLogFollowing" class="auto-muted">Following latest</span></div>
+  <div id="pgAutomationLog" class="auto-log" role="log" aria-label="Automation activity" aria-live="off" tabindex="0" onscroll="pgAutomationLogScroll()">No activity yet.</div>
+  <div id="pgAutomationLogLimit" class="auto-muted"></div>
+ </details>
+ <div class="auto-tabs" role="tablist" aria-label="Automation views" onkeydown="pgAutomationTabKey(event)">
+  <button class="btn btn-sm btn-secondary" type="button" role="tab" id="pgAutomationQueueTab" aria-controls="pgAutomationTabQueue" aria-selected="true" data-auto-tab="queue" onclick="pgAutomationTab('queue')">Queue <span id="pgAutomationQueueCount">0</span></button>
+  <button class="btn btn-sm btn-secondary" type="button" role="tab" id="pgAutomationRecipesTab" aria-controls="pgAutomationTabRecipes" tabindex="-1" data-auto-tab="recipes" onclick="pgAutomationTab('recipes')">Saved Recipes</button>
+  <button class="btn btn-sm btn-secondary" type="button" role="tab" id="pgAutomationLiveTab" aria-controls="pgAutomationTabLive" tabindex="-1" data-auto-tab="live" onclick="pgAutomationTab('live')">Live Run</button>
+  <button class="btn btn-sm btn-secondary" type="button" role="tab" id="pgAutomationHistoryTab" aria-controls="pgAutomationTabHistory" tabindex="-1" data-auto-tab="history" onclick="pgAutomationTab('history')">History</button>
+ </div>
+ <div id="pgAutomationTabQueue" role="tabpanel" aria-labelledby="pgAutomationQueueTab">
+  <div class="auto-toolbar">
+   <div class="field"><label for="pgAutomationSavedQueueSelect">Selected queue</label><select id="pgAutomationSavedQueueSelect" onchange="pgAutomationQueueSelectionChanged(true)"></select></div>
+   <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationNewQueue()">+ New queue</button>
+   <!-- Delete sits beside the picker it acts on; buried in Queue options it went unfound. -->
+   <button class="btn btn-sm btn-secondary" id="pgAutomationDeleteQueueButton" type="button" onclick="pgAutomationDeleteQueue()">Delete queue</button>
+  </div>
+  <div class="field"><label for="pgAutomationFinishPolicy">When the batch finishes</label><select id="pgAutomationFinishPolicy" onchange="pgAutomationFinishPolicyChanged()"><option value="restore-original">Restore original signal and picture mode where readable</option><option value="keep-last">Leave the final calibrated mode selected</option></select><small>Temporary protection settings are restored in both cases. An unreadable original picture mode is never guessed.</small></div>
+  <div class="auto-toolbar auto-run-actions">
+   <button class="btn btn-sm btn-primary" id="pgAutomationStartButton" type="button" onclick="pgAutomationStart()">Run queue</button>
+   <button class="btn btn-sm btn-secondary" id="pgAutomationReadinessButton" type="button" onclick="pgAutomationReadiness()">Check Readiness</button>
+   <button class="btn btn-sm btn-primary" id="pgAutomationSavePendingButton" type="button" style="display:none" onclick="pgAutomationEditActiveQueue()">Save Pending Changes</button>
+  </div>
+  <div id="pgAutomationActionBlocker" class="auto-muted" role="status" hidden></div>
+  <div id="pgAutomationReadiness" aria-live="polite"></div>
+  <p class="auto-muted">Check Readiness checks every job and restores any context it can independently read. On older TVs without mode readback, it checks compatibility without probing modes and reports limited verification. Run queue rechecks each job in its selected signal and mode before calibration.</p>
+  <div class="auto-queue-header">
+   <div><h3 id="pgAutomationJobsHeading">Jobs</h3><span id="pgAutomationQueueSaveState" class="auto-muted" aria-live="polite"></span></div>
+   <div class="auto-actions">
+    <button class="btn btn-sm btn-secondary" id="pgAutomationSaveQueueButton" type="button" onclick="pgAutomationSaveSelectedQueue()">Save queue</button>
+    <details class="auto-menu" id="pgAutomationQueueMenu"><summary>Queue options</summary><div class="auto-menu-panel">
+     <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationNameQueue('rename')">Rename</button>
+     <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationNameQueue('copy')">Save a copy</button>
+     <button class="btn btn-sm btn-secondary" id="pgAutomationReloadQueueButton" type="button" onclick="pgAutomationLoadQueue()">Discard changes</button>
+    </div></details>
+   </div>
+  </div>
+  <div id="pgAutomationQueueContext" class="auto-muted"></div>
+  <p class="auto-muted">Drag a job's ⠿ handle to reorder it, or use More → Move up / Move down.</p>
+  <div id="pgAutomationReorderStatus" class="auto-muted" role="status"></div>
+  <div id="pgAutomationQueueItems"></div>
+  <div class="auto-toolbar">
+   <button class="btn btn-sm btn-primary" type="button" onclick="pgAutomationNewRecipe('queue')">+ Add job</button>
+   <details><summary class="auto-muted">Add from saved recipe</summary><div class="auto-toolbar">
+    <div class="field"><label for="pgAutomationRecipeSelect">Saved recipe</label><select id="pgAutomationRecipeSelect"></select></div>
+    <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationQueueAdd()">Add job</button>
+   </div></details>
+  </div>
+  <p class="auto-muted">Later items in the same picture mode replace its settings and calibration. Earlier results stay in history.</p>
+ </div>
+ <dialog id="pgAutomationQueueDialog" aria-labelledby="pgAutomationQueueDialogTitle" oncancel="if(pgAutomationEl('QueueDialogSave').disabled)event.preventDefault()">
+  <form onsubmit="event.preventDefault();pgAutomationSubmitQueueName()">
+   <h3 id="pgAutomationQueueDialogTitle">New queue</h3>
+   <div class="field"><label for="pgAutomationQueueName">Queue name</label><input id="pgAutomationQueueName" maxlength="120" required></div>
+   <p class="auto-muted" id="pgAutomationQueueDialogHelp"></p>
+   <div id="pgAutomationQueueDialogError" role="alert" style="color:var(--red)"></div>
+   <div class="auto-actions"><button class="btn btn-sm btn-secondary" type="button" onclick="if(!pgAutomationEl('QueueDialogSave').disabled)pgAutomationCloseDialog(pgAutomationEl('QueueDialog'))">Cancel</button><button class="btn btn-sm btn-primary" id="pgAutomationQueueDialogSave" type="submit">Save queue</button></div>
+  </form>
+ </dialog>
+ <div id="pgAutomationTabRecipes" role="tabpanel" aria-labelledby="pgAutomationRecipesTab" style="display:none">
+  <div class="auto-toolbar"><button class="btn btn-sm btn-primary" type="button" onclick="pgAutomationNewRecipe('recipe')">+ New Recipe</button><span class="auto-muted">Editing a recipe does not change items already in a queue.</span></div>
+  <div id="pgAutomationRecipeList"></div>
+ </div>
+ <dialog id="pgAutomationEditor" aria-labelledby="pgAutomationEditorTitle" oncancel="pgAutomationCancelEditor()">
+  <div class="auto-section-title"><h3 id="pgAutomationEditorTitle">Add Queue Item</h3><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationCancelEditor()" aria-label="Close item editor">Close</button></div>
+  <div id="pgAutomationEditorError" role="alert" style="color:var(--red);white-space:pre-wrap"></div>
+  <div class="auto-editor-section auto-fields">
+   <div class="field"><label for="pgAutomationRecipeName">Item name</label><input id="pgAutomationRecipeName" maxlength="120"></div>
+   <div class="field"><label for="pgAutomationSignal">Signal format</label><select id="pgAutomationSignal" onchange="pgAutomationModesChanged();pgAutomationSignalDefaults()"><option value="sdr">SDR</option><option value="hdr10">HDR10</option><option value="hlg">HLG</option><option value="dv">Dolby Vision</option></select></div>
+   <div class="field"><label for="pgAutomationPictureMode">Picture mode</label><select id="pgAutomationPictureMode" aria-describedby="pgAutomationModeEligibility" onchange="pgAutomationModeChanged()"></select><span id="pgAutomationModeEligibility" class="auto-muted" role="status"></span></div>
+  </div>
+  <section id="pgAutomationCompatibility" class="auto-compatibility" data-state="required" aria-labelledby="pgAutomationCompatibilityTitle">
+   <div class="auto-compatibility-copy" role="status" aria-live="polite" aria-atomic="true">
+    <div class="auto-compatibility-heading"><h3 id="pgAutomationCompatibilityTitle">TV compatibility</h3><span id="pgAutomationCompatibilityState" class="auto-compatibility-state">Check required</span></div>
+    <p id="pgAutomationCompatibilityDetail">Required before saving. Connect your TV, then check which controls this job can use.</p>
+   </div>
+   <button id="pgAutomationCompatibilityButton" class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationResolveSettingsPlan()">Check TV compatibility</button>
+  </section>
+  <div class="auto-editor-section auto-step">
+   <h3>Workflow</h3>
+   <p id="pgAutomationWorkflowHelp" class="auto-muted"></p>
+   <div class="auto-fields">
+    <label class="auto-stage"><strong><input id="pgAutomationPre" type="checkbox" onchange="pgAutomationUpdateEditor()">Before Readings</strong><span class="auto-muted">Measure the existing calibration with this item's settings.</span></label>
+    <div class="auto-stage"><label><strong><input id="pgAutomationCal" type="checkbox" onchange="pgAutomationUpdateEditor()">AutoCal</strong></label><span class="auto-muted">Greyscale, then a 3D LUT or Dolby Vision panel profile.</span><label class="meter-toggle" style="margin-top:10px"><input id="pgAutomationApplyAll" type="checkbox">Apply to All Inputs</label></div>
+    <label class="auto-stage"><strong><input id="pgAutomationPost" type="checkbox" onchange="pgAutomationUpdateEditor()">After Readings</strong><span class="auto-muted">Measure the final result and check quality limits.</span></label>
+   </div>
+   <details id="pgAutomationSweeps"><summary>Measurement Sweeps</summary><table><thead><tr><th>Sweep</th><th>Before</th><th>After</th></tr></thead><tbody>
+    <tr><td>Greyscale · 21 points</td><td><input id="pgAutomationSeriesGrey" type="checkbox" aria-label="Before greyscale"></td><td><input id="pgAutomationPostSeriesGrey" type="checkbox" aria-label="After greyscale"></td></tr>
+    <tr><td>ColorChecker · 30 patches</td><td><input id="pgAutomationSeriesColors" type="checkbox" aria-label="Before ColorChecker"></td><td><input id="pgAutomationPostSeriesColors" type="checkbox" aria-label="After ColorChecker"></td></tr>
+    <tr><td>Saturation · 24 patches</td><td><input id="pgAutomationSeriesSats" type="checkbox" aria-label="Before saturation"></td><td><input id="pgAutomationPostSeriesSats" type="checkbox" aria-label="After saturation"></td></tr>
+   </tbody></table></details>
+   <div id="pgAutomationWorkflowOptions">
+    <label class="meter-toggle"><input id="pgAutomationPanelProtection" type="checkbox"> Switch off panel protection (TPC/GSR) while measuring</label>
+    <p class="auto-muted">Stops the OLED's static-brightness limiter dimming long test patterns. Sent to 2020 and newer LG OLEDs only; the TV gives no readback, and both controls are switched back on when the run ends.</p>
+    <label class="meter-toggle"><input id="pgAutomationDarkDetail" type="checkbox"> Dark Detail</label>
+    <p class="auto-muted">Measures additional shadow patches between the standard greyscale points. Adds roughly 20 minutes.</p>
+    <div id="pgAutomationShadowFixField"><label class="meter-toggle"><input id="pgAutomationShadowFix" type="checkbox"> Tone Mapping Shadow Fix</label><p class="auto-muted">HDR10 only. Measures and trims the 5–30% shadow band after tone mapping. Adds roughly 20 minutes.</p></div>
+    <div id="pgAutomationVolumeFields" class="auto-fields">
+     <div class="field"><label for="pgAutomationMethod">3D LUT profiling</label><select id="pgAutomationMethod" onchange="pgAutomationUpdateEditor()"><option value="hybrid3">Hybrid 3³ · 63 patches</option><option value="hybrid5">Hybrid 5³ · 161 patches</option><option value="hybrid9">Hybrid 9³ · 765 patches</option><option value="matrix">Matrix · 5 patches</option><option value="skeleton">Skeleton · 45 patches</option><option value="lattice">Lattice (volume only)</option><option value="ramp">Ramp (legacy recipe)</option></select></div>
+     <div class="field" id="pgAutomationLatticeSizeField"><label for="pgAutomationLatticeSize">Lattice size</label><select id="pgAutomationLatticeSize"><option value="3">3³ · 27 patches</option><option value="5">5³ · 125 patches</option><option value="9">9³ · 729 patches</option></select></div>
+    </div>
+    <p id="pgAutomationLutHelp" class="auto-muted"></p>
+   </div>
+  </div>
+  <div class="auto-editor-section auto-step" id="pgAutomationOutputSection">
+   <h3>Display Use Case</h3>
+   <div class="field"><label for="pgAutomationUseCase">How will this display be used?</label><select id="pgAutomationUseCase" onchange="pgAutomationUseCaseChanged()"><option value="keep">Keep this item's output settings</option><option value="pc">PC Monitor · RGB Full, 10-bit</option><option value="tv">TV / Movies · YCbCr 4:4:4 Limited, 10-bit</option><option value="console">Game Console · RGB Full, 10-bit</option></select></div>
+   <p class="auto-muted">Captured per item and applied when it runs. TV / Movies retains SDR super-white headroom.</p>
+  </div>
+  <div class="auto-editor-section auto-step">
+   <h3>Display Type and Meter Profile</h3>
+   <div class="auto-fields">
+    <div class="field"><label for="pgAutomationDisplayType">Panel technology</label><select id="pgAutomationDisplayType" onchange="pgAutomationDisplayTypeChanged()"></select></div>
+    <div class="field"><label for="pgAutomationCcss">Meter profile (CCSS / CCMX)</label><select id="pgAutomationCcss"></select></div>
+   </div>
+   <p id="pgAutomationDisplayHelp" class="auto-muted"></p>
+  </div>
+  <div class="auto-editor-section auto-step">
+   <h3 id="pgAutomationGammaHeading">Gamma Target</h3>
+   <div class="auto-fields">
+    <div class="field"><label for="pgAutomationGamma">Gamma / transfer function</label><select id="pgAutomationGamma" onchange="pgAutomationGammaChanged()"><option value="bt1886">BT.1886 (2.4) · TV / Movies</option><option value="2.2">Gamma 2.2 · PC / Console</option><option value="srgb">sRGB · Desktop</option><option value="2.4">Gamma 2.4</option><option value="st2084">ST 2084 (PQ)</option><option value="hlg">HLG</option></select></div>
+    <div class="field"><label for="pgAutomationGamut">Target gamut</label><select id="pgAutomationGamut"><option value="bt709">BT.709</option><option value="p3d65">DCI-P3 / D65</option><option value="bt2020">BT.2020</option></select></div>
+   </div>
+   <p id="pgAutomationGammaHelp" class="auto-muted"></p>
+   <details><summary>Target White Point</summary><div class="auto-fields">
+    <div class="field"><label for="pgAutomationWhiteX">Target white x</label><input id="pgAutomationWhiteX" type="number" min=".01" max=".9" step=".0001" value=".3127"></div>
+    <div class="field"><label for="pgAutomationWhiteY">Target white y</label><input id="pgAutomationWhiteY" type="number" min=".01" max=".9" step=".0001" value=".3290"></div>
+   </div></details>
+  </div>
+  <div class="auto-editor-section auto-step">
+   <h3 id="pgAutomationPanelHeading">TV Settings and 100% White Luminance</h3>
+   <p class="auto-muted">Pin the controls this item should enforce. Values are checked before readings and reapplied after calibration resets. Energy saving and AI picture are disabled where supported unless pinned otherwise.</p>
+   <p class="auto-muted">New jobs start with reference defaults for this picture mode, filtered by your TV’s compatibility matrix. Settings that cannot be controlled safely are listed as manual checks. Use TV Settings copies current readable values instead. Support is checked again before calibration.</p>
+   <div class="auto-toolbar"><button class="btn btn-sm btn-secondary" id="pgAutomationKeysButton" type="button" onclick="pgAutomationLoadSupportedKeys()">Use TV Settings</button><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationResetPictureDefaults()">Restore Reference Defaults</button><span id="pgAutomationSettingsStatus" class="auto-muted"></span></div>
+   <details><summary>Picture Controls — Defaults and Overrides</summary><div class="auto-toolbar"><button class="btn btn-sm btn-secondary" id="pgAutomationSelectAllSettings" type="button" onclick="pgAutomationSelectSettings(true)">Select All</button><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationSelectSettings(false)">Clear Selection</button><span class="auto-muted">Only ticked controls are applied. Select All uses configured values, not blank controls. Panel light follows the policy below.</span></div><div id="pgAutomationSettingsEditor" class="auto-settings"></div></details>
+   <textarea id="pgAutomationSettings" style="display:none">{}</textarea>
+   <p id="pgAutomationManualSettings" class="auto-muted" role="status"></p>
+   <select id="pgAutomationPanelPolicy" hidden aria-hidden="true" tabindex="-1"><option value="fixed">fixed</option><option value="target">target</option></select>
+   <div id="pgAutomationPanelChoices" class="auto-fields" style="margin-top:14px" role="group" aria-label="Panel brightness policy">
+    <label class="auto-choice"><strong><input id="pgAutomationPanelFixed" name="pgAutomationPanelPolicyChoice" type="radio" value="fixed" onchange="pgAutomationSetPanelPolicy('fixed')">Fixed Backlight / OLED Brightness</strong><span class="auto-muted">Set a control value (0–100). Measure its 100% white at run time and use that luminance for 1D AutoCal.</span></label>
+    <label class="auto-choice" id="pgAutomationPanelTargetChoice"><strong><input id="pgAutomationPanelTargetRadio" name="pgAutomationPanelPolicyChoice" type="radio" value="target" onchange="pgAutomationSetPanelPolicy('target')">Target 100% White Luminance</strong><span class="auto-muted">Automatically adjust the panel-light control to reach your setup luminance before SDR AutoCal.</span></label>
+   </div>
+   <div class="auto-fields" style="margin-top:14px">
+    <div class="field"><span>TV-selected panel control</span><input id="pgAutomationPanelKey" type="hidden"><strong id="pgAutomationPanelBinding" role="status">Identifying TV…</strong><span id="pgAutomationPanelBindingHelp" class="auto-muted"></span></div>
+    <div class="field" id="pgAutomationPanelFixedField"><label for="pgAutomationPanelValue">Fixed backlight / OLED brightness (0–100)</label><div class="auto-luminance-control"><input id="pgAutomationPanelSlider" type="range" min="0" max="100" step="1" aria-label="Fixed panel brightness" oninput="pgAutomationEl('PanelValue').value=this.value"><input id="pgAutomationPanelValue" type="number" min="0" max="100" step="1" oninput="pgAutomationEl('PanelSlider').value=this.value"></div></div>
+    <div class="field" id="pgAutomationPanelTargetField"><label for="pgAutomationPanelTarget">Setup 100% white luminance (cd/m² / nits)</label><input id="pgAutomationPanelTarget" type="number" min="1" value="100"></div>
+   </div>
+   <p id="pgAutomationLuminanceHelp" class="auto-muted"></p>
+  </div>
+  <div class="auto-editor-section auto-step" id="pgAutomationOneDSection">
+   <h3>1D LUT AutoCal Target</h3>
+   <div class="auto-fields">
+    <div class="field"><label for="pgAutomationDelta">1D LUT / greyscale target ΔE</label><input id="pgAutomationDelta" type="number" min=".1" max="10" step=".1" value=".5"></div>
+    <div class="field"><label for="pgAutomationFormula">ΔE formula</label><select id="pgAutomationFormula"><option value="deitp">ΔE ITP</option><option value="de2000">ΔE2000</option></select></div>
+   </div>
+   <p class="auto-muted">The same target as the manual wizard's final Start step. The closest result is retained if the target cannot be reached. This is separate from the post-reading quality limits.</p>
+  </div>
+  <div class="auto-editor-section">
+   <details><summary>Measurement Options</summary><div class="auto-fields">
+    <div class="field"><label for="pgAutomationColorFormat">Output color format</label><select id="pgAutomationColorFormat" onchange="pgAutomationEl('UseCase').value='keep'"><option value="0">RGB</option><option value="1">YCbCr 4:4:4</option><option value="2">YCbCr 4:2:2</option></select></div>
+    <div class="field"><label for="pgAutomationPatchSize">Patch window (%)</label><input id="pgAutomationPatchSize" type="number" min="1" max="100" value="10"></div>
+    <div class="field"><label for="pgAutomationDelay">Patch delay (ms)</label><input id="pgAutomationDelay" type="number" min="0" max="30000" value="1000"></div>
+    <div class="field"><label for="pgAutomationSettle">Mode settle time (seconds)</label><input id="pgAutomationSettle" type="number" min="0" max="600" value="8"></div>
+    <div class="field"><label for="pgAutomationRange">Signal range</label><select id="pgAutomationRange"><option value="1">Limited</option><option value="2">Full</option></select></div>
+    <div class="field"><label for="pgAutomationBitDepth">Bit depth</label><select id="pgAutomationBitDepth"><option value="10">10 bit</option><option value="8">8 bit</option></select></div>
+    <div class="field" id="pgAutomationCubeSizeField"><label for="pgAutomationCubeSize">Export cube size (TV upload remains 33³)</label><select id="pgAutomationCubeSize"><option value="17">17³</option><option value="33">33³</option></select></div>
+    <div id="pgAutomationResidualsField"><label class="meter-toggle"><input id="pgAutomationResiduals" type="checkbox"> Per-Node Corrections</label><p class="auto-muted">Enabled by default for measured-volume profiling, matching the wizard.</p></div>
+   </div><p class="auto-muted">Meter settings are copied into this item, so later changes in the guided workflow will not alter the batch.</p></details>
+   <details id="pgAutomationQualitySection"><summary>Post-Reading Quality Limits</summary>
+    <label class="meter-toggle"><input id="pgAutomationQuality" type="checkbox"> Enable Quality Checks</label>
+    <div class="field"><label for="pgAutomationQualityPolicy">Acceptance policy</label><select id="pgAutomationQualityPolicy"><option value="audit">Audit only — retain existing workflow</option><option value="enforce">Enforce before Apply to All Inputs</option></select></div>
+    <p class="auto-muted">Audit flags missed limits and continues. Enforce measures first and blocks Apply to All Inputs unless every selected sweep passes. Uses the ΔE formula selected above.</p>
+    <table><thead><tr><th>Sweep</th><th>Average ΔE</th><th>Maximum ΔE</th></tr></thead><tbody>
+     <tr><td>Greyscale</td><td><input id="pgAutomationQualityAvg" type="number" min="0" step=".1" value="2" aria-label="Greyscale average limit"></td><td><input id="pgAutomationQualityMax" type="number" min="0" step=".1" value="5" aria-label="Greyscale maximum limit"></td></tr>
+     <tr><td>ColorChecker</td><td><input id="pgAutomationQualityColorsAvg" type="number" min="0" step=".1" value="2" aria-label="ColorChecker average limit"></td><td><input id="pgAutomationQualityColorsMax" type="number" min="0" step=".1" value="5" aria-label="ColorChecker maximum limit"></td></tr>
+     <tr><td>Saturation</td><td><input id="pgAutomationQualitySatsAvg" type="number" min="0" step=".1" value="2" aria-label="Saturation average limit"></td><td><input id="pgAutomationQualitySatsMax" type="number" min="0" step=".1" value="5" aria-label="Saturation maximum limit"></td></tr>
+    </tbody></table>
+   </details>
+  </div>
+  <div class="auto-toolbar auto-editor-actions"><button class="btn btn-primary" id="pgAutomationEditorSave" type="button" onclick="pgAutomationSaveRecipe()">Add to Queue</button><label id="pgAutomationSaveAsRecipeLabel" class="meter-toggle"><input id="pgAutomationSaveAsRecipe" type="checkbox"> Also Save as a Recipe</label><button class="btn btn-secondary" type="button" onclick="pgAutomationCancelEditor()">Cancel</button></div>
+ </dialog>
+ <div id="pgAutomationTabLive" role="tabpanel" aria-labelledby="pgAutomationLiveTab" style="display:none">
+  <div class="auto-toolbar"><button class="btn btn-sm btn-secondary" id="pgAutomationPauseButton" type="button" onclick="pgAutomationControl('pause')">Pause After Stage</button><button class="btn btn-sm btn-primary" id="pgAutomationResumeButton" type="button" onclick="pgAutomationControl('resume')">Resume</button><button class="btn btn-sm btn-danger" id="pgAutomationStopButton" type="button" onclick="pgAutomationControl('stop')">Stop</button><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationLoadActiveQueue()">Edit Pending Items</button></div>
+  <div class="auto-job-layout"><div id="pgAutomationLive"></div><aside id="pgAutomationLiveDetail" class="auto-job-detail" aria-label="Selected job details"></aside></div>
+ </div>
+ <div id="pgAutomationTabHistory" role="tabpanel" aria-labelledby="pgAutomationHistoryTab" style="display:none"><div class="auto-toolbar"><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationRefresh()">Refresh History</button></div><div id="pgAutomationHistoryList"></div><div id="pgAutomationHistoryDetail" style="margin-top:16px"></div></div>
+</section>
+<style>
+ #automationCard .auto-job-layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(0,2fr);gap:20px;align-items:start}
+ #automationCard .auto-job-detail{min-width:0;padding:16px;border:1px solid var(--border);border-radius:10px;overflow-wrap:anywhere}
+ #automationCard .auto-job-detail:empty{display:none}
+ #automationCard .auto-job-pick{display:block;width:100%;text-align:left;color:var(--text);background:transparent;border:0;border-bottom:1px solid var(--border);padding:14px 10px;cursor:pointer;font:inherit}
+ #automationCard .auto-job-pick[aria-pressed=true]{background:var(--surface-inset);box-shadow:inset 3px 0 var(--accent)}
+ #automationCard .auto-job-pick:focus-visible{outline:2px solid var(--accent)}
+ #automationCard .auto-job-pick small{display:block;color:var(--text2);margin-top:5px}
+ #automationCard .auto-job-detail img{max-width:100%;height:auto}
+ #automationCard .auto-job-detail .report-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+ #automationCard .auto-job-detail .report-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+ #automationCard [data-job-graphs]{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+ #automationCard [data-job-graphs]>.report-section{min-width:0}
+ #automationCard [data-job-toggles]{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}
+ #automationCard [data-job-toggles] label{display:flex;align-items:center;gap:6px}
+ #automationCard .auto-job-detail .report-section-title{font-weight:700}
+ #automationCard .auto-job-detail .report-section-meta{font-size:.8rem;color:var(--text2);margin:5px 0 12px}
+ #automationCard .auto-job-detail .report-table-wrap,#automationCard .auto-settings-table{overflow:auto}
+ #automationCard .auto-job-detail .report-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,125px),1fr));gap:12px;margin:16px 0}
+ #automationCard .auto-job-detail .report-stat{min-width:0}
+ #automationCard .auto-job-detail .report-stat-value{font-size:1rem;font-weight:600;font-variant-numeric:tabular-nums}
+ #automationCard .auto-job-detail .report-stat-label{color:var(--text2);font-size:.8rem}
+ #automationCard .auto-job-detail .report-chart-title{font-size:.8rem;font-weight:600;margin:12px 0 8px}
+ #automationCard .auto-job-detail [data-job-meta]>h3{font-size:1.05rem;margin-bottom:4px}
+ #automationCard .auto-job-detail [data-job-meta]>details{border-bottom:1px solid var(--border);padding-bottom:8px}
+ #automationCard .auto-job-detail [data-job-measurement]:not(:empty),#automationCard .auto-job-detail [data-job-error]:not(:empty){margin:12px 0;padding:10px 12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:6px;font-size:.75rem}
+ #automationCard .auto-settings-table{max-width:100%}
+ #automationCard .auto-settings-table table{min-width:620px;font-size:.75rem;line-height:1.5}
+ #automationCard .auto-settings-table th{font-weight:600;color:var(--text2);background:var(--surface-inset)}
+ #automationCard th,#automationCard td{vertical-align:top}
+ #automationCard .auto-setting-problem{border-left:3px solid var(--orange);padding-left:10px;margin:10px 0}
+ @media(max-width:900px){#automationCard .auto-job-layout{grid-template-columns:minmax(0,1fr)}}
+</style>
+<section class="card span2" id="pgAutomationCalibrationCard" data-widget="automation-calibration" data-desktop-workspace="calibration" data-desktop-order="9" style="display:none">
+ <h2>Batch calibration <span id="pgAutomationCalibrationBadge" class="auto-observer-badge" role="status">Automation active · Read-only</span></h2>
+ <div class="auto-observer-overview">
+  <div id="pgAutomationCalibrationProgress" role="status" aria-live="polite"></div>
+  <div class="auto-observer-actions">
+   <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationOpenRun()">View in Automation</button>
+   <button class="btn btn-sm btn-secondary" id="pgAutomationCalibrationRelease" type="button" style="display:none" onclick="pgAutomationReleaseCalibrationView()">Return to manual calibration</button>
+  </div>
+ </div>
+ <p id="pgAutomationCalibrationHelp" class="auto-observer-help"></p>
+ <div id="pgAutomationCalibrationDetail" class="auto-job-detail" aria-label="Live automation calibration measurements"></div>
+</section>
+<style>
+ body.pg-automation-calibration-observer:not(.pg-automation-report-render) #meterCard{display:none!important}
+ #pgAutomationCalibrationCard{min-width:0;font-size:.82rem;line-height:1.5;overflow-wrap:anywhere}
+ #pgAutomationCalibrationCard h2{gap:10px;flex-wrap:wrap;color:var(--text)}
+ #pgAutomationCalibrationCard .auto-observer-badge{display:inline-flex;align-items:center;padding:3px 8px;background:var(--surface-inset);border:1px solid var(--border);border-radius:5px;font-size:.68rem;font-weight:600;line-height:1.5;color:var(--accent);vertical-align:middle}
+ #pgAutomationCalibrationCard .auto-observer-badge[data-state="paused"],#pgAutomationCalibrationCard .auto-observer-badge[data-state="interrupted"],#pgAutomationCalibrationCard .auto-observer-badge[data-state="complete-with-warnings"]{color:var(--orange)}
+ #pgAutomationCalibrationCard .auto-observer-badge[data-state="failed"]{color:var(--red)}
+ #pgAutomationCalibrationCard .auto-observer-badge[data-state="complete"],#pgAutomationCalibrationCard .auto-observer-badge[data-state="stopped"]{color:var(--text2)}
+ #pgAutomationCalibrationCard .auto-muted{color:var(--text2);font-size:.75rem;line-height:1.5}
+ #pgAutomationCalibrationCard .auto-observer-overview{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
+ #pgAutomationCalibrationProgress{min-width:0;flex:1}
+ #pgAutomationCalibrationCard .auto-observer-eyebrow{font-size:.75rem;color:var(--text2);margin-bottom:5px}
+ #pgAutomationCalibrationCard .auto-observer-title{font-size:1.15rem;font-weight:600;line-height:1.35;margin:0 0 7px;color:var(--text)}
+ #pgAutomationCalibrationCard .auto-observer-stage{font-size:.82rem;color:var(--text);margin:0}
+ #pgAutomationCalibrationCard .auto-observer-activity{font-size:.75rem;color:var(--text2);margin:5px 0 0}
+ #pgAutomationCalibrationCard .auto-observer-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:380px}
+ #pgAutomationCalibrationCard .auto-observer-actions .btn{font-family:inherit}
+ #pgAutomationCalibrationCard .auto-observer-help{color:var(--text2);font-size:.75rem;margin:10px 0 18px}
+ #pgAutomationCalibrationCard [data-job-meta]>p{margin:0 0 10px;font-size:.75rem}
+ #pgAutomationCalibrationCard [data-job-meta]>details{border:1px solid var(--border);border-radius:7px;margin:0 0 16px;padding:0 12px}
+ #pgAutomationCalibrationCard summary{cursor:pointer;font-size:.78rem;font-weight:600;padding:10px 0}
+ #pgAutomationCalibrationCard summary:focus-visible,#pgAutomationCalibrationCard button:focus-visible,#pgAutomationCalibrationCard select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+ #pgAutomationCalibrationCard .auto-pills{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+ #pgAutomationCalibrationCard .auto-pill{font-size:.72rem;border:1px solid var(--border);border-radius:5px;padding:3px 8px;background:var(--surface-inset)}
+ #pgAutomationCalibrationCard .auto-job-summary{color:var(--text2);font-size:.75rem;line-height:1.6;margin:0 0 12px}
+ #pgAutomationCalibrationCard [data-job-measurement]:not(:empty),#pgAutomationCalibrationCard [data-job-error]:not(:empty){padding:10px 12px;margin:12px 0;border:1px solid var(--border);border-radius:6px;font-size:.75rem}
+ #pgAutomationCalibrationCard .report-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+ #pgAutomationCalibrationCard .report-span-full{grid-column:1/-1}
+ #pgAutomationCalibrationCard img{max-width:100%;height:auto}
+ #pgAutomationCalibrationCard .report-table-wrap{overflow:auto}
+ #pgAutomationCalibrationCard .report-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:18px 0 22px}
+ #pgAutomationCalibrationCard .report-stat{min-width:0}
+ #pgAutomationCalibrationCard .report-stat-label{color:var(--text2);font-size:.75rem;margin-bottom:5px}
+ #pgAutomationCalibrationCard .report-stat-value{font-size:1rem;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.4}
+ #pgAutomationCalibrationCard .report-section{margin-top:20px;padding-top:18px;border-top:1px solid var(--border);min-width:0}
+ #pgAutomationCalibrationCard .report-section-title{font-size:.9rem;font-weight:600}
+ #pgAutomationCalibrationCard .report-section-meta{font-size:.73rem;color:var(--text2);margin:4px 0 0}
+ #pgAutomationCalibrationCard .report-chart-title{font-size:.8rem;font-weight:600;margin:12px 0 8px}
+ #pgAutomationCalibrationCard [data-job-settings],#pgAutomationCalibrationCard [data-job-toggles],#pgAutomationCalibrationCard [data-job-nav]{display:none}
+ #pgAutomationCalibrationCard [data-job-error]{color:var(--orange)}
+ @media(max-width:700px){#pgAutomationCalibrationCard .auto-observer-overview{align-items:flex-start;flex-direction:column;gap:14px;padding:14px}#pgAutomationCalibrationCard .auto-observer-actions{justify-content:flex-start;max-width:none}#pgAutomationCalibrationCard .report-summary{grid-template-columns:repeat(2,minmax(0,1fr))}#pgAutomationCalibrationCard .auto-observer-title{font-size:1rem}}
+ @media(prefers-reduced-motion:reduce){:is(#automationCard,#pgAutomationCalibrationCard) .btn{transition:none;transform:none}}
+ :is(#automationCard,#pgAutomationCalibrationCard) .auto-pin-summary{margin-top:12px}
+ :is(#automationCard,#pgAutomationCalibrationCard) .auto-pin-summary>strong{font-weight:600;color:var(--text)}
+ :is(#automationCard,#pgAutomationCalibrationCard) .auto-pin-summary ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:4px 16px;list-style:none;margin:6px 0 0;padding:0}
+</style>

@@ -16,7 +16,10 @@ BEGIN {
  $script_dir=~s{/[^/]+\z}{};
  unshift @INC,"$script_dir/../share/PGenerator";
 }
+use PGAutomation ();
+use PGCalibrationLog ();
 use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGLGCapabilities qw(lg_scoped_request_payload);
 
 my ($config_file,$state_file,$stop_file)=@ARGV;
 die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_file) || !defined($state_file) || !defined($stop_file));
@@ -24,6 +27,8 @@ die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_fil
 my $json=JSON::PP->new->canonical->allow_nonref;
 my $api_host="127.0.0.1";
 my $api_port=80;
+my $automation_token="";
+my $config;
 
 sub read_file {
  my ($path)=@_;
@@ -34,20 +39,52 @@ sub read_file {
 
 sub write_state {
  my (%state)=@_;
- open(my $fh,'>',$state_file) or return;
- print $fh $json->encode(\%state);
- close($fh);
- chmod(0666,$state_file);
+ my $message=$state{message}||$state{status}||'unknown';
+ $message=~s/[\r\n]+/ /g;
+ print STDERR '['.PGCalibrationLog::timestamp()."] $message\n";
+ PGCalibrationLog::event('Dolby Vision','state',{status=>$state{status},message=>$message},PGCalibrationLog::from_config($config));
+ PGAutomation::stamp_worker_state(\%state,$config);
+ # Automation reads this file directly. Retain ownership and the measured
+ # phase's context rather than requiring the standalone status endpoint to
+ # reconstruct them from a mutable config file.
+ $state{signal_mode}="dv";
+ $state{target_gamma}="2.2";
+ $state{dv_map_mode}="2";
+ if(ref($config) eq "HASH") {
+  foreach my $key (qw(full_autocal_run_id color_format max_bpc signal_range pattern_signal_range transport_signal_range)) {
+   $state{$key}=$config->{$key} if(defined($config->{$key}));
+  }
+ }
+ my $written=PGAutomation::write_json_atomic($state_file,\%state,0666);
+ # Automation polls the status route every two seconds and reads only the
+ # keys in PGAutomation::WORKER_STATUS_SUMMARY_KEYS, so a small sidecar beside
+ # the state file serves its summary view. The daemon ignores a sidecar older
+ # than the state file, so a failure here only costs the poller a full
+ # decode; it must never break the state write.
+ eval { PGAutomation::write_json_atomic("$state_file.summary",PGAutomation::worker_status_summary(\%state),0666); 1; };
+ return $written;
 }
 
 sub cancelled { return -e $stop_file; }
 
 sub api_json {
+ my @args=@_;
+ return PGCalibrationLog::api_call('Dolby Vision',PGCalibrationLog::from_config($config),$args[0]||'GET',$args[1],$args[2],$args[3]||30,
+  sub {api_json_impl(@args)});
+}
+
+sub api_json_impl {
  my ($method,$path,$payload,$timeout)=@_;
  $method||="GET";
  $timeout||=30;
  $timeout=1 if($timeout < 1);
- my $body=defined($payload) ? $json->encode($payload) : "";
+ my $request_payload=$payload;
+ $request_payload=lg_scoped_request_payload($path,$request_payload,$config);
+ if($method ne "GET" && ref($payload) eq "HASH"
+    && $automation_token=~/^[A-Za-z0-9_.:-]{8,200}$/) {
+  $request_payload={%{$request_payload},automation_token=>$automation_token};
+ }
+ my $body=defined($request_payload) ? $json->encode($request_payload) : "";
  my $deadline=time()+$timeout;
  my $socket=IO::Socket::INET->new(
   PeerHost=>$api_host,
@@ -58,6 +95,7 @@ sub api_json {
  return {status=>"error",message=>"Web UI API is unavailable"} if(!$socket);
  $socket->autoflush(1);
  my $request="$method $path HTTP/1.1\r\nHost: $api_host\r\nConnection: close\r\nAccept: application/json\r\n";
+ $request .= PGCalibrationLog::header_line();
  if($method ne "GET") {
   $request.="Content-Type: application/json\r\nContent-Length: ".length($body)."\r\n\r\n".$body;
  } else {
@@ -96,8 +134,11 @@ sub api_json {
  return {status=>"error",message=>"Invalid Web UI API response"};
 }
 
-my $config=eval { $json->decode(read_file($config_file)) } || {};
+$config=eval { $json->decode(read_file($config_file)) } || {};
 die "Empty/invalid config\n" if(ref($config) ne "HASH");
+$automation_token=$config->{automation_token}
+ if(defined($config->{automation_token})
+    && $config->{automation_token}=~/^[A-Za-z0-9_.:-]{8,200}$/);
 
 write_state(status=>"running",message=>"Starting Dolby Vision profile measurement",steps=>[]);
 
@@ -264,6 +305,12 @@ sub fixture_reading_for_patch {
 # failure message, so the caller can report a clean "stopped" state instead
 # of a generic error.
 sub read_patch {
+ my @args=@_;
+ return PGCalibrationLog::measurement('Dolby Vision',PGCalibrationLog::from_config($args[1]),$args[0],undef,
+  sub {read_patch_impl(@args)});
+}
+
+sub read_patch_impl {
  my ($patch,$config)=@_;
  my $fixture=fixture_reading_for_patch($patch,$config);
  return ($fixture,undef) if($fixture);
@@ -367,7 +414,8 @@ for my $patch (@patches) {
  my $step={ name=>$patch->{"name"}, kind=>$patch->{"kind"}, x=>$reading->{"x"}, y=>$reading->{"y"}, luminance=>$reading->{"luminance"} };
  push(@steps,$step);
  $by_kind{$patch->{"kind"}}=$step;
- write_state(status=>"running",message=>"Measured ".$patch->{"name"},steps=>\@steps);
+ my $summary=sprintf('Measured %s | x %.5f; y %.5f | Y %.4f cd/m2',$patch->{name},$reading->{x}||0,$reading->{y}||0,$reading->{luminance}||0);
+ write_state(status=>"running",message=>$summary,steps=>\@steps);
 }
 
 my $measured_white_luminance=$by_kind{"white"}{"luminance"}+0;

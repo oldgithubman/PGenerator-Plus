@@ -1,0 +1,22 @@
+const fs=require('fs'),path=require('path'),vm=require('vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(path.join(__dirname,'../../usr/share/PGenerator/webui-app.js'),'utf8');
+const code=source.match(/function meterGreyInverseEotfSignalFromLuminance\([^]*?\n\}/)?.[0];
+assert.ok(code,'production inverse-EOTF helper found');
+let target='bt1886';
+const context={meterGreyChartTargetGammaSelection:()=>target,meterChartPqEncodeNormalized:y=>y/10000};
+vm.createContext(context);vm.runInContext(code,context);
+const inverse=context.meterGreyInverseEotfSignalFromLuminance;
+const close=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-10,`${actual} != ${expected}`);
+close(inverse(0,200,0),0);close(inverse(200,200,0),1);
+const highlights=[198.260264,228.486252,260.706151,295.861438,416.941716];
+const plotted=highlights.map(y=>inverse(y,200,0));
+plotted.forEach((v,i)=>{close(v,Math.pow(highlights[i]/200,1/2.4));if(i)assert.ok(v>plotted[i-1],'highlights keep rising instead of clipping at 1.1');});
+assert.ok(plotted.at(-1)>1.35,'real 417-nit white remains visible above the 200-nit reference');
+// Invert a BT.1886 target with lifted black, including super-white.
+const lw=300,lb=.2,g=2.4,denom=Math.pow(lw,1/g)-Math.pow(lb,1/g),a=Math.pow(denom,g),b=Math.pow(lb,1/g)/denom;
+for(const signal of [0,.1,.5,1,1.2])close(inverse(a*Math.pow(signal+b,g),lw,lb),signal);
+close(inverse(.05,lw,lb),0);
+target='2.2';close(inverse(400,200,0),Math.pow(2,1/2.2));
+target='srgb';close(inverse(400,200,0),1.055*Math.pow(2,1/2.4)-.055);
+target='st2084';close(inverse(400,200,0),.04);
+console.log('PASS inverse EOTF: measured highlights, lifted black, SDR gamma, sRGB and PQ dispatch');

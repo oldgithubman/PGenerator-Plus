@@ -1,0 +1,36 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use File::Temp qw(tempdir);
+use File::Path qw(make_path);
+use Test::More;
+require "$Bin/../usr/share/PGenerator/webui.pm";
+local $ENV{PGEN_AUTOMATION_DIR}=tempdir(CLEANUP=>1);
+PGAutomation::ensure_store();
+my $id='clear-test',my $path=PGAutomation::run_dir('clear-test').'/run.json';
+make_path(PGAutomation::run_dir($id).'/items/0');
+my $run={id=>$id,status=>'stopped',items=>[{name=>'Keep me',status=>'complete'}]};
+PGAutomation::write_json_atomic($path,$run);
+PGAutomation::write_json_atomic(PGAutomation::base_dir().'/preflight.json',{status=>'started',run_id=>$id});
+PGAutomation::write_json_atomic(PGAutomation::item_dir($id,0).'/quality.json',{evidence=>'keep'});
+my $response=main::webui_automation_control($id,'clear');
+like($response,qr/"cleared"\s*:\s*"clear-test"/,'terminal display can be cleared');
+my $saved=PGAutomation::read_json_file($path);
+ok($saved->{live_view_cleared_at},'clear marker persists in run manifest');
+is($saved->{status},'stopped','run outcome unchanged');
+is($saved->{items}[0]{name},'Keep me','jobs preserved');
+is(PGAutomation::read_json_file(PGAutomation::item_dir($id,0).'/quality.json')->{evidence},'keep','artifacts preserved');
+my $current=main::webui_automation_api('/api/automation/runs/current','GET','');
+like($current,qr/"run"\s*:\s*null/,'cleared run stays out of current endpoint');
+like($current,qr/"preflight"\s*:\s*null/,'old startup progress does not reappear');
+ok(grep($_->{id} eq $id,@{main::webui_automation_list_runs()}),'run remains in History');
+like(main::webui_automation_control($id,'clear'),qr/"cleared"/,'clear is idempotent');
+for my $status(qw(running starting stopping paused interrupted completing)){
+ $run->{status}=$status;delete $run->{live_view_cleared_at};PGAutomation::write_json_atomic($path,$run);
+ like(main::webui_automation_control_body($id,'clear'),qr/not-finished/,"cannot clear $status run");
+ ok(!PGAutomation::read_json_file($path)->{live_view_cleared_at},'refused clear makes no marker');
+}
+$run->{status}='stopped';PGAutomation::write_json_atomic($path,$run);
+PGAutomation::write_json_atomic(PGAutomation::base_dir().'/execution.json',{owner=>'automation',run_id=>$id,status=>'stopping',updated_at=>PGAutomation::now()});
+like(main::webui_automation_control_body($id,'clear'),qr/cleanup-active/,'cannot dismiss unfinished cleanup');
+done_testing();

@@ -1,0 +1,10 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is required for UI regression checks' if !$node;
+my $output=`"$node" "$Bin/js/automation_poll_delta.js" 2>&1`;
+is($? >> 8,0,'the status poll names what it holds and merges a partial reply into the same shapes') or diag $output;
+like($output,qr/"ok":true/,'UI test explicitly confirms completion');
+done_testing();
