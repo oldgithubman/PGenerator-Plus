@@ -185,11 +185,17 @@ published payload trees without checking AGENTS.md ignore rules)
 - rgb_balance_formula.test.js: characterization suite for the webui RGB balance
   formulas (Perceptual/Absolute/Chromaticity, gain curve, plot-cache key, the
   selectable meterRgbBalanceNoiseFloor input incl. its html options, the
+  Flat/Empirical noise-floor mode (per-step k·σ from repeat-reading scatter,
+  pre-gain samples, fallback to the flat value), the
   Perceptual-only availability gating, the live-bar noise flags, and the
   within-noise dim + hover-title in the HTML live-RGB columns
-  meterGreyTvColumnHtml). Brace-extracts the live functions from webui-app.js
+  meterGreyTvColumnHtml. Brace-extracts the live functions from webui-app.js
   AND webui-workspace.js (no copies, no hard-coded lines) and stubs
-  collaborators. Run: node
+  collaborators. Module-level const/let the extracted functions close over
+  must be RESTATED in the sandbox stubs (record's try/catch silently swallows
+  the ReferenceError otherwise), and STUBS is String.raw — no backticks in
+  its comments. In-repo twin: t/js/rgb_balance_formula.js + t/rgb_balance_
+  formula.t (CI); keep both in step when editing either. Run: node
   tools-testing/rgb_balance_formula.test.js. If it fails after editing the
   balance math, the change must be reflected in the tests deliberately.
 - Baseline to diff against: BASELINE_FINDINGS.md (2026-09-09, read-only pass clean,

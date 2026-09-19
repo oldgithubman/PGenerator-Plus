@@ -1352,6 +1352,16 @@ __PG_LOGO_DARK__
        <button type="button" class="noise-floor-preset" data-value="0.2" title="Set noise floor to 0.2 L* (tap again to turn Off)" aria-label="Noise floor preset 0.2 L*" aria-pressed="false" onclick="meterApplyNoiseFloorPreset('0.2')">.2</button>
        <button type="button" class="noise-floor-preset" data-value="0.5" title="Set noise floor to 0.5 L* (typical colorimeter repeatability; tap again to turn Off)" aria-label="Noise floor preset 0.5 L*" aria-pressed="false" onclick="meterApplyNoiseFloorPreset('0.5')">.5</button>
        <button type="button" class="noise-floor-preset" data-value="1" title="Set noise floor to 1 L* (tap again to turn Off)" aria-label="Noise floor preset 1 L*" aria-pressed="false" onclick="meterApplyNoiseFloorPreset('1')">1</button>
+       <!-- Mode: 'Flat' judges every IRE against the single typed number;
+            'Empirical' derives each point's floor from k·σ (2x) of that
+            point's own repeat-reading scatter this session, because meter
+            repeatability grows toward black and one flat number is always
+            wrong at one end of the greyscale. Points without enough repeats
+            fall back to the typed number. -->
+       <select id="meterNoiseFloorMode" class="inline-select" style="width:auto;background-image:none" title="Flat: every IRE judged against the typed L* number. Empirical: each point's floor is 2x the scatter of its own repeat readings this session (re-read a patch to build its history; points with fewer than 2 samples use the typed number). Per-meter, per-target, per-brightness." aria-label="Noise floor mode" onchange="meterOnNoiseFloorModeChange()">
+        <option value="flat" selected>Flat</option>
+        <option value="empirical">Empirical σ</option>
+       </select>
        <button type="button" id="meterRgbBalanceNoiseFloorClear" style="display:none;appearance:none;background:none;border:none;color:var(--text2);font-size:.9rem;line-height:1;padding:2px 4px;cursor:pointer;opacity:.8" title="Set the noise floor to Off" aria-label="Turn RGB balance noise floor off" onclick="meterOnRgbBalanceNoiseFloorClear()">&times;</button>
        <button type="button" id="meterRgbBalanceNoiseFloorHint" style="display:none;appearance:none;background:none;border:none;color:var(--orange,#e8b84b);font-size:.62rem;line-height:1.1;padding:2px 4px;cursor:pointer;text-decoration:underline;text-underline-offset:2px" title="The noise floor only annotates the Perceptual RGB bal view. Click to switch RGB bal to Perceptual now; the value is kept." aria-label="Noise floor inactive: click to switch RGB bal to Perceptual" onclick="meterSwitchToPerceptualRgbBalance()">Perceptual only — switch?</button>
       </span>

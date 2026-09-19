@@ -3511,12 +3511,14 @@ function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRang
 	 // liveEntry.noise: deviation is inside the meter noise floor (Perceptual)
 	 // — dim the fill so it reads as "not a real error", same convention as the
 	 // canvas live-RGB bars. The dim alone is cryptic, so also carry a hover
-	 // title naming the floor: without it the faded bar looks like a render bug.
+	 // title naming the floor: without it the faded bar looks like a render
+	 // bug. liveEntry.floor is the EFFECTIVE floor this point was judged
+	 // against (empirical k·σ once history exists, else the flat number).
 	 const isNoise=!!(liveEntry&&liveEntry.noise);
 	 const noiseOpacity=isNoise?'opacity:.45;':'';
 	 // Hover explanation for a dimmed fill; plain text, no quotes introduced.
 	 const noiseTitleAttr=isNoise
-	 	? ' title="Deviation is within the meter noise floor (±'+meterRgbBalanceNoiseFloor()+' L* pre-gain) — noise, not a real error."'
+	 	? ' title="Deviation is within the meter noise floor (±'+meterFormatNoiseFloorValue(liveEntry.floor)+' L* pre-gain) — noise, not a real error."'
 	 	: '';
 	 const fillStyle=(delta==null)
 	 	  ? 'display:none;'
@@ -15087,13 +15089,15 @@ function drawRGBChart(gs,allSteps,readingMap){
  const refY=(100-yMin)/(yMax-yMin);
  drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
  // Noise-floor zone: under Perceptual the 'within meter noise' threshold at
- // each IRE is floor x that point's shadow gain, so the zone widens toward
- // black. Shading it shows where the hover tooltip will say 'within meter
+ // each IRE is that point's effective floor x its shadow gain, so the zone
+ // widens toward black — from the flat operator number, or in empirical mode
+ // from k·σ of the point's own repeat-reading scatter once history exists.
+ // Shading it shows where the hover tooltip will say 'within meter
  // noise' before the operator has to hover. Pure annotation — plotted values
  // and the axis scale are untouched; clipping keeps it inside the plot under
  // a box-zoom.
- const noiseFloor=meterRgbBalanceActiveNoiseFloor();
- if(noiseFloor>0){
+ const noiseFloorLive=meterRgbBalanceNoiseFloorAnnotationLive();
+ if(noiseFloorLive){
   // chart.toX/toY take NORMALIZED [0,1] view coordinates (same convention as
   // refY and the rPts/gPts/bPts points above), not data values — convert.
   const toNorm=v=>(v-yMin)/(yMax-yMin);
@@ -15110,7 +15114,8 @@ function drawRGBChart(gs,allSteps,readingMap){
    const rdZone=readingMap&&readingMap[step.ire];
    if(!rdZone) return;
    const gain=meterPerceptualRgbBalanceGain(rdZone);
-   const dev=noiseFloor*gain;
+   const dev=meterRgbBalanceEffectiveNoiseFloor(rdZone)*gain;
+   if(!(dev>0)) return;
    zone.push({x:meterGreyCategoryChartX(xSteps,idx),hi:toNorm(100+dev),lo:toNorm(100-dev)});
   });
   if(zone.length>1){
@@ -15133,8 +15138,10 @@ function drawRGBChart(gs,allSteps,readingMap){
    // Name the band where it is widest (the leftmost plotted step sits toward
    // black): without this the shading reads as an unexplained watermark until
    // the operator hovers a point. Pill style matches the EOTF '0% =' label.
+   // Text names the mode's unit generically — per-point floors vary in
+   // empirical mode, so the exact number for a point lives in its tooltip.
    const zp=zone[0];
-   const zText='±'+noiseFloor+' L* noise';
+   const zText='noise floor';
    ctx.font='bold 9px sans-serif';
    const zW=ctx.measureText(zText).width;
    // Clamp keeps the whole pill inside the plot rect on both axes.
@@ -18495,12 +18502,18 @@ function chartHandleHover(e,canvasId){
   // computes deviation 0 and would read "within meter noise" for a patch
   // that emitted no measurable light — the chart omits the point for the
   // same reason (PR-16 review finding).
-  if(meterRgbBalanceNoiseFloor()>0&&!bal.noChroma){
+  // The floor is the point's EFFECTIVE floor: empirical k·σ of its own
+  // repeat-reading scatter once history exists, else the flat operator
+  // number — so the tooltip states what THIS point was judged against.
+  if(meterRgbBalanceNoiseFloorAnnotationLive()&&!bal.noChroma){
+   const pointFloor=meterRgbBalanceEffectiveNoiseFloor(rd);
    const pg=(Number.isFinite(perceptualGain)&&perceptualGain>0)?perceptualGain:1;
-   const parts=[['R',bal.R],['G',bal.G],['B',bal.B]]
-    .map(e=>{const d=Math.abs(e[1]-100)/pg;return (Number.isFinite(e[1])&&d<=meterRgbBalanceNoiseFloor())?e[0]+' '+d.toFixed(2):null;})
-    .filter(Boolean);
-   if(parts.length) html+='<br><span style="opacity:.75">'+parts.join(' · ')+' L* pre-gain — within meter noise</span>';
+   if(pointFloor>0){
+    const parts=[['R',bal.R],['G',bal.G],['B',bal.B]]
+     .map(e=>{const d=Math.abs(e[1]-100)/pg;return (Number.isFinite(e[1])&&d<=pointFloor)?e[0]+' '+d.toFixed(2):null;})
+     .filter(Boolean);
+    if(parts.length) html+='<br><span style="opacity:.75">'+parts.join(' · ')+' L* pre-gain — within meter noise (±'+meterFormatNoiseFloorValue(pointFloor)+' floor)</span>';
+   }
   }
  }
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);

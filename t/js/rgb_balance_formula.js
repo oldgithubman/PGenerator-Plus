@@ -43,6 +43,16 @@ const FN_NAMES = [
   'meterRgbBalancePlotIdentity',
   'meterRgbBalanceActiveNoiseFloor',
   'meterRgbBalanceNoiseFloor',
+  'meterRgbBalanceNoiseFloorMode',
+  'meterRgbBalanceNoiseFloorActive',
+  'meterRgbBalanceNoiseFloorAnnotationLive',
+  'meterFormatNoiseFloorValue',
+  'meterNoiseHistoryStore',
+  'meterStepNoiseKey',
+  'meterRecordReadingNoise',
+  'meterStepNoiseSigma',
+  'meterEmpiricalNoiseFloorFor',
+  'meterRgbBalanceEffectiveNoiseFloor',
   'meterRgbBalanceOffScaleDir',
   'meterRgbBalanceWithinNoise',
   'meterRgbBalanceNoiseFloorApplies',
@@ -135,9 +145,20 @@ const BT709_XYZ2RGB = [
 ];
 // getElementById routes by id: __sel drives meterRgbBalanceFormula,
 // __noiseFloor drives the operator-selectable meterRgbBalanceNoiseFloor select.
+// Restate the module-level noise-history consts the extracted history
+// functions close over (source: webui-app.js — keep all copies in lockstep).
+// The let-store too: only functions are brace-extracted, so the module
+// state must exist in the sandbox or record's try/catch swallows a
+// ReferenceError and every empirical floor silently reads null.
+const METER_NOISE_HISTORY_K = 2;
+const METER_NOISE_HISTORY_MAX = 12;
+let meterNoiseHistory = null;
 // Floor-input elements get a label stub so meterUpdateNoiseFloorControlAvailability
 // can toggle opacity/title on their closest('label').
 const document = { getElementById: (id) => {
+  if (id === 'meterNoiseFloorMode') {
+    return (typeof globalThis.__noiseMode !== 'undefined' && globalThis.__noiseMode) || null;
+  }
   if (id === 'meterRgbBalanceNoiseFloor') {
     const el = (typeof globalThis.__noiseFloor !== 'undefined' && globalThis.__noiseFloor) || null;
     if (el && !el.closest) el.closest = () => globalThis.__noiseLabel;
@@ -155,6 +176,20 @@ const document = { getElementById: (id) => {
   return [];
 } };
 globalThis.__noiseLabel = { style: {}, title: 'Perceptual noise floor tooltip: shadow gain applies.', dataset: {} };
+// meterNoiseFloorMode routes to __noiseMode (flat <-> empirical select);
+// it must NOT fall through to __sel, or a formula stub value would parse as
+// a mode. The source-level noise-history constants are NOT brace-extracted
+// with the functions (they are module-level consts), so they are restated in
+// STUBS for the sandbox AND mirrored in test scope below; if the source
+// values change, all three must change together.
+// Collaborators of meterRecordReadingNoise: greyscale/real-measurement gates
+// default ON (tests flip them), meterLiveRgbData returns __liveBal verbatim.
+globalThis.__recIsGrey = true;
+globalThis.__recIsReal = true;
+function meterReadingIsGreyscale() { return globalThis.__recIsGrey; }
+function meterReadingIsRealMeasurement() { return globalThis.__recIsReal; }
+function meterLiveRgbData(rd) { return globalThis.__liveBal || null; }
+function meterStepNameKey(step) { return (step && (step.name || (step.ire != null ? step.ire + '' : ''))) || ''; }
 // The real meterOnRgbBalanceNoiseFloorChange (extracted below) delegates its
 // redraw to the shared formula-change path; stub that and count invocations
 // on globalThis so the test scope can read them.
@@ -196,6 +231,8 @@ const S = sandboxFactory();
 // Test infrastructure
 // ---------------------------------------------------------------------------
 let passed = 0, failed = 0;
+// Test-scope mirror of the sandbox/source noise-history constants (see STUBS).
+const METER_NOISE_HISTORY_K = 2;
 const results = [];
 function test(name, fn) {
   try {
@@ -885,6 +922,13 @@ function meterGreyTvFormatInputValue(v) { return String(v == null ? '' : v); }
 function meterGreyTvFormatLiveValue(entry) { return entry && entry.labelV != null ? Number(entry.labelV).toFixed(2) + '%' : '--'; }
 function meterGreyTvChannelStep() { return 1; }
 function meterRgbBalanceNoiseFloor() { return globalThis.__wsNoiseFloor || 0; }
+// mirror of the webui-app.js formatter (extracted separately; the column
+// renderer only ever sees already-resolved per-entry floor numbers)
+function meterFormatNoiseFloorValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 'Off';
+  return (Math.abs(n - Math.round(n)) < 1e-9) ? String(Math.round(n)) : String(Math.round(n * 100) / 100);
+}
 `;
 const wsColumnHtml = new Function(
   WS_STUBS + '\n' + extractFrom(wsText, 'meterGreyTvColumnHtml') + '\n return meterGreyTvColumnHtml;'
@@ -895,26 +939,26 @@ function wsColumn(entry, readOnly) {
 }
 
 test('html_live_column_noise_fill_dims_and_explains', () => {
-  globalThis.__wsNoiseFloor = 0.5;
-  const noise = wsColumn({ v: 0.1, labelV: 100.1, showPlus: true, noise: true });
+  // The title now names the entry's EFFECTIVE floor (liveEntry.floor), not a
+  // re-read of the flat field — empirical floors vary per point.
+  const noise = wsColumn({ v: 0.1, labelV: 100.1, showPlus: true, noise: true, floor: 0.5 });
   assert(noise.includes('opacity:.45'), 'within-noise fill dims');
   assert(noise.includes('title="Deviation is within the meter noise floor'), 'dimmed fill carries hover explanation');
-  assert(noise.includes('±0.5 L* pre-gain'), 'explanation names the floor value');
+  assert(noise.includes('±0.5 L* pre-gain'), 'explanation names the entry floor value');
+  const empirical = wsColumn({ v: 0.31, labelV: 100.31, showPlus: true, noise: true, floor: 0.8451 });
+  assert(empirical.includes('±0.85 L* pre-gain'), 'irrational empirical floor prints at 2dp');
   const bright = wsColumn({ v: 2, labelV: 102, showPlus: true, noise: false });
   assert(!bright.includes('opacity:.45'), 'bright fill untouched');
   assert(!bright.includes('noise floor'), 'bright fill has no noise title');
   const nullEntry = wsColumn(null);
   assert(nullEntry.includes('display:none'), 'null entry stays hidden');
-  globalThis.__wsNoiseFloor = 0;
 });
 
 test('html_live_column_readonly_variant_also_carries_noise_title', () => {
-  globalThis.__wsNoiseFloor = 0.3;
-  const ro = wsColumn({ v: 0.05, labelV: 100.05, showPlus: true, noise: true }, true);
+  const ro = wsColumn({ v: 0.05, labelV: 100.05, showPlus: true, noise: true, floor: 0.3 }, true);
   assert(ro.includes('is-readonly'), 'readonly variant rendered');
   assert(ro.includes('opacity:.45'), 'readonly within-noise fill dims');
   assert(ro.includes('noise floor'), 'readonly dimmed fill carries hover explanation');
-  globalThis.__wsNoiseFloor = 0;
 });
 
 test('canvas_delta_bar_titles_come_from_noise_flags', () => {
@@ -961,7 +1005,7 @@ test('hover_noise_annotation_skips_noChroma_points', () => {
   const idx = wsText.indexOf('function chartHandleHover(');
   assert(idx >= 0, 'chartHandleHover anchor present');
   const body = wsText.slice(idx, idx + 4000);
-  const gate = /if\(meterRgbBalanceNoiseFloor\(\)>0&&!bal\.noChroma\)/.exec(body);
+  const gate = /if\(meterRgbBalanceNoiseFloorAnnotationLive\(\)&&!bal\.noChroma\)/.exec(body);
   if (!gate) throw new Error('hover noise annotation must be gated on !bal.noChroma');
   // The hit-zone fallback for a missing white ref must also mark noChroma,
   // otherwise a white-less chart still annotates.
@@ -981,6 +1025,116 @@ test('noise_band_gain_comes_from_reading', () => {
     'noise band gain must resolve through readingMap[step.ire] into rdZone');
   assert(/if\(!rdZone\) return;/.test(body),
     'band must SKIP a step with no reading — the step fallback reintroduced the skew the comment forbids');
+});
+
+test('empirical_floor_from_repeat_scatter', () => {
+  // Empirical mode: the per-point floor is k·σ of that step's own recorded
+  // pre-gain balance scatter. A step with no/<2 samples has no empirical
+  // floor and must fall back to the flat field (never silently blind).
+  globalThis.__noiseMode = null;
+  globalThis.__noiseFloor = { value: '0.3' };
+  assert(S.meterRgbBalanceNoiseFloorMode() === 'flat', 'missing select defaults to flat');
+  globalThis.__noiseMode = { value: 'empirical' };
+  assert(S.meterRgbBalanceNoiseFloorMode() === 'empirical', 'select drives the mode');
+  const step = { name: '45%' };
+  // Flat mode ignores history entirely.
+  assert(S.meterEmpiricalNoiseFloorFor(step) === null, 'flat mode: no empirical floor');
+  // Empirical mode, no history: null -> effective floor falls back to flat.
+  assert(S.meterEmpiricalNoiseFloorFor(step) === null, 'no history yet: null');
+  assertClose(S.meterRgbBalanceEffectiveNoiseFloor(step), 0.3, 1e-9, 'fallback = flat field');
+  // Feed three samples of a step whose displayed balance scatters around
+  // 100 with gain 1 (pre-gain == displayed deviation). Sample stdev of
+  // {0, +0.1, -0.1} is exactly 0.1 -> floor k·0.1.
+  globalThis.__liveBal = { R: 100.0, G: 100.0, B: 100.0, gain: 1 };
+  S.meterRecordReadingNoise({ X: 1, Y: 10, Z: 11 }, step);
+  assert(S.meterEmpiricalNoiseFloorFor(step) === null, 'one sample: still no sigma');
+  globalThis.__liveBal = { R: 100.1, G: 100.0, B: 100.0, gain: 1 };
+  S.meterRecordReadingNoise({ X: 1, Y: 10, Z: 11.0001 }, step);
+  assertClose(S.meterStepNoiseSigma(S.meterStepNoiseKey(step)), 0.1 / Math.SQRT2, 1e-9,
+    'two-sample stdev of {0,0.1} is |d|/sqrt(2)');
+  globalThis.__liveBal = { R: 99.9, G: 100.0, B: 100.0, gain: 1 };
+  S.meterRecordReadingNoise({ X: 1, Y: 10, Z: 11.0002 }, step);
+  const f = S.meterEmpiricalNoiseFloorFor(step);
+  assertClose(f, METER_NOISE_HISTORY_K * 0.1, 1e-9, 'floor = k·sigma of the scatter');
+  // The flag now judges against k·sigma, not the flat 0.3: deviation 0.25
+  // (> flat 0.3? no: 0.25 < 0.3 flat-true; with k·sigma 0.2 it must be FALSE).
+  assert(S.meterRgbBalanceWithinNoise(100.25, 1, step) === false, 'empirical floor replaces the flat verdict');
+  assert(S.meterRgbBalanceWithinNoise(100.15, 1, step) === true, 'inside k·sigma flags');
+  // An unknown step (no history) still uses the flat floor.
+  assert(S.meterRgbBalanceWithinNoise(100.25, 1, { name: '5%' }) === true, 'unknown step: flat fallback');
+  // Samples store PRE-gain: gain-4 balances of ±0.8 displayed are ±0.2
+  // pre-gain, so the stdev lands at 0.2 in the same scale as above.
+  const step2 = { name: '5%' };
+  globalThis.__liveBal = { R: 100.0, G: 100.0, B: 100.0, gain: 4 };
+  S.meterRecordReadingNoise({ X: 1, Y: 1, Z: 1 }, step2);
+  globalThis.__liveBal = { R: 100.8, G: 100.0, B: 100.0, gain: 4 };
+  S.meterRecordReadingNoise({ X: 1, Y: 1, Z: 1.1 }, step2);
+  globalThis.__liveBal = { R: 99.2, G: 100.0, B: 100.0, gain: 4 };
+  S.meterRecordReadingNoise({ X: 1, Y: 1, Z: 1.2 }, step2);
+  assertClose(S.meterEmpiricalNoiseFloorFor(step2), METER_NOISE_HISTORY_K * 0.2, 1e-9,
+    'sigma computed on pre-gain deviations');
+  // Re-delivering the SAME (last) XYZ is ONE measurement, not scatter
+  // evidence — the dedupe is consecutive-only by design: a stale series poll
+  // re-delivers the newest reading, and a genuinely re-aimed meter never
+  // reproduces an identical X/Y/Z triple.
+  const sigmaBefore = S.meterStepNoiseSigma(S.meterStepNoiseKey(step2));
+  globalThis.__liveBal = { R: 99.2, G: 100.0, B: 100.0, gain: 4 };
+  S.meterRecordReadingNoise({ X: 1, Y: 1, Z: 1.2 }, step2);
+  assertClose(S.meterStepNoiseSigma(S.meterStepNoiseKey(step2)), sigmaBefore, 1e-12,
+    'duplicate XYZ poll must not add a sample');
+  // Gates: non-greyscale and non-real readings record nothing.
+  globalThis.__recIsGrey = false;
+  globalThis.__liveBal = { R: 105, G: 95, B: 100, gain: 1 };
+  S.meterRecordReadingNoise({ X: 2, Y: 2, Z: 2 }, { name: 'red-patch' });
+  assert(S.meterEmpiricalNoiseFloorFor({ name: 'red-patch' }) === null, 'color patch records nothing');
+  globalThis.__recIsGrey = true;
+  globalThis.__recIsReal = false;
+  S.meterRecordReadingNoise({ X: 3, Y: 3, Z: 3 }, { name: 'shell-step' });
+  assert(S.meterEmpiricalNoiseFloorFor({ name: 'shell-step' }) === null, 'unread shell records nothing');
+  globalThis.__recIsReal = true;
+  globalThis.__noiseMode = null;
+  globalThis.__noiseFloor = null;
+  globalThis.__liveBal = null;
+  // Store reset path: meterReplaceReadings clears it on series switch.
+  const store = S.meterNoiseHistoryStore();
+  store.set('45%', { vals: [[0, 0, 0], [0.1, -0.1, 0]] });
+  assert(S.meterStepNoiseSigma('45%') > 0, 'store is shared module state');
+});
+
+test('empirical_mode_control_wiring', () => {
+  // The mode select must exist, start at Flat, default to flat when missing,
+  // and persist with the color prefs; Active() must light up for empirical
+  // even with the flat field empty, and AnnotationLive() stays Perceptual-
+  // gated in both modes.
+  const html = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'usr', 'share', 'PGenerator', 'webui-body.html'), 'utf8');
+  const sel = /<select[^>]*id="meterNoiseFloorMode"[^>]*>([\s\S]*?)<\/select>/.exec(html);
+  if (!sel) throw new Error('meterNoiseFloorMode select missing from webui-body.html');
+  assert(/value="flat" selected/.test(sel[0]), 'mode select must default to Flat (historic behavior)');
+  assert(/value="empirical"/.test(sel[1]), 'empirical option present');
+  assert(/onchange="meterOnNoiseFloorModeChange\(\)"/.test(sel[0]), 'mode change must trigger the redraw handler');
+  assert(/aria-label=/.test(sel[0]), 'mode select needs an accessible name');
+  assert(/rgb_noise_mode/.test(srcText), 'mode must persist in meterSaveColorPrefs');
+
+  globalThis.__noiseMode = null;
+  globalThis.__noiseFloor = { value: '' };
+  assert(S.meterRgbBalanceNoiseFloorMode() === 'flat', 'missing select -> flat');
+  assert(S.meterRgbBalanceNoiseFloorActive() === false, 'flat + empty field: not active');
+  globalThis.__noiseMode = { value: 'empirical' };
+  assert(S.meterRgbBalanceNoiseFloorActive() === true, 'empirical is active with an empty flat field');
+  setFormula({ value: 'absolute' });
+  assert(S.meterRgbBalanceNoiseFloorAnnotationLive() === false, 'absolute: annotation never live');
+  setFormula({ value: 'perceptual' });
+  assert(S.meterRgbBalanceNoiseFloorAnnotationLive() === true, 'perceptual + empirical: live');
+  globalThis.__noiseMode = null;
+  assert(S.meterRgbBalanceNoiseFloorAnnotationLive() === false, 'perceptual + flat + empty: off');
+});
+
+test('floor_formatter_prints_as_judged', () => {
+  assert(S.meterFormatNoiseFloorValue(0.3) === '0.3', 'typed value prints as typed');
+  assert(S.meterFormatNoiseFloorValue(3.0) === '3', 'integral prints without decimals');
+  assert(S.meterFormatNoiseFloorValue(0.8451231) === '0.85', 'irrational empirical sigma rounds to 2dp');
+  assert(S.meterFormatNoiseFloorValue(0) === 'Off', '0 reads Off');
+  assert(S.meterFormatNoiseFloorValue(NaN) === 'Off', 'NaN reads Off');
 });
 
 // ---------------------------------------------------------------------------
