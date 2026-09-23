@@ -1333,15 +1333,51 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
   fi
 }
 
+# Timeout input for one step. ICC profile steps carry ire:index (their
+# position in the series, from icc_profile.js meterIccSteps/
+# meterIccPatchesToSteps) because readings are keyed by ire -- so for
+# colors_* series the stimulus must be derived from the drive codes, which
+# are always the physical patch. Every other series (greyscale_*,
+# saturations_*, autocal) carries a real light-level ire in the same
+# code-percent domain, so it keeps using ire. Note the derivation is code
+# percentage, not photometric EOTF output, for HDR code domains too -- the
+# same conflation the ire ladder already makes.
+step_timeout_stimulus() {
+ local r="$1" g="$2" b="$3" input_max="$4" ire="$5"
+ if [[ "$SERIES_ID" == colors_* ]] && is_number "$r" && is_number "$g" \
+  && is_number "$b" && is_number "$input_max" && [[ "$input_max" -gt 0 ]]; then
+  awk -v r="$r" -v g="$g" -v b="$b" -v im="$input_max" -v sr="$PATTERN_SIGNAL_RANGE" 'BEGIN {
+   if (im + 0 <= 0) im = 255
+   m = r; if (g + 0 > m + 0) m = g; if (b + 0 > m + 0) m = b
+   if (int(sr) == 1) {
+    # Limited/legal range: scale (code - black) / (white - black) using the
+    # 16..235 window scaled into this input_max, matching the achromatic
+    # stimulus inference in the webui.pm patch path.
+    black = int(16 * (im + 1) / 256 + 0.5)
+    white = int(235 * (im + 1) / 256 + 0.5)
+    pct = (white > black) ? (m - black) * 100 / (white - black) : m * 100 / im
+   } else {
+    pct = m * 100 / im
+   }
+   if (pct < 0) pct = 0
+   printf "%.3f\n", pct
+  }' 2>/dev/null
+  return
+ fi
+ printf '%s\n' "${ire:-0}"
+}
+
 read_timeout_seconds() {
  local ire="${1:-0}"
- # Near-black reads integrate longest; keep their IRE-based tolerance FIRST
- # and unconditional. The profile-sized rule below must not override it:
+ # Near-black reads integrate longest; keep the stimulus ladder FIRST and
+ # unconditional. The profile-sized rule below must not override it:
  # ICC profile sets (175+ patches) interleave near-black greys mid-series,
  # and an unconditional 20 s for those patches aborted Windows-sdr ICC runs
- # at "ICC Grey 1" (code 3/255, ~1.2 IRE) -- reproduced on an i1Display Pro
- # Plus: first 100 bright patches passed at 20 s, the low-grey ladder then
- # failed at Grey 5 after exhausting retries on 1-4.
+ # at "ICC Grey 1" (code 3/255, ~1.2 stimulus) -- reproduced on an i1Display
+ # Pro Plus: first 100 bright patches passed at 20 s, the low-grey ladder
+ # then failed at Grey 5 after exhausting retries on 1-4. Callers pass the
+ # value from step_timeout_stimulus so ICC index-ire reaches this ladder by
+ # its drive codes.
  if float_le "$ire" 1; then
   echo 90
  elif float_le "$ire" 5; then
@@ -2402,7 +2438,7 @@ EOJSON
 
  # Near-black reads can take much longer than mid/high greys. Match the
  # manual-read tolerance here so the low end does not time out prematurely.
- READ_TIMEOUT=$(read_timeout_seconds "$IRE")
+ READ_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
 
  # Trigger reading: send space
  PREV_COUNT=$(count_results)
@@ -2518,7 +2554,7 @@ EOJSON
    SCAN_OFFSET=$(output_size)
    printf " " >&3
    READ_START=$SECONDS
-   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
@@ -2602,7 +2638,7 @@ EOJSON
    SCAN_OFFSET=$(output_size)
    printf " " >&3
    READ_START=$SECONDS
-   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
@@ -2695,7 +2731,7 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (sample $average_index/$AVERAGE_SAMPLE_COUNT)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-   capture_series_average_sample "$(read_timeout_seconds "$IRE")"
+   capture_series_average_sample "$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")"
    SAMPLE_RC=$?
    if (( SAMPLE_RC != 0 )); then
     echo "[$(date '+%H:%M:%S.%3N')] averaging sample failed: step=$STEP_NUM sample=$average_index/$AVERAGE_SAMPLE_COUNT rc=$SAMPLE_RC name=$NAME" >> /tmp/meter_series_debug.log
@@ -2838,7 +2874,7 @@ EOJSON
   SCAN_OFFSET=$(output_size)
   printf " " >&3
 
-  READ_TIMEOUT=$(read_timeout_seconds "$FIRST_IRE")
+  READ_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$FIRST_R" "$FIRST_G" "$FIRST_B" "$FIRST_INPUT_MAX" "$FIRST_IRE")")
   READ_START=$SECONDS
   GOT_RESULT=false
   RETRIED_COMM=0
