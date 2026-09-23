@@ -1335,16 +1335,26 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
 
 read_timeout_seconds() {
  local ire="${1:-0}"
- # Large ICC sets can enter a slower adaptive integration after hundreds of
- # readings even when their synthetic IRE field is high.  Ten seconds then
- # expires just before a valid result and needlessly starts a second trigger.
- # Keep the longer bound scoped to profile-sized colour series.
- if [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
-  echo 20
- elif float_le "$ire" 1; then
+ # Near-black reads integrate longest; keep their IRE-based tolerance FIRST
+ # and unconditional. The profile-sized rule below must not override it:
+ # ICC profile sets (175+ patches) interleave near-black greys mid-series,
+ # and an unconditional 20 s for those patches aborted Windows-sdr ICC runs
+ # at "ICC Grey 1" (code 3/255, ~1.2 IRE) -- reproduced on an i1Display Pro
+ # Plus: first 100 bright patches passed at 20 s, the low-grey ladder then
+ # failed at Grey 5 after exhausting retries on 1-4.
+ if float_le "$ire" 1; then
   echo 90
  elif float_le "$ire" 5; then
   echo 70
+ # Large ICC sets can enter a slower adaptive integration after hundreds of
+ # readings even when their synthetic IRE field is high.  Ten seconds then
+ # expires just before a valid result and needlessly starts a second trigger.
+ # Keep the longer bound scoped to profile-sized colour series, and give it
+ # 30 s: a bench repro (i1Display Pro Plus, 100 bright patches then the
+ # low-grey ladder) exhausted 20 s at "ICC Grey 5" (~5.1 IRE) on a dim panel
+ # after heavy adaptation.
+ elif [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
+  echo 30
  elif float_le "$ire" 20; then
   echo 20
  else
