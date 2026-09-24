@@ -3154,6 +3154,13 @@ sub _calibration_greyscale_stage {
         return 0;
     }
     _clear_active_worker();
+    # The greyscale worker reports an unknown outcome (a near-black patch it
+    # could not measure and left uncorrected) as a processing warning; lift it
+    # onto the item as the 3D stage does, so the item finishes
+    # complete-with-warnings instead of reading as fully converged.
+    for my $warning (@{$grey->{automation_processing_warnings} || []}) {
+        push @{$item->{warnings}}, $warning if !grep {$_ eq $warning} @{$item->{warnings}||[]};
+    }
     my $verified = $grey->{ddc_upload_verified} || $grey->{final_1d_lut_upload_verified};
     return {verified => $verified ? JSON::PP::true : 'unverifiable',
         timing_curve => $grey->{timing_curve},
