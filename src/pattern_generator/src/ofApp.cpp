@@ -38,10 +38,6 @@ inline void ofSet10bitColor(int red, int green, int blue, int alpha = 1023) {
  ofSetColor(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
 }
 
-inline void of10bitBackground(int red, int green, int blue, int alpha = 1023) {
- ofBackground(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
-}
-
 inline void ofClear10bit(int red, int green, int blue, int alpha = 1023) {
  ofClear(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
 }
@@ -59,9 +55,6 @@ inline bool usesDolbyVisionTransport() {
  return ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi;
 }
 
-inline bool usesLowLatencyDoVi422Transport() {
-	return false;
-}
 }
 
 /*
@@ -206,7 +199,7 @@ void ofApp::update(){
    previous_image = ""; 
   }
 #if 1 
-	if (ofxRPI4Window::shader_init && (ofxRPI4Window::avi_info.output_format != 0 || (ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2))) {
+	if (ofxRPI4Window::shader_init && ofxRPI4Window::usesColourShader()) {
  //  ofxRPI4Window::rgb2ycbcr_shader();
    ofxRPI4Window::shader_init=0;
   }
@@ -238,6 +231,7 @@ void ofApp::update(){
 void ofApp::draw(){
  if(entered == 0)
   return;
+ restoreBackground();
  for(to_draw=0;to_draw<n_draw[i];to_draw++) {
   char buffer[255];
   sprintf(buffer,"Doing the frame %d and the Draw %d",i,to_draw);
@@ -533,61 +527,41 @@ void ofApp::log(std::string str) {
  #                   Set Background                       #
  ##########################################################
 */
+void ofApp::clearBackground(int red, int green, int blue, int maximum) {
+ background_color[0]=ofClamp(red,0,maximum)/static_cast<float>(maximum);
+ background_color[1]=ofClamp(green,0,maximum)/static_cast<float>(maximum);
+ background_color[2]=ofClamp(blue,0,maximum)/static_cast<float>(maximum);
+ restoreBackground();
+}
+
+void ofApp::restoreBackground() {
+ // The four-float clear bypasses byte ofColor. Replay it after OF's auto-clear
+ // so a draw with BG=-1 retains the last exact surround across frames.
+ ofClear(background_color[0]*255.0f,background_color[1]*255.0f,
+         background_color[2]*255.0f,background_color[3]*255.0f);
+}
+
 void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
+ if(arr_redbg[i][to_draw] == -1) return;
  redbg=normalizeSourceValue(redbg,arr_source_range[i][to_draw]);
  greenbg=normalizeSourceValue(greenbg,arr_source_range[i][to_draw]);
  bluebg=normalizeSourceValue(bluebg,arr_source_range[i][to_draw]);
- int lldv422=usesLowLatencyDoVi422Transport();
- if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
-  if (ofxRPI4Window::bit_depth == 10) {  
-   if(arr_redbg[i][to_draw] != -1) {
-	if (ofxRPI4Window::avi_info.output_format != 0) {
-     RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-     if (ofxRPI4Window::avi_info.output_format == 1) of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-     if (ofxRPI4Window::avi_info.output_format == 2) of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-    } else                                           of10bitBackground(redbg,greenbg,bluebg);
-   }
-  } else {
-   if(arr_redbg[i][to_draw] != -1) {
-	if (ofxRPI4Window::avi_info.output_format != 0) {
-     RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-     if (ofxRPI4Window::avi_info.output_format == 1) ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-     if (ofxRPI4Window::avi_info.output_format == 2) ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-    } else                                           ofBackground(redbg,greenbg,bluebg);
-   }
-  }
+ // HDR BITS=12 uses a float surface; its neutral chroma is 2048/4095.
+ // Standard DV keeps its separate source domain and tunnel background path.
+ int depth=ofxRPI4Window::bit_depth;
+ if(depth != 10 && depth != 12) depth=8;
+ int maximum=(1 << depth)-1;
+ if(ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
+  YCbCr bg=RGB2YCbCr(RGB(redbg,greenbg,bluebg),depth,
+      ofxRPI4Window::avi_info.colorimetry,ofxRPI4Window::avi_info.rgb_quant_range);
+  if(ofxRPI4Window::avi_info.output_format == 1)
+   clearBackground(bg.Cb,bg.Cr,bg.Y,maximum); // YCbCr444 carries luminance last.
+  if(ofxRPI4Window::avi_info.output_format == 2)
+   clearBackground(bg.Y,bg.Cb,bg.Cr,maximum);
+  if(ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on)
+   ofApp::setDoViBackground(redbg,greenbg,bluebg);
  } else {
-  if (ofxRPI4Window::bit_depth == 10) {  
-   if(arr_redbg[i][to_draw] != -1) {
-	if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
-	 if (lldv422) {
-	  of10bitBackground(redbg,greenbg,bluebg);
-	 } else {
-	     RGB data = RGB(redbg,greenbg,bluebg);
-	     YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-	     if (ofxRPI4Window::avi_info.output_format == 1) 					of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-	     if (ofxRPI4Window::avi_info.output_format == 2) 					of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on)	ofApp::setDoViBackground(redbg,greenbg,bluebg); //set dovi background only if standard dovi mode and drawing patterns
-	 }
-	    } else                                           					of10bitBackground(redbg,greenbg,bluebg);
-   }
-  } else {
-   if(arr_redbg[i][to_draw] != -1) {
-		if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
-		 if (lldv422) {
-		  ofBackground(redbg,greenbg,bluebg);
-		 } else {
-	     RGB data = RGB(redbg,greenbg,bluebg);
-	     YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-	     if (ofxRPI4Window::avi_info.output_format == 1)					ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-	     if (ofxRPI4Window::avi_info.output_format == 2) 					ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on) 	ofApp::setDoViBackground(redbg,greenbg,bluebg);  //set dovi background only if standard dovi mode and drawing patterns
-		 }
-	    } else                                          					ofBackground(redbg,greenbg,bluebg);
-   }
-  }
+  clearBackground(redbg,greenbg,bluebg,maximum);
  }
 }
 
@@ -612,13 +586,13 @@ void ofApp::setColor(int red, int green, int blue) {
   ofSetColor(255,255,255,255);
   return;
  }
- if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
-  if (ofxRPI4Window::bit_depth == 10) ofSet10bitColor(red,green,blue);
-  else                                ofSetColor(red,green,blue);
- } else {
-  if (ofxRPI4Window::bit_depth == 10) ofSet10bitColor(red,green,blue);
-  else                                ofSetColor(red,green,blue);
- }
+ // OF style colours are bytes. Solid shaders consume these codes instead.
+ int maximum=(1 << ofxRPI4Window::bit_depth)-1;
+ solid_red=ofClamp(red,0,maximum);
+ solid_green=ofClamp(green,0,maximum);
+ solid_blue=ofClamp(blue,0,maximum);
+ if(ofxRPI4Window::usesColourShader()) ofSetColor(255,255,255,255);
+ else ofSetColor(red,green,blue);
 }
 
 int ofApp::normalizeSourceValue(int value, int source_range_mode) {
@@ -744,7 +718,7 @@ void ofApp::shader_begin(int is_image) {
  ##########################################################
 */
 void ofApp::shader_begin(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
+ if (!ofxRPI4Window::shader_init && (ofxRPI4Window::usesColourShader() || ofxRPI4Window::is_std_DoVi)) {
   if (is_image) { 
 	if (ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) float_img.getTexture().bind();
 	else 															         img.getTexture().bind();
@@ -754,6 +728,8 @@ void ofApp::shader_begin(int is_image) {
   ofxRPI4Window::shader.begin();
   if (ofxRPI4Window::is_std_DoVi) {
 	ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
+	// Standard DV packs original 8/10/12-bit source codes into the tunnel.
+	// Keep this source domain separate from the SDR/HDR link-depth uniforms below.
 	ofxRPI4Window::shader.setUniform3f("source_rgb",
 		static_cast<float>(dv_source_red),
 		static_cast<float>(dv_source_green),
@@ -801,10 +777,11 @@ void ofApp::shader_begin(int is_image) {
     ofxRPI4Window::shader.setUniform1i("scale", scale);
     ofxRPI4Window::shader.setUniform1i("normalizer", normalizer);
     ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
-    ofxRPI4Window::shader.setUniform1i("passthrough_422", usesLowLatencyDoVi422Transport() ? 1 : 0);
     ofxRPI4Window::shader.setUniform1i("rgb_quant_range", ofxRPI4Window::avi_info.rgb_quant_range);
     ofxRPI4Window::shader.setUniform1i("bits", ofxRPI4Window::bit_depth);
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
+    ofxRPI4Window::shader.setUniform3i("source_codes",solid_red,solid_green,solid_blue);
+    ofxRPI4Window::shader.setUniform1i("source_normalizer",normalizer);
 
   }
  }
@@ -816,7 +793,7 @@ void ofApp::shader_begin(int is_image) {
  ##########################################################
 */
 void ofApp::shader_end(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
+ if (!ofxRPI4Window::shader_init && (ofxRPI4Window::usesColourShader() || ofxRPI4Window::is_std_DoVi)) {
   ofxRPI4Window::shader.end();
 
   if (is_image) { 

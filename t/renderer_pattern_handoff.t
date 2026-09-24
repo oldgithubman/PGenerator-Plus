@@ -53,6 +53,10 @@ ok(!@missing, 'locate renderer methods in ofApp.cpp') or diag("not extracted: @m
 SKIP: {
     skip("renderer methods could not be extracted", 2) if(@missing);
     my $harness = read_file("$Bin/fixtures/renderer_pattern_handoff.cpp");
+    my $header = read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.h");
+    my ($predicate) = $header =~ /(static bool usesColourShader\(\) \{.*?^    \})/ms;
+    die 'Missing shader-selection predicate' unless defined $predicate;
+    $harness =~ s{// COLOUR_SHADER_PREDICATE}{$predicate};
     $harness =~ s{// REAL_RENDERER_METHODS}{join("\n", @methods)}e;
     open my $cpp, '>', "$tmp/handoff.cpp" or die "$!";
     print {$cpp} $harness;

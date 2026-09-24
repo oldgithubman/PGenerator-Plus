@@ -811,19 +811,17 @@ sub idle_pattern_text (@) {
  # RGB=256,256,256, a 12-bit DV black floor on a 10-bit tunnel.
  # webui_pattern_effective_bits() returns 8 for dv unconditionally; match it.
  $bits=8 if($dv);
- # Draw through the 10-bit path on a 12 bpc link, as webui_pattern_effective_bits()
- # does. This is not cosmetic: ofApp::setBackground() branches on bit_depth == 10
- # and otherwise falls back to its 8-bit path, so it has no encoding for a 12-bit
- # framebuffer -- a seeded BITS=12 leaves the idle background unconverted and the
- # screen green, which is the whole bug. Measured on the bench at 12 bpc HDR10
- # YCbCr 4:4:4: BITS=12 gives 6.9 nits at CIE 0.273,0.673 (green), BITS=10 gives
- # 0.000 nits.
+ # Keep the 10-bit idle seed on a 12 bpc link for older renderers, matching
+ # webui_pattern_effective_bits(). Older ofApp::setBackground() implementations
+ # treated every depth except 10 as 8-bit. On that renderer, a 12 bpc HDR10
+ # YCbCr 4:4:4 bench check measured 6.9 nits at CIE 0.273,0.673 (green) with
+ # BITS=12, versus 0.000 nits with BITS=10. The current renderer handles 12-bit
+ # backgrounds, but a backend update can still be used with an older binary.
  #
  # The cost is that set_values() feeds BITS back into avi_info.max_bpc, so the
  # idle link sits at 10 bpc until the first real pattern: the WebUI sends 10 for
  # a 12 bpc link anyway, and Calman's first BITS=12 patch restores 12 with a
- # window rebuild. A correct-depth green screen is worse than a black one that
- # corrects itself on the next pattern.
+ # window rebuild. Retain this compatibility fallback for those older binaries.
  $bits=10 if($bits == 12);
  my $source_max=255;
  $source_max=1023 if($bits >= 10);

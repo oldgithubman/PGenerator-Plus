@@ -2286,6 +2286,8 @@ async function lgDisconnectClient(){
 // --- Calibration history (final AutoCal uploads) ---
 let lgCalHistoryCache=[];
 let lgCalHistoryBusy=false;
+// Entry ID -> the automation run and job that produced it; empty on failure.
+let lgCalHistoryLinks={};
 
 function lgOpenCalHistoryModal(){
  const m=document.getElementById('lgCalHistoryModal');
@@ -2316,6 +2318,18 @@ function lgCalHistoryFormatTime(mtime){
  try{ return new Date(mtime*1000).toLocaleString(); }catch(e){ return ''; }
 }
 
+// The run and job that produced an entry, else the run ID it recorded.
+function lgCalHistorySourceHtml(it){
+ const link=lgCalHistoryLinks[it.id];
+ if(link&&link.run_id){
+  let when='';
+  try{ when=new Date((link.created_at||0)*1000).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){}
+  return '<small class="lg-cal-hist-source">From run '+lgEscapeHtml(link.run_id)+' ('+lgEscapeHtml([link.job,when].filter(Boolean).join(', '))+')'
+   +(link.inferred?' · matched by time and picture mode':'')+'</small>';
+ }
+ return it.source_run?'<small class="lg-cal-hist-source">From run '+lgEscapeHtml(it.source_run)+'</small>':'';
+}
+
 function lgRenderCalHistoryInto(el){
  if(!el) return;
  if(!lgCalHistoryCache.length){
@@ -2340,7 +2354,7 @@ function lgRenderCalHistoryInto(el){
     +'<small>'+lgCalHistoryFormatTime(it.mtime)
     +(it.signal_mode?(' · '+it.signal_mode):'')
     +(it.picture_mode?(' · '+it.picture_mode):'')
-    +de+'</small>'+note+'</div>'
+    +de+'</small>'+lgCalHistorySourceHtml(it)+note+'</div>'
     +'<div class="lg-cal-hist-actions">'
     +(canUp?('<button type="button" class="btn btn-sm btn-primary" onclick="lgCalHistoryReupload(\''+String(it.id).replace(/'/g,"\\'")+'\')">Reupload</button>'):'')
     +((it.download||it.type==='1d'||(it.type==='3d'&&it.has_cube))?('<button type="button" class="btn btn-sm btn-secondary" onclick="lgCalHistoryDownload(\''+String(it.id).replace(/'/g,"\\'")+'\')">Download</button>'):'')
@@ -2360,9 +2374,14 @@ async function lgRefreshCalHistory(){
   const hosts=[document.getElementById('lgCalHistoryBodyDesktop'),document.getElementById('lgCalHistoryBodyModal')];
   hosts.forEach(h=>{ if(h) h.innerHTML='Loading history...'; });
   let r=null;
+  // The run links come from the automation listing cache; a failure there
+  // only drops the "From run" lines, never the history itself.
+  const links=fetchJSON('/api/automation/artifact-links',{_quiet:true,_timeoutMs:30000}).catch(()=>null);
   try{
    r=await fetchJSON('/api/lg/calibration-history?_='+Date.now(),{_quiet:true,_timeoutMs:120000,cache:'no-store'});
   }catch(e){ r=null; }
+  const linked=await links;
+  lgCalHistoryLinks=(linked&&linked.status==='ok'&&linked.links&&typeof linked.links==='object')?linked.links:{};
   // fetchJSON swallows its own timeout and network errors and returns null,
   // so a failed scan must not be rendered as "no artifacts found".
   if(!r||r.status!=='ok'||!Array.isArray(r.items)){
@@ -2414,6 +2433,7 @@ async function lgCalHistoryDownload(id){
   if(item.type==='3d'){
    const href=item.download||('/api/3d-lut/cube?file='+encodeURIComponent((item.base||'')+'.cube'));
    window.location.href=href;
+   if(typeof noteInsecureDownload==='function') noteInsecureDownload((item.base||'LUT')+'.cube');
    return;
   }
   if(item.type==='1d'){

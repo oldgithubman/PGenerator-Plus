@@ -70,16 +70,27 @@ sub pg_is_pi4_family(@) {
 #  standard - sink-led DV: metadata embedded in an RGB 8-bit tunnel; the
 #             display parses the tunnel itself. Requires full sink-led DV
 #             support in the TV.
-#  lldv     - low-latency (source-led) DV: PQ-encoded YCbCr 4:2:2 12-bit
-#             with the LL bit set in the Dolby VSIF. Some displays only
-#             decode this form (and may not even advertise a VSVDB).
+#  lldv     - RETIRED. Low-latency (source-led) DV: PQ-encoded YCbCr 4:2:2
+#             12-bit with the LL bit set in the Dolby VSIF. The Pi renderer
+#             has no EGL config for that surface and dies at startup, so
+#             pg_dv_transport_mode() below collapses it to standard.
 sub pg_dv_transport_mode(@) {
+ # LLDV (Low Latency DoVi, 12-bit YCbCr 4:2:2) is retired here, the choke point
+ # every dv_transport helper below derives from -- and, through
+ # command.pm's normalize_dv_transport_conf(), the renderer's own config. LLDV as
+ # the WebUI configured it (12 bpc) kills the renderer: it fails EGL config
+ # selection ("No EGL configs with appropriate attributes") and exits, both when
+ # applied and when a persisted LLDV config is read at startup. Measured on an
+ # LG C1 against 2.12.2; standard DV runs on the same code and display. Standard
+ # DV already carries 12-bit source codes through the RPU tunnel. Collapse any
+ # "lldv" -- explicit, persisted, or legacy -- so the DV transport config can
+ # never resolve to LLDV. (This does not touch endpoints that carry a raw
+ # color_format / dv_interface of their own -- the meter-series API and the LG
+ # calibration worker configs -- which a follow-up covers server-side.)
  foreach my $candidate (@_) {
   next if(!defined $candidate || $candidate eq "");
-  return "lldv" if(lc($candidate) eq "lldv");
-  return "standard" if(lc($candidate) eq "standard");
+  return "standard" if(lc($candidate) eq "standard" || lc($candidate) eq "lldv");
  }
- return "lldv" if(lc($pgenerator_conf{"dv_transport"} || "") eq "lldv");
  return "standard";
 }
 

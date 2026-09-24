@@ -72,8 +72,9 @@ static YCbCr RGB2YCbCr(RGB rgb, int bits, int colorimetry, int rgb_quant_range) 
 	{ 0.2627, 0.6780, 0.0593}, 
 	};
 	/* Full range 0-255: 256/255, Studio range: 256/219, Limited range: 224/219 */
-	int scalar1;
-	int scalar2;
+	// Automatic range uses the same full-range default as the shader.
+	int scalar1 = 256 << (bits - 8);
+	int scalar2 = 255 << (bits - 8);
 	int scalar_limit1 = 224 << (bits - 8);
 	int scalar_limit2 = 219 << (bits - 8);
 	int scalar_full1 = 256 << (bits - 8);

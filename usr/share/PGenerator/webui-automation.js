@@ -4,7 +4,7 @@ var pgAutomation = {
  supportedKeys:[],supportedValues:{},pinnedKeys:[],supportedSignal:'',supportedPictureMode:'',
  editorTarget:'queue',editingQueueIndex:null,editingRecipe:null,editorEpoch:0,
  editorSettingsKey:'',editorSettingsDrafts:{},fillingEditor:false,gammaFollowsTarget:false,
- editingRunId:'',firstPending:0,busy:false,polling:false,tab:'queue',
+ editingRunId:'',firstPending:0,editChecked:'',editChecking:'',busy:false,polling:false,tab:'queue',
  jobViews:{},followLive:true,liveSelection:null,logFollow:true,logNotices:[],logObserved:[]
 };
 const PG_AUTOMATION_SERIES=[['Grey','greyscale-21','Greyscale'],['Colors','colors-30','ColorChecker'],['Sats','saturations-24','Saturation']];
@@ -1013,7 +1013,7 @@ function pgAutomationRenderQueue(){
  pgAutomationEl('QueueSaveState').textContent=pgAutomation.editingRunId?'Editing pending jobs':reference?(dirty?'Reference copy · unsaved changes':'Reference settings · copy this queue to make your own'):pgAutomation.queue.id?(dirty?'Unsaved changes':'Saved queue'):'Not saved yet';
  const save=pgAutomationEl('SaveQueueButton');save.textContent=reference?'Copy queue':pgAutomation.queue.id?'Save changes':'Save queue';save.disabled=!!pgAutomation.editingRunId||(!reference&&!!pgAutomation.queue.id&&!dirty);
  pgAutomationRenderSavedQueues();
- pgAutomationEl('QueueContext').textContent=pgAutomation.editingRunId?'Editing pending items for '+pgAutomation.editingRunId+'. Active and completed items are locked.':'';
+ pgAutomationEl('QueueContext').innerHTML=pgAutomation.editingRunId?'Editing pending items for '+pgAutomationEscape(pgAutomation.editingRunId)+'. Active and completed items are locked. <button class="btn btn-sm btn-secondary" id="pgAutomationStopEditingButton" type="button" style="margin:4px 0 8px" onclick="pgAutomationStopEditing()">Stop editing</button>':'';
  pgAutomationEl('SavePendingButton').style.display=pgAutomation.editingRunId?'':'none';
  pgAutomationEl('StartButton').style.display=pgAutomation.editingRunId?'none':'';
  pgAutomationEl('QueueItems').innerHTML=pgAutomation.queue.items.length?pgAutomation.queue.items.map((item,i)=>{
@@ -1059,11 +1059,26 @@ function pgAutomationDragStart(event,index){
 }
 function pgAutomationDragCancel(){pgAutomation.dragCancel?.();}
 function pgAutomationNewQueue(){
- pgAutomationNameQueue('new');
+ // Opens at once when nothing is being edited; callers fill the dialog next.
+ if(!pgAutomation.editingRunId){pgAutomationNameQueue('new');return Promise.resolve();}
+ return pgAutomationStopEditing().then(ok=>{if(ok)pgAutomationNameQueue('new');});
+}
+// The way out of editing a batch's pending jobs. The batch keeps the jobs it
+// has saved; only this browser's unsaved pending changes are dropped, and the
+// page starts over from an empty queue.
+async function pgAutomationStopEditing(){
+ const id=pgAutomation.editingRunId;if(!id)return true;
+ if(!await pgAutomationConfirm('Stop editing the pending jobs of '+id+' and start an empty queue? Unsaved pending changes are discarded. The batch itself is not changed.','Stop editing'))return false;
+ if(pgAutomation.editingRunId!==id)return true;
+ pgAutomation.queue={name:'TV calibration queue',items:[]};
+ pgAutomation.editingRunId='';pgAutomation.firstPending=0;pgAutomation.editChecked='';pgAutomation.selectedQueue='';pgAutomation.loadedQueueSnapshot='';
+ pgAutomationSaveDraft();pgAutomationRenderSavedQueues();pgAutomationRenderQueue();
+ pgAutomationNotice('Stopped editing '+id+'. The batch keeps its saved jobs; this queue is empty.');
+ return true;
 }
 function pgAutomationSaveSelectedQueue(){if(pgAutomation.queue.id&&!pgAutomation.editingRunId)pgAutomationQueueSave();else pgAutomationNameQueue('copy');}
 function pgAutomationNameQueue(action){
- if(pgAutomation.editingRunId){pgAutomationNotice('Save pending changes before creating or renaming a queue.',true);return;}
+ if(pgAutomation.editingRunId){pgAutomationNotice('Save Pending Changes, or choose Stop editing, before copying or renaming a queue.',true);return;}
  pgAutomation.queueNameAction=action;
  pgAutomationEl('QueueMenu').open=false;
  pgAutomationEl('QueueDialogTitle').textContent=action==='new'?'New queue':action==='copy'?'Copy queue':'Rename queue';
@@ -1592,7 +1607,45 @@ async function pgAutomationEditActiveQueue(){
  try{
   const result=await pgAutomationRequest('runs/'+encodeURIComponent(pgAutomation.editingRunId)+'/edit',{first_pending:pgAutomation.firstPending,items:pgAutomation.queue.items.slice(pgAutomation.firstPending)});
   pgAutomationNotice(result.warning?'Pending changes saved. '+result.warning:'Pending changes saved',result.warning?'warning':false);await pgAutomationPollLive();
- }catch(e){pgAutomationNotice(e.message+' Reload pending items if the batch has advanced.',true);}
+ }catch(e){
+  pgAutomationNotice(e.message+' Reload pending items if the batch has advanced.',true);
+  pgAutomation.editChecked='';await pgAutomationCheckEditBinding(pgAutomationCurrentRun());
+ }
+}
+// Pending edits bind the saved draft to one run. Once that run ends or is
+// deleted, the binding would hide Run queue for good, even across reloads.
+// Mirrors webui_automation_active_status (pinned by t/automation_active_status_sync.t).
+const PG_AUTOMATION_ACTIVE_STATUSES=['starting','running','paused','stopping','completing','interrupted'];
+function pgAutomationReleaseEdit(reason){
+ if(!pgAutomation.editingRunId)return;
+ const ran=pgAutomation.firstPending;
+ pgAutomation.queue={...pgAutomation.queue,name:pgAutomationQueueName(pgAutomation.queue.name),items:pgAutomation.queue.items.map(pgAutomationSnapshot)};
+ pgAutomation.editingRunId='';pgAutomation.firstPending=0;pgAutomation.editChecked='';pgAutomation.selectedQueue='';pgAutomation.loadedQueueSnapshot='';
+ pgAutomationSaveDraft();pgAutomationRenderSavedQueues();pgAutomationRenderQueue();
+ pgAutomationNotice('The run these jobs belonged to '+reason+'; they are now an ordinary unsaved draft.'+(ran>0?' The first '+(ran===1?'job':ran+' jobs')+' already ran in that batch; remove '+(ran===1?'it':'them')+' if you do not want to run '+(ran===1?'it':'them')+' again.':'')+' Nothing has started.','warning');
+}
+// Checks the run the draft is bound to. Only a definite answer releases it;
+// a failed or slow request keeps the binding and retries on the next poll.
+async function pgAutomationCheckEditBinding(current){
+ const id=pgAutomation.editingRunId;
+ if(!id||pgAutomation.editChecking===id)return;
+ if(current?.id===id){
+  if(!PG_AUTOMATION_ACTIVE_STATUSES.includes(current.status))pgAutomationReleaseEdit('has ended ('+String(current.status||'finished').replace(/-/g,' ')+')');
+  return;
+ }
+ // A run that is not current cannot advance, so one confirmed answer holds.
+ if(pgAutomation.editChecked===id)return;
+ pgAutomation.editChecking=id;
+ try{
+  // fetchJSON resolves null on failure or timeout; neither branch below matches, so the binding stays.
+  const result=await fetchJSON('/api/automation/runs/'+encodeURIComponent(id),{_quiet:true,_timeoutMs:30000});
+  if(pgAutomation.editingRunId!==id)return;
+  if(result?.run){
+   if(PG_AUTOMATION_ACTIVE_STATUSES.includes(result.run.status))pgAutomation.editChecked=id;
+   else pgAutomationReleaseEdit('has ended ('+String(result.run.status||'finished').replace(/-/g,' ')+')');
+  }else if(result?.error_code==='not-found')pgAutomationReleaseEdit('no longer exists on the generator');
+ }catch(e){}
+ finally{if(pgAutomation.editChecking===id)pgAutomation.editChecking='';}
 }
 function pgAutomationRenderLiveRun(run,execution){
  pgAutomationSyncCalibrationView(run);
@@ -1704,6 +1757,7 @@ async function pgAutomationPollLive(){
    pgAutomation.pollMisses=0;pgAutomation.pollDelayed=false;
    pgAutomation.statusError='';pgAutomation.receivedAt=Date.now()/1000;pgAutomation.current=result;pgAutomationRenderLiveRun(result.run,result.execution);
    pgAutomationSyncLiveMark();
+   if(pgAutomation.editingRunId)pgAutomationCheckEditBinding(result.run);
   }
   else pgAutomationPollMissed('Cannot refresh run status. Showing the last known state; progress is unconfirmed. Do not start another run.');
  }catch(e){pgAutomationPollMissed('Run status connection failed: '+e.message+'. Showing the last known state.');
@@ -1722,14 +1776,71 @@ async function pgAutomationPollLive(){
   pgAutomation.liveTimer=setTimeout(()=>{pgAutomation.liveTimer=null;pgAutomationPollLive();},fast?2000:30000);
  }
 }
+// History titles say what a run did, not just which queue it came from: most
+// runs share a queue name. The row carries a brief of its jobs; the per-job
+// detail is fetched from the listing cache when the row is expanded.
 function pgAutomationHistorySummary(run,index){
- return '<div class="auto-history-row"><div><strong>'+pgAutomationEscape(pgAutomationQueueName(run.queue_name)||'Automation queue')+'</strong><small>'+pgAutomationEscape(pgAutomationFormatTime(run.created_at_iso)||run.id||'')+' · '+pgAutomationEscape((run.status||'').replace(/-/g,' '))+'</small>'+(run.preflight_only?'<p class="auto-muted">Readiness check · no calibration performed</p>':'')+(run.status==='complete-with-warnings'?'<p class="auto-warning-note">Completed with warnings. Open the run for details.</p>':'')+(run.failure?'<p style="color:var(--red)">'+pgAutomationEscape(pgAutomationIssueText(run.failure))+'</p>':'')+'</div><div class="auto-actions"><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationOpenHistory('+index+')">Open</button><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationDeleteRun('+index+')">Delete</button></div></div>';
+ const title=pgAutomationHistoryTitle(run);
+ return '<div class="auto-history-row" data-run-id="'+pgAutomationEscape(run.id)+'"><div><strong title="'+pgAutomationEscape(title)+'">'+pgAutomationEscape(title)+'</strong><small>'+pgAutomationEscape(pgAutomationQueueName(run.queue_name)||'Automation queue')+' · '+pgAutomationEscape(run.id||'')+'</small>'+(run.preflight_only?'<p class="auto-muted">Readiness check · no calibration performed</p>':'')+(run.status==='complete-with-warnings'?'<p class="auto-warning-note">Completed with warnings. Open the run for details.</p>':'')+(run.failure?'<p style="color:var(--red)">'+pgAutomationEscape(pgAutomationIssueText(run.failure))+'</p>':'')
+  +'<details class="auto-history-details" ontoggle="pgAutomationHistoryDetails(this,'+index+')"><summary>Job details</summary><div class="auto-history-jobs" aria-live="polite"></div></details>'
+  +'</div><div class="auto-actions"><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationOpenHistory('+index+')">Open</button><button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationDeleteRun('+index+')">Delete</button></div></div>';
+}
+function pgAutomationHistoryWhen(run){
+ const date=new Date(run.created_at_iso||(run.created_at?run.created_at*1000:NaN));
+ return Number.isNaN(date.getTime())?'':date.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+function pgAutomationHistoryTitle(run){
+ const brief=run.digest||{},names=Array.isArray(brief.job_names)?brief.job_names:[],count=brief.job_count||names.length;
+ let jobs=count>1?count+' jobs: '+names.join(', ')+(count>names.length?', …':''):names[0]||pgAutomationQueueName(run.queue_name)||'Automation queue';
+ const single=count===1&&!run.preflight_only,luts=[brief.lut_1d?'1D':'',brief.lut_3d?'3D':''].filter(Boolean).join(' + ');
+ if(single&&luts)jobs+=' ('+luts+')';
+ // A one-job run reports how its job ended, which can be warnings under "complete".
+ return [pgAutomationHistoryWhen(run),run.preflight_only?'Readiness check':'',jobs,((single&&brief.status)||run.status||'').replace(/-/g,' '),
+  single&&Number.isFinite(brief.de)?(PG_AUTOMATION_LABELS[brief.formula]||'ΔE')+' '+brief.de.toFixed(2):''].filter(Boolean).join(' · ');
+}
+function pgAutomationHistoryJobHtml(job){
+ const yes=value=>value?'yes':'no',lines=[];
+ lines.push([{sdr:'SDR',hdr10:'HDR10',hlg:'HLG',dv:'Dolby Vision'}[job.signal]||job.signal||'Signal unknown',job.picture_mode,job.tv_input?job.tv_input.toUpperCase():''].filter(Boolean).join(' · '));
+ lines.push('Stages: '+((job.stages||[]).map(stage=>stage.replace(/_/g,' ')).join(', ')||'none'));
+ lines.push('Outcome: '+String(job.status||'').replace(/-/g,' '));
+ lines.push('Greyscale: '+(Number.isFinite(job.de)?(PG_AUTOMATION_LABELS[job.formula]||'ΔE')+' '+job.de.toFixed(2)+' (final)':'no result')+' · 1D LUT uploaded: '+yes(job.lut_1d));
+ lines.push('3D LUT uploaded: '+yes(job.lut_3d)+(Number.isFinite(job.peak_nits)?' · Peak '+Math.round(job.peak_nits)+' cd/m²':''));
+ lines.push('Post-readings: '+(job.post_readings?job.post_readings+' saved':'none'));
+ const artifacts=(job.artifacts||[]).map(a=>'<li><button class="btn btn-sm btn-secondary" type="button" data-artifact-id="'+pgAutomationEscape(a.id)+'" onclick="pgAutomationShowArtifact(this.dataset.artifactId)">'+pgAutomationEscape((a.type==='3d'?'3D LUT':'1D LUT')+(a.variant?' ('+a.variant+')':''))+'</button> <code>'+pgAutomationEscape(a.id)+'</code>'+(a.inferred?' <span class="auto-muted">matched by time and picture mode</span>':'')+'</li>').join('');
+ return '<div class="auto-history-job"><strong>'+pgAutomationEscape(job.name||'Job')+'</strong><ul>'+lines.map(line=>'<li>'+pgAutomationEscape(line)+'</li>').join('')
+  +'<li>Saved to LG Calibration History: '+(artifacts?'<ul>'+artifacts+'</ul>':'nothing')+'</li></ul></div>';
+}
+async function pgAutomationHistoryDetails(details,index){
+ const run=pgAutomation.history[index],target=details.querySelector('.auto-history-jobs');
+ if(!details.open||!run||!target||details.dataset.loaded===run.id)return;
+ // A run in progress keeps its status while its jobs gain results, so only
+ // a finished run's digest is reused.
+ const cache=pgAutomation.historyDigests=pgAutomation.historyDigests||{},key=run.id+'|'+run.status;
+ if(['starting','running','completing','stopping','paused'].includes(run.status))delete cache[key];
+ if(!cache[key])target.textContent='Loading job details…';
+ const result=cache[key]||await fetchJSON('/api/automation/runs/'+encodeURIComponent(run.id)+'/digest',{_quiet:true,_timeoutMs:30000});
+ if(!result||!Array.isArray(result.jobs)){target.textContent=(result&&result.message)||'Unable to load job details.';return;}
+ cache[key]=result;details.dataset.loaded=run.id;
+ target.innerHTML=result.jobs.length?result.jobs.map(pgAutomationHistoryJobHtml).join(''):'No jobs were saved with this run.';
+}
+// Opens LG Calibration History at the entry a run produced.
+async function pgAutomationShowArtifact(id){
+ if(typeof lgOpenCalHistoryModal!=='function'){pgAutomationNotice('LG Calibration History is not available on this page',true);return;}
+ lgOpenCalHistoryModal();
+ if(typeof lgRefreshCalHistory==='function')await lgRefreshCalHistory();
+ const entry=[...document.querySelectorAll('#lgCalHistoryModal [data-id]')].find(el=>el.dataset.id===id);
+ if(!entry){pgAutomationNotice('That calibration is no longer in LG Calibration History',true);return;}
+ entry.classList.add('lg-cal-hist-highlight');entry.tabIndex=-1;entry.scrollIntoView({block:'center'});entry.focus();
 }
 
 function pgAutomationRenderHistoryList(){
  const el=document.getElementById('pgAutomationHistoryList');
- if(el)el.innerHTML=(pgAutomation.historyError?'<p role="alert">'+pgAutomationEscape(pgAutomation.historyError)+' <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationRefresh()">Retry</button></p>':'')
+ if(!el)return;
+ // A refresh rebuilds every row; reopen the job details the user had open.
+ const open=new Set([...el.querySelectorAll('.auto-history-row')].filter(row=>row.querySelector('.auto-history-details')?.open).map(row=>row.dataset.runId));
+ el.innerHTML=(pgAutomation.historyError?'<p role="alert">'+pgAutomationEscape(pgAutomation.historyError)+' <button class="btn btn-sm btn-secondary" type="button" onclick="pgAutomationRefresh()">Retry</button></p>':'')
   +(pgAutomation.history.length?pgAutomation.history.map(pgAutomationHistorySummary).join(''):pgAutomation.historyError?'':'No automation history.');
+ el.querySelectorAll('.auto-history-row').forEach(row=>{if(open.has(row.dataset.runId))row.querySelector('.auto-history-details').open=true;});
 }
 
 async function pgAutomationOpenHistory(index){
@@ -2727,6 +2838,11 @@ async function pgAutomationRefresh(){
  if(responses[1]&&Array.isArray(responses[1].queues))pgAutomation.queues=responses[1].queues;
  if(responses[2]&&responses[2].status!=='error'&&Array.isArray(responses[2].runs)){
   pgAutomation.history=responses[2].runs;pgAutomation.historyError='';
+  // After an update the server adds job digests to old runs a few at a time;
+  // keep refreshing History until every row has one.
+  const pending=pgAutomation.history.some(run=>run.digest_pending);
+  pgAutomation.digestRetries=pending?(pgAutomation.digestRetries||0)+1:0;
+  if(pending&&pgAutomation.tab==='history'&&pgAutomation.digestRetries<=40)setTimeout(()=>{if(pgAutomation.tab==='history')pgAutomationRefresh();},1500);
  }else pgAutomation.historyError='Cannot load saved runs. Any results shown below are from the last successful refresh.';
  pgAutomationRenderRecipeList();
  pgAutomationRenderSavedQueues();

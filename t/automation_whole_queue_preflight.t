@@ -19,6 +19,9 @@ sub fixture {
     local @ARGV=($run_id,'test-token');
     {local $SIG{__WARN__}=sub {warn @_ unless $_[0]=~/^Subroutine .* redefined at/;};
      do "$Bin/../usr/bin/pgen_automation_runner.pl";die $@ if $@;}
+    # Device workers are simulated too; unrelated host processes must not
+    # turn a successful simulated cancellation into a real liveness failure.
+    *main::_worker_process_alive=sub {0};
     @calls=();%config=(signal_mode=>'sdr',eotf=>'0',primaries=>'0',colorimetry=>'2',color_format=>'0',rgb_quant_range=>'2',max_bpc=>'10',dv_map_mode=>'2');
     %modes=(sdr=>'expert1',hdr10=>'hdrCinema',dv=>'dolbyVisionCinemaBright');
     $profile='a'x64;$input='hdmi1';$bad_job=0;$virtual=0;$restore_fail=0;$cancel=0;$prepares=0;$mode_writes=0;$use_real_transport=0;$legacy=0;$read_error=0;@checked_ids=();
@@ -47,7 +50,8 @@ sub fake_api {
         return {status=>'ok'};
     }
     return {ok=>1} if $path eq '/api/ping';
-    if($path eq '/api/pattern') {die 'Non-neutral preflight patch' if ($payload->{name}||'') ne 'gray50';return {status=>'ok'};}
+    # Preflight shows neutral grey; restoration ends on the idle frame.
+    if($path eq '/api/pattern') {die 'Unexpected preflight pattern' if ($payload->{name}||'')!~/^(?:gray50|stop)$/;return {status=>'ok'};}
     if($path eq '/api/lg/picture-settings') {
         return main::_api_once($method,$path,$payload,0) if $use_real_transport && $payload->{ignore_calibration_picture_mode};
         return tv_response();

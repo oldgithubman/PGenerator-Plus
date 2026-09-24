@@ -1799,7 +1799,7 @@ async function meterIccLoadProfiles(){
    download.type='button';
    download.className='btn btn-sm btn-primary';
    download.textContent='Download';
-   download.onclick=()=>{ window.location.href='/api/icc/download?file='+encodeURIComponent(profile.name); };
+   download.onclick=()=>{ window.location.href='/api/icc/download?file='+encodeURIComponent(profile.name); if(typeof noteInsecureDownload==='function') noteInsecureDownload(profile.name); };
    const install=document.createElement('button');
    install.type='button';
    install.className='btn btn-sm btn-success meter-icc-install-profile';
@@ -2518,7 +2518,9 @@ function meterIccCloseCubeModal(){
 
 function meterIccCubeDownload(){
  const file=meterIccCubeResult&&meterIccCubeResult.file;
- if(file) window.location.href='/api/3d-lut/cube?file='+encodeURIComponent(file);
+ if(!file) return;
+ window.location.href='/api/3d-lut/cube?file='+encodeURIComponent(file);
+ if(typeof noteInsecureDownload==='function') noteInsecureDownload(file);
 }
 
 async function meterIccCubeOpenWorkspace(){
@@ -2561,7 +2563,7 @@ function meterIccRenderValidation(file,result){
  const download=document.getElementById('meterIccValidationDownloadBtn');
  if(download){
   download.disabled=!file;
-  download.onclick=()=>{ if(file) window.location.href='/api/icc/download?file='+encodeURIComponent(file); };
+  download.onclick=()=>{ if(!file) return; window.location.href='/api/icc/download?file='+encodeURIComponent(file); if(typeof noteInsecureDownload==='function') noteInsecureDownload(file); };
  }
  const install=document.getElementById('meterIccValidationInstallBtn');
  if(install){

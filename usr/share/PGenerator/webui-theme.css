@@ -842,3 +842,21 @@ body.layout-tablet #meter3dLutWorkspaceBuildBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:block;position:relative;min-height:570px}
+.idle-card-intro{font-size:.72rem;color:var(--text2);line-height:1.45;margin:-2px 0 12px;max-width:62ch}
+.idle-card-controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 20px;margin-bottom:12px}
+.idle-card-toggle{min-height:32px;align-items:center}
+.idle-card-delay{min-width:160px}
+.idle-card-stage{position:relative;max-width:640px;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 0 0 5px var(--surface-inset),0 0 0 6px var(--border)}
+.idle-card-stage img{position:absolute;display:block;height:auto;transition:left .7s cubic-bezier(.2,.7,.2,1),top .7s cubic-bezier(.2,.7,.2,1)}
+.idle-card-stage [hidden]{display:none}
+.idle-card-stage-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:0 16px;text-align:center;color:#74747f;font-size:.72rem;line-height:1.4}
+.idle-card-status{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:.78rem;line-height:1.35;color:var(--text)}
+.idle-card-status::before{content:'';flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--badge-neutral)}
+.idle-card-status[data-state="showing"]::before{background:var(--status-success)}
+.idle-card-status[data-state="waiting"]::before{background:var(--accent)}
+.idle-card-status[data-state="held"]::before,.idle-card-status[data-state="busy"]::before{background:var(--status-warning)}
+.idle-card-status[data-state="error"]::before{background:var(--status-error)}
+.idle-card-actions{margin-top:10px}
+.idle-card-actions [hidden]{display:none}
+.idle-card-note{margin-top:10px;font-size:.65rem;color:var(--text-muted);line-height:1.4}
+@media (prefers-reduced-motion:reduce){.idle-card-stage img{transition:none}}

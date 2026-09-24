@@ -2208,10 +2208,9 @@ function dvRgbMaxBpc(value){
  return String(value||'').trim()==='10' ? '10' : '8';
 }
 function dvTransportDefaults(mode){
- if(String(mode||'').toLowerCase()==='lldv'){
-  // Low-latency (source-led) DV: PQ YCbCr 4:2:2 12-bit, LL bit in the VSIF.
-  return {dv_transport:'lldv',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'2',max_bpc:'12'};
- }
+ // Low Latency DV is retired (see pg_dv_transport_mode in variables.pm): it
+ // kills the Pi renderer at EGL config selection, so DV is always standard here,
+ // and dvTransportMode() already forces the select to the standard value.
  return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
 
@@ -2276,7 +2275,7 @@ async function applySettings(){
 	   dv_transport:dvTransport.dv_transport,
 	   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
    dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',
-   max_bpc:(dvTransport.dv_transport==='lldv'?dvTransport.max_bpc:dvRgbMaxBpc(getVal('max_bpc'))),
+   max_bpc:dvRgbMaxBpc(getVal('max_bpc')),
    rgb_quant_range:'2',eotf:'2',
    dv_interface:dvTransport.dv_interface,
    dv_map_mode:getVal('dv_map_mode'),
@@ -2824,6 +2823,158 @@ async function resolveDisconnect(){
  const r=await fetchJSON('/api/resolve/disconnect',{method:'POST'});
  if(r&&r.status==='ok'){toast('Disconnected');setTimeout(loadInfo,500);}
  else toast('Disconnect failed','err');
+}
+
+// Idle screen card (Output page). The daemon decides when the card appears;
+// this panel edits its two settings and mirrors what the TV is showing.
+let idleCardState=null;
+let idleCardPreviewKey='';
+let idleCardPollTimer=0;
+let idleCardOnScreen=false;
+// "45 s", "2 min", "1 min 20 s": the wording the status line and toasts share.
+function idleCardDuration(seconds){
+ const s=Math.max(0,Math.round(Number(seconds)||0));
+ if(s<60) return s+' s';
+ const m=Math.floor(s/60), r=s%60;
+ return r?(m+' min '+r+' s'):(m+' min');
+}
+// Which hop the TV is on now, from when the card went up and the hop period.
+// The renderer starts its own clock when it loads the file, so this can lead
+// it by up to a second.
+function idleCardHopIndex(card){
+ if(!card||!Array.isArray(card.positions)||!card.positions.length) return -1;
+ const hop=Number(card.hop_ms)||20000;
+ const elapsed=Math.max(0,Date.now()-Number(card.shown_at||0)*1000);
+ return Math.floor(elapsed/hop)%card.positions.length;
+}
+// One sentence per timer state, written for someone looking at the TV.
+function idleCardStatusText(st){
+ const delay=idleCardDuration(st.delay_s);
+ switch(st.state){
+  case 'showing': {
+   const card=st.card;
+   if(card&&card.hop_ms&&card.shown_at){
+    const next=(Number(card.hop_ms)-((Date.now()-card.shown_at*1000)%Number(card.hop_ms)))/1000;
+    return 'On the TV now. It moves again in '+idleCardDuration(next)+'.';
+   }
+   return 'On the TV now.';
+  }
+  case 'waiting': return 'The display is idle. The card appears in '+idleCardDuration(st.shows_in_s)+'.';
+  case 'held': return 'Waiting: '+(st.detail||'another task is using the display.');
+  case 'busy': return /stabilisation/i.test(st.detail||'')?st.detail:'A pattern is on the display. The card appears '+delay+' after the display goes idle.';
+  case 'off': return 'Off. The idle display stays black.';
+  case 'error': return 'The card could not be shown: '+(st.detail||'unknown error')+' Retrying in a minute.';
+  default: return 'Checking the display.';
+ }
+}
+// Mirror the TV: while the card is up, place the preview at its current hop
+// using percentages of the output size, so the stage scales with the page.
+function idleCardPlacePreview(){
+ const img=document.getElementById('idleCardPreview');
+ const st=idleCardState;
+ if(!img||img.hidden||!img.naturalWidth) return;
+ const card=st&&st.state==='showing'?st.card:null;
+ const idx=idleCardHopIndex(card);
+ let widthPct, left, top;
+ if(card&&idx>=0&&card.screen_w&&card.screen_h){
+  widthPct=100*card.w/card.screen_w;
+  left=100*card.positions[idx][0]/card.screen_w;
+  top=100*card.positions[idx][1]/card.screen_h;
+ } else {
+  // The preview is drawn at the 1080p size; centre it until the TV has it.
+  widthPct=Math.min(94,100*img.naturalWidth/1920);
+  const heightPct=widthPct*(img.naturalHeight/img.naturalWidth)*(16/9);
+  left=(100-widthPct)/2;
+  top=Math.max(0,(100-heightPct)/2);
+ }
+ img.style.width=widthPct+'%';
+ img.style.left=left+'%';
+ img.style.top=top+'%';
+}
+// Apply one status poll. Controls the user is touching are left alone, and
+// the preview image is fetched again only when the card's text changes.
+function idleCardRender(st){
+ idleCardState=st;
+ const enabled=document.getElementById('idleCardEnabled');
+ if(enabled&&document.activeElement!==enabled) enabled.checked=!!st.enabled;
+ const delay=document.getElementById('idleCardDelay');
+ if(delay&&document.activeElement!==delay){
+  const v=String(st.delay_s||30);
+  if(![...delay.options].some(o=>o.value===v)) delay.add(new Option(idleCardDuration(v),v));
+  delay.value=v;
+ }
+ const status=document.getElementById('idleCardStatus');
+ if(status){ status.dataset.state=st.state||''; status.textContent=idleCardStatusText(st); }
+ const hide=document.getElementById('idleCardHideBtn');
+ if(hide) hide.hidden=st.state!=='showing';
+ const img=document.getElementById('idleCardPreview');
+ const empty=document.getElementById('idleCardStageEmpty');
+ const model=st.model||{};
+ const key=JSON.stringify([model.headline,model.rows,model.footer,model.kit]);
+ if(img&&key!==idleCardPreviewKey){
+  idleCardPreviewKey=key;
+  const rows=Array.isArray(model.rows)?model.rows:[];
+  // The image is the only rendering of the table, so its text is the alt.
+  img.alt=[model.headline||'',...rows.map(r=>r.label+': '+r.sent+(r.differs?' (settings ask for '+r.requested+')':'')),model.footer||''].filter(Boolean).join('. ');
+  img.onload=()=>{ img.hidden=false; if(empty) empty.hidden=true; idleCardPlacePreview(); };
+  img.onerror=()=>{ img.hidden=true; if(empty){ empty.hidden=false; empty.textContent='The preview could not be drawn. Check that ImageMagick is installed on the generator.'; } };
+  img.src=API+'/api/idle-card/preview.png?k='+encodeURIComponent(String(Date.now()));
+ } else {
+  idleCardPlacePreview();
+ }
+}
+async function idleCardRefresh(){
+ if(!document.getElementById('idleCardPanel')) return;
+ const st=await fetchJSON('/api/idle-card',{_quiet:true,_timeoutMs:10000});
+ if(st&&typeof st==='object') idleCardRender(st);
+}
+// Both settings are single PGenerator.conf keys; saving one never restarts
+// the renderer, and the next poll shows the timer's new view.
+async function idleCardSave(patch){
+ const r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+ if(r&&r.status==='ok'){
+  if('screensaver_enabled' in patch) toast(patch.screensaver_enabled==='1'?'Idle card turned on':'Idle card turned off');
+  else toast('Idle card appears after '+idleCardDuration(patch.screensaver_delay_s)+' idle');
+ } else toast('Failed to save setting','err');
+ idleCardRefresh();
+}
+// Shows the card at once, over whatever is on the display, like any pattern
+// button; the daemon refuses while a calibration owns the display.
+async function idleCardShowNow(){
+ const btn=document.getElementById('idleCardShowBtn');
+ if(btn) btn.disabled=true;
+ const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'screensaver'}),_timeoutMs:15000});
+ if(btn) btn.disabled=false;
+ if(r&&r.status==='ok') toast('Idle card shown on the TV');
+ else toast((r&&r.message)||'The idle card could not be shown','err');
+ idleCardRefresh();
+}
+// Idle-only stop: clears the card but never blanks a pattern that replaced it.
+async function idleCardHide(){
+ const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop',only_if_idle:true})});
+ if(r&&r.status==='ok') toast('Idle card hidden. It returns after '+idleCardDuration(idleCardState&&idleCardState.delay_s)+' idle.');
+ else toast((r&&r.message)||'The idle card could not be hidden','err');
+ idleCardRefresh();
+}
+// Poll only while the panel is on screen and the tab is visible; the timer
+// lives on the generator, so a closed page misses nothing.
+function idleCardInit(){
+ const panel=document.getElementById('idleCardPanel');
+ if(!panel) return;
+ const tick=()=>{
+  if(!idleCardOnScreen||document.visibilityState!=='visible') return;
+  idleCardRefresh();
+ };
+ if('IntersectionObserver' in window){
+  new IntersectionObserver(entries=>{
+   const was=idleCardOnScreen;
+   idleCardOnScreen=entries.some(e=>e.isIntersecting);
+   if(idleCardOnScreen&&!was) idleCardRefresh();
+  }).observe(panel);
+ } else idleCardOnScreen=true;
+ document.addEventListener('visibilitychange',tick);
+ if(!idleCardPollTimer) idleCardPollTimer=setInterval(tick,5000);
+ idleCardRefresh();
 }
 
 // Interface layout controller. Desktop mode is deliberately a presentation
@@ -3803,6 +3954,25 @@ async function systemBackupWaitForReboot(){
  }
  systemBackupSetStatus('Could not confirm that PGenerator+ restarted. Reload this page after the device is back online.',true);
 }
+// Chromium browsers (Chrome, Arc, Edge, Brave) block most downloads from a
+// plain-HTTP page, leaving a fully transferred "Unconfirmed NNNNNN.crdownload"
+// that looks stalled (issue #35). The reporter saw no prompt; Chrome 154 offers
+// the file from the download history's item menu. There, .txt, .csv and .json
+// were not blocked; .pgbackup, .icc, .cube, .3dl, .ccss, .ccmx, .chc and .html
+// were.
+function insecureDownloadHint(filename){
+ if(window.isSecureContext)return '';
+ // userAgentData is secure-context only, so it is absent exactly here.
+ if(!/\bChrome\//.test(navigator.userAgent||''))return '';
+ if(/\.(txt|csv|json)$/i.test(String(filename||'')))return '';
+ return 'If the browser leaves '+(filename||'the file')+' as "Unconfirmed" or .crdownload, it blocked it because this page uses HTTP: open chrome://downloads, then choose \u22EE > Download insecure file.';
+}
+// Deferred so the hint replaces the caller's own "Downloaded" toast rather
+// than being overwritten by it.
+function noteInsecureDownload(filename){
+ const hint=insecureDownloadHint(filename);
+ if(hint)setTimeout(()=>toast(hint,true),0);
+}
 async function exportSystemSettings(){
  const btn=document.getElementById('exportSystemSettingsBtn');
  if(btn){btn.disabled=true;btn.textContent='Creating Backup...';}
@@ -3822,7 +3992,8 @@ async function exportSystemSettings(){
   link.download=filename;
   document.body.appendChild(link);link.click();link.remove();
   URL.revokeObjectURL(link.href);
-  systemBackupSetStatus('System backup downloaded ('+(blob.size/1048576).toFixed(1)+' MB).',false);
+  const hint=insecureDownloadHint(filename);
+  systemBackupSetStatus('System backup downloaded ('+(blob.size/1048576).toFixed(1)+' MB).'+(hint?' '+hint:''),false);
   toast('System backup downloaded');
  }catch(error){
   systemBackupSetStatus(error&&error.message?error.message:'System backup failed',true);
@@ -4134,6 +4305,7 @@ function meterDownloadBlob(blob,filename){
  a.click();
  a.remove();
  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+ noteInsecureDownload(filename);
 }
 
 function meterFilenameBase(filename){

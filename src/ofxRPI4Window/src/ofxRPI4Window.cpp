@@ -1,4 +1,5 @@
 #include "ofxRPI4Window.h"
+#include <stdexcept>
 #include "igt_edid.h"
 
 #include <fcntl.h>
@@ -1686,10 +1687,10 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 	settings.shaderSources[GL_FRAGMENT_SHADER] = R"(
 		#version 310 es
 		precision highp float;
-		uniform vec4 globalColor;
+		uniform highp ivec3 source_codes;
+		uniform int source_normalizer;
 
 		uniform int color_format;
-		uniform int passthrough_422;
 
 		uniform int is_image;
 		uniform int scalar1;
@@ -1704,15 +1705,21 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		in vec2 texCoordVarying; 
 		out vec4 outputColor;
 		
-		vec4 RGBtoYCbCr(vec4 rgb)
+		float roundCode(float code) {
+			return is_image == 1 ? round(code) : floor(code + 0.5);
+		}
+
+		vec4 RGBtoYCbCr(vec4 rgb, bool solid)
 		{
-			if (color_format == 2 && passthrough_422 == 1) {
-				return rgb;
+			// Solid inputs are link-depth codes, already range-normalized by the app.
+			vec3 codes = solid ? vec3(source_codes) : rgb.rgb * float(scale);
+			if (color_format == 0) {
+				return solid ? vec4(codes / float(source_normalizer), 1.0) : rgb;
 			}
 			float Y, Cb, Cr, a;
-			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
-			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
-			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
+			Y = roundCode(coeffs_num.x * codes.r + coeffs_num.y* codes.g + coeffs_num.z * codes.b);
+			Cb = roundCode(((-coeffs_num.x/coeffs_div.x) * codes.r - (coeffs_num.y/coeffs_div.x) * codes.g + coeffs_div.z * codes.b)*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
+			Cr = roundCode((coeffs_div.z * codes.r - (coeffs_num.y/coeffs_div.y) * codes.g - (coeffs_num.z/coeffs_div.y) * codes.b)*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
 			a = 1.0;
 
 
@@ -1732,14 +1739,21 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		void main() {
 			if (is_image == 1) {
 				vec4 color = texture(tex0, texCoordVarying);
-				outputColor = RGBtoYCbCr(color.rgba);
+				outputColor = RGBtoYCbCr(color.rgba, false);
 			} else {
-				outputColor = RGBtoYCbCr(globalColor.rgba);
+				outputColor = RGBtoYCbCr(vec4(1.0), true);
 			}
 		}
 		
 	)";
-	shader.setup(settings);	
+	if (!shader.setup(settings))
+		throw std::runtime_error("PGenerator colour shader failed to link");
+	for (const char *name : {"source_codes", "source_normalizer", "is_image"}) {
+		if (shader.getUniformLocation(name) < 0) {
+			ofLogError("PGenerator") << "Colour shader missing required uniform: " << name;
+			throw std::runtime_error("PGenerator colour shader input missing");
+		}
+	}
 }
 #endif
 #if 0
@@ -1929,6 +1943,8 @@ void ofxRPI4Window::dovi_pattern_shader()
 		#version 310 es
 		precision highp float;
 		uniform vec4 globalColor;
+		uniform vec3 source_rgb;
+		uniform int source_max;
 	//	uniform int bits;
 	//	uniform int colorimetry;
 	//	uniform int color_format;
@@ -1942,10 +1958,21 @@ void ofxRPI4Window::dovi_pattern_shader()
 		in vec2 texCoordVarying; 
 		out vec4 outputColor;
 
+		int sourceCode12(float rawCode)
+		{
+			int code = int(round(rawCode));
+			if (source_max == 4095)
+				return clamp(code, 0, 4095);
+			if (source_max == 1023)
+				return clamp(code, 0, 1023) << 2;
+			return clamp(code, 0, 255) << 4;
+		}
+
 		void main() 
 		{		
-			vec4 rgb1 = globalColor;
-			vec4 rgb2 = globalColor;
+			int srcR = sourceCode12(source_rgb.r);
+			int srcG = sourceCode12(source_rgb.g);
+			int srcB = sourceCode12(source_rgb.b);
 		//	float coeffs[5][3];
 		//	coeffs[0] = float[](0.2126, 0.7152, 0.0722); //BT709
 		//	coeffs[1] = float[](0.2627, 0.6780, 0.0593); //BT2020
@@ -1956,21 +1983,25 @@ void ofxRPI4Window::dovi_pattern_shader()
 			int R1, G1, B1, R2, G2, B2;
 	
 				/* YCrCb422 matrix */
-				Y1 = round(coeffs_num.x * float(int(rgb1.r*256.0)<<4) + coeffs_num.y* float(int(rgb1.g*256.0)<<4) + coeffs_num.z * float(int(rgb1.b*256.0)<<4) + 0.0 * float(int(rgb2.r*256.0)<<4) + 0.0 * float(int(rgb2.g*256.0)<<4) + 0.0 * float(int(rgb2.b*256.0)<<4));
-				Cb = round((((-coeffs_num.x/coeffs_div.x) * float(int(rgb1.r*256.0)<<4) - (coeffs_num.y/coeffs_div.x) * float(int(rgb1.g*256.0)<<4) + coeffs_div.z * float(int(rgb1.b*256.0)<<4) + (-coeffs_num.x/coeffs_div.x) * float(int(rgb2.r*256.0)<<4) - (coeffs_num.y/coeffs_div.x) * float(int(rgb2.g*256.0)<<4) + coeffs_div.z * float(int(rgb2.b*256.0)<<4))*224.0/219.0)/2.0 + 2048.0); // Chrominance Blue
-				Y2 = round(0.0 * float(int(rgb1.r*256.0)<<4) + 0.0 * float(int(rgb1.g*256.0)<<4) + 0.0 * float(int(rgb1.b*256.0)<<4) + coeffs_num.x * float(int(rgb2.r*256.0)<<4) + coeffs_num.y * float(int(rgb2.g*256.0)<<4) + coeffs_num.z * float(int(rgb2.b*256.0)<<4));
-				Cr = round(((coeffs_div.z * float(int(rgb1.r*256.0)<<4) - (coeffs_num.y/coeffs_div.y) * float(int(rgb1.g*256.0)<<4) - (coeffs_num.z/coeffs_div.y) * float(int(rgb1.b*256.0)<<4) + coeffs_div.z * float(int(rgb2.r*256.0)<<4) - (coeffs_num.y/coeffs_div.y) * float(int(rgb2.g*256.0)<<4) - (coeffs_num.z/coeffs_div.y) * float(int(rgb2.b*256.0)<<4))*224.0/219.0)/2.0 + 2048.0); // Chrominance Red
+				Y1 = round(coeffs_num.x * float(srcR) + coeffs_num.y * float(srcG) + coeffs_num.z * float(srcB));
+				Cb = round((((-coeffs_num.x/coeffs_div.x) * float(srcR) - (coeffs_num.y/coeffs_div.x) * float(srcG) + coeffs_div.z * float(srcB)) * 2.0 * 224.0/219.0)/2.0 + 2048.0); // Chrominance Blue
+				Y2 = Y1;
+				Cr = round(((coeffs_div.z * float(srcR) - (coeffs_num.y/coeffs_div.y) * float(srcG) - (coeffs_num.z/coeffs_div.y) * float(srcB)) * 2.0 * 224.0/219.0)/2.0 + 2048.0); // Chrominance Red
 				a = 1.0;
 				/* Pack YUV for tunneling -- to do?? */
 			
 
 				/* Pack Dolby As RGB */
-				R1 = int(Cb) >> 4;  
-				G1 = int(Y1) >> 4;
-				B1 = int(Y1) & 15 | ((int(Cb) & 15) << 4);
-				R2 = int(Cr) >> 4;  
-				G2 = int(Y2) >> 4;
-				B2 = int(Y2) & 15 | ((int(Cr) & 15) << 4);	
+				int Y1Code = clamp(int(Y1), 0, 4095);
+				int Y2Code = clamp(int(Y2), 0, 4095);
+				int CbCode = clamp(int(Cb), 0, 4095);
+				int CrCode = clamp(int(Cr), 0, 4095);
+				R1 = CbCode >> 4;
+				G1 = Y1Code >> 4;
+				B1 = (Y1Code & 15) | ((CbCode & 15) << 4);
+				R2 = CrCode >> 4;
+				G2 = Y2Code >> 4;
+				B2 = (Y2Code & 15) | ((CrCode & 15) << 4);
 				
 				//even
 				if(mod(gl_FragCoord.x,2.0)<1.0) {
@@ -1986,7 +2017,14 @@ void ofxRPI4Window::dovi_pattern_shader()
 	)";
 		
 	
-	shader.setup(settings);	
+	if (!shader.setup(settings))
+		throw std::runtime_error("PGenerator DV pattern shader failed to link");
+	for (const char *name : {"source_rgb", "source_max"}) {
+		if (shader.getUniformLocation(name) < 0) {
+			ofLogError("PGenerator") << "DV shader missing required uniform: " << name;
+			throw std::runtime_error("PGenerator DV shader input missing");
+		}
+	}
 //	dovi_shader.setup(settings);
 }
 
@@ -2300,11 +2338,12 @@ void ofxRPI4Window::HDRWindowSetup()
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
 		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
-
+		if (usesColourShader()) {
 			rgb2ycbcr_shader();
+			shader_init = 0; // Ready in this context before the first draw.
 		}
-		if (is_std_DoVi && shader_init) {
+		if (is_std_DoVi) {
+			shader_init = 1;
 			if (colorspace_on) {
 				dovi_pattern_shader();
 			} else {
@@ -2844,12 +2883,13 @@ int ret;
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
 		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
-
+		if (usesColourShader()) {
 			rgb2ycbcr_shader();
+			shader_init = 0; // Ready in this context before the first draw.
 
 		}
-		if (is_std_DoVi && shader_init) {
+		if (is_std_DoVi) {
+			shader_init = 1;
 			if (colorspace_on) {
 				dovi_pattern_shader();
 			} else {

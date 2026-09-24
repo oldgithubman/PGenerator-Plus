@@ -534,8 +534,9 @@ sub pattern_generator_start(@) {
  }
  # Treat restart as the transaction boundary for classic clients which write
  # mode flags one command at a time. In particular this turns HCFR 4.1's
- # contradictory DV flag bundle into one coherent Standard- or Low-Latency-DV
- # configuration before choosing PGeneratord vs PGeneratord.dv.
+ # contradictory DV flag bundle into one coherent Standard-DV configuration
+ # (LLDV is retired; see pg_dv_transport_mode()) before choosing PGeneratord
+ # vs PGeneratord.dv.
  &normalize_signal_mode_conf();
  &auto_select_4k_mode();
  &apply_drm_properties();

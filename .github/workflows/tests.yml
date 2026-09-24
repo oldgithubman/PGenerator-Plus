@@ -25,7 +25,7 @@ jobs:
         # loads the helper both need it. Everything else it uses is core.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libio-socket-ssl-perl
+          sudo apt-get install -y --no-install-recommends libio-socket-ssl-perl libegl1 libgles2 libgl1-mesa-dri g++
       - name: Syntax-check the AutoCal workers
         run: |
           perl -c usr/bin/meter_lg_autocal.pl
@@ -66,6 +66,8 @@ jobs:
           printf 'int main(){return 0;}\n' > /tmp/cxx_probe.cpp
           c++ -std=c++11 -O0 /tmp/cxx_probe.cpp -o /tmp/cxx_probe
       - name: Run the test suite
+        env:
+          PGEN_REQUIRE_SHADER_TESTS: '1'
         run: prove -v t/
 
   browser:
@@ -85,10 +87,12 @@ jobs:
           node t/browser/automation_activity.cjs
           node t/browser/automation_progress.cjs
           node t/browser/automation_history.cjs
+          node t/browser/automation_history_titles.cjs
           node t/browser/automation_refresh.cjs
           node t/browser/automation_report_refresh.cjs
           node t/browser/automation_table_follow.cjs
           node t/browser/automation_editor.cjs
+          node t/browser/automation_stale_edit_draft.cjs
           node t/browser/automation_settings_plan.cjs
           node t/browser/automation_review_fixes.cjs
           node t/browser/automation_dismiss_readiness.cjs

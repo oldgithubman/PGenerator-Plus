@@ -71,13 +71,10 @@ like(idle_pattern_text(), qr/^SOURCE_MAX=1023$/m,'and SOURCE_MAX=1023');
 conf(max_bpc => 8);
 like(idle_pattern_text(), qr/^BITS=8$/m,         '8 bpc seeds BITS=8');
 like(idle_pattern_text(), qr/^SOURCE_MAX=255$/m, 'and SOURCE_MAX=255');
-# ofApp::setBackground() branches on bit_depth == 10 and otherwise falls back to
-# its 8-bit path -- it has no 12-bit encoding, so a seeded BITS=12 leaves the
-# idle background unconverted and green (measured 6.9 nits at CIE 0.273,0.673 on
-# a 12 bpc HDR10 4:4:4 link, against 0.000 nits with BITS=10). Draw through the
-# 10-bit path; the first real pattern restores the link depth.
+# Older renderers lack 12-bit background encoding. Keep their black idle seed
+# on the 10-bit path; the first real pattern restores the requested link depth.
 conf(max_bpc => 12);
-like(idle_pattern_text(), qr/^BITS=10$/m, '12 bpc draws through the 10-bit path, which is the only one that encodes');
+like(idle_pattern_text(), qr/^BITS=10$/m, '12 bpc idle seed stays compatible with older renderers');
 
 # --- Dolby Vision authors the tunnel, not plain RGB ---
 # Standard DV keeps the 8-bit framebuffer while its shader consumes 12-bit

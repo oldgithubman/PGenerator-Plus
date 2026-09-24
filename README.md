@@ -215,7 +215,7 @@ make
 | **SDR**                        | Standard Dynamic Range (Rec.709), 8-bit                                |
 | **HDR10**                      | Static HDR with PQ (ST.2084) EOTF, 10-bit, full DRM InfoFrame metadata |
 | **HLG**                        | Hybrid Log-Gamma for broadcast HDR, 10-bit                             |
-| **Dolby Vision (Low Latency)** | LLDV with RPU metadata, 12-bit — recommended for DV calibration       |
+| **Dolby Vision**               | Standard DV with RPU metadata; 12-bit source codes through the tunnel — recommended for DV calibration |
 
 The Raspberry Pi 4's KMS driver is used to set HDMI InfoFrames directly:
 
@@ -291,7 +291,7 @@ Complete control over the HDMI output parameters, InfoFrames, and DRMs without n
 - **Custom Resolutions:** Auto-detects available modes from the connected display's EDID.
 - **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), and Bit Depth (8/10/12-bit).
 - **HDR10 Metadata:** When HDR10 is active, take full control over the DRM InfoFrame (EOTF, Mastering Primaries, Max/Min Luma, MaxCLL, and MaxFALL).
-- **Dolby Vision Metadata:** Dolby Vision Low Latency (LLDV) is supported, configure specific DOVI Interface, Color Space, and Metadata details.
+- **Dolby Vision Metadata:** Standard Dolby Vision is supported; configure the DOVI Interface, Color Space, and Metadata details.
 
 #### Manual Pattern Injection
 

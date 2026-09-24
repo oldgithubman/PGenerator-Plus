@@ -76,6 +76,12 @@ our $WORKER_MANIFEST_INTERVAL = 60;
 # action re-probes it; any LG connection failure drops it immediately.
 my $LG_STATUS_CACHE_SECONDS = 10;
 my $LG_STATUS_HEALTHY_AT = 0;
+# Set when a reconnect has failed once Stop/failure cleanup has started
+# (_stop_active, then the TPC/GSR and hazard restore after it). Each reconnect
+# to a TV that does not answer costs about a minute, so the rest of that cleanup
+# sends its LG requests without reconnecting first instead of retrying per call.
+# Normal end-of-batch restoration runs without $STOP_HANDLED and is not affected.
+my $LG_CLEANUP_UNREACHABLE = 0;
 # Settings passes whose pre-read is known to be pointless: a full SDR picture
 # reset has just restored factory values, so c4 must write regardless.
 my %SKIP_PREREAD;
@@ -521,6 +527,20 @@ sub _api_once_impl {
 
 sub _ensure_lg_connection {
     my ($force) = @_;
+    # _stop_active() runs once per runner; after it only cleanup follows.
+    my $stop_cleanup = $STOP_HANDLED ? 1 : 0;
+    return 0 if $stop_cleanup && $LG_CLEANUP_UNREACHABLE;
+    my $ok = _reconnect_lg($force);
+    if (!$ok && $stop_cleanup) {
+        $LG_CLEANUP_UNREACHABLE = 1;
+        _log('the paired LG TV did not answer during cleanup; skipping further LG reconnects for this cleanup: '
+            . ($::LAST_ERROR || 'unknown error'));
+    }
+    return $ok;
+}
+
+sub _reconnect_lg {
+    my ($force) = @_;
     return 1 if !$force && $LG_STATUS_HEALTHY_AT
         && time() - $LG_STATUS_HEALTHY_AT < $LG_STATUS_CACHE_SECONDS;
     $LG_STATUS_HEALTHY_AT = 0;
@@ -560,6 +580,8 @@ sub _lg_action_path {
     my ($path) = @_;
     return 0 if !defined($path) || $path !~ m{\A/api/lg/};
     return 0 if $path =~ m{\A/api/lg/(?:status|connect|disconnect)\z};
+    # Stopping the DV worker signals a local process; it never reaches the TV.
+    return 0 if $path =~ m{\A/api/lg/dv-profile/(?:stop|kill)\z};
     return 1;
 }
 
@@ -731,7 +753,8 @@ sub _api {
     my $attempt = 0;
     # LG reconnects stay enabled while stopping or restoring preflight
     # context: those paths must reach the TV to release ownership, and the
-    # retry is bounded (three pairing refreshes), so a transient websocket
+    # retry is bounded (three pairing refreshes, and none once a Stop/failure
+    # cleanup reconnect has failed; see $LG_CLEANUP_UNREACHABLE), so a transient websocket
     # refusal right after a picture-mode switch no longer turns a fully
     # checked queue into a "cleanup required" interruption.
     my $lg_preflighted = 0;
@@ -3154,6 +3177,13 @@ sub _calibration_greyscale_stage {
         return 0;
     }
     _clear_active_worker();
+    # The greyscale worker reports an unknown outcome (a near-black patch it
+    # could not measure and left uncorrected) as a processing warning; lift it
+    # onto the item as the 3D stage does, so the item finishes
+    # complete-with-warnings instead of reading as fully converged.
+    for my $warning (@{$grey->{automation_processing_warnings} || []}) {
+        push @{$item->{warnings}}, $warning if !grep {$_ eq $warning} @{$item->{warnings}||[]};
+    }
     my $verified = $grey->{ddc_upload_verified} || $grey->{final_1d_lut_upload_verified};
     return {verified => $verified ? JSON::PP::true : 'unverifiable',
         timing_curve => $grey->{timing_curve},
@@ -3951,6 +3981,7 @@ sub _stop_active {
     my ($parking) = @_;
     return if $STOP_HANDLED++;
     $STOPPING = 1;
+    $LG_CLEANUP_UNREACHABLE = 0;
     $CLEANUP_DEADLINE = time() + $CLEANUP_RETRY_BUDGET;
     _keep_current_mode_on_stop(_current_mode_stop_requested() ? 'stop' : 'failure') if !$parking;
     # Journal an unfinished cleanup before issuing device commands. A process
@@ -4042,7 +4073,9 @@ sub _stop_active {
     if (_run()->{preflight_restore_required} && !_restore_preflight_context()) {
         _log_action('Preflight restoration still requires cleanup: '.($::LAST_ERROR||'unconfirmed'));
     }
-    my $visible=_api('POST','/api/pattern',{name=>'gray50'},1,_cleanup_window());
+    # End on the idle frame (black, or stabilisation when a meter is set up for
+    # it) so the idle information card can take over once the delay passes.
+    my $visible=_api('POST','/api/pattern',{name=>'stop'},1,_cleanup_window());
     _log_action('Stop idle pattern: '.($visible->{status}||'unavailable'));
     $STOPPING = 0;
 }
@@ -4936,8 +4969,8 @@ sub _restore_preflight_context {
             if ($switched && $now_signal ne '') {
                 $ACTIVE_ITEM=$context->{modes}{$now_signal}||$context->{original};
                 _preflight_wait_config($last,_api('POST','/api/config',$last,1,0));
-                my $pattern=_api('POST','/api/pattern',{name=>'gray50',signal_mode=>$now_signal},1,0);
-                die 'Unable to display neutral pattern after preflight restoration' if !_response_ok($pattern);
+                my $pattern=_api('POST','/api/pattern',{name=>'stop',signal_mode=>$now_signal},1,0);
+                die 'Unable to display the idle pattern after preflight restoration' if !_response_ok($pattern);
             }
             die 'Unable to persist completed context restoration' if !ref(_update_run(sub {
                 $_[0]{$flag}=JSON::PP::false;
@@ -4949,8 +4982,8 @@ sub _restore_preflight_context {
         }
         $ACTIVE_ITEM=$context->{original};
         _preflight_wait_config($context->{config},_api('POST','/api/config',$context->{config},1,0));
-        my $pattern=_api('POST','/api/pattern',{name=>'gray50',signal_mode=>$context->{config}{signal_mode}},1,0);
-        die 'Unable to display neutral pattern after preflight restoration' if !_response_ok($pattern);
+        my $pattern=_api('POST','/api/pattern',{name=>'stop',signal_mode=>$context->{config}{signal_mode}},1,0);
+        die 'Unable to display the idle pattern after preflight restoration' if !_response_ok($pattern);
         my $final_signal=$context->{config}{signal_mode};
         my $live=eval { _preflight_read_mode($final_signal,$context->{mode_readback_unavailable}) };
         $confirm_identity->($context->{original},$final_signal,undef,$@||"No independent current-mode response\n") if ref($live) ne 'HASH';
@@ -4986,7 +5019,7 @@ sub _restore_preflight_context {
         $ACTIVE_ITEM=$context->{original};
         my $output_restored=eval {
             _preflight_wait_config($context->{config},_api('POST','/api/config',$context->{config},1,0));
-            _api('POST','/api/pattern',{name=>'gray50',signal_mode=>$context->{config}{signal_mode}},1,0);
+            _api('POST','/api/pattern',{name=>'stop',signal_mode=>$context->{config}{signal_mode}},1,0);
             1;
         };
         my $warning="Original picture modes were not restored because $identity_changed since the batch started. Check each signal's picture mode on the TV."

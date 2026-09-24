@@ -1,4 +1,5 @@
 #include "ofxRPI4Window.h"
+#include <stdexcept>
 #include "igt_edid.h"
 
 #include <fcntl.h>
@@ -1824,7 +1825,8 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 	settings.shaderSources[GL_FRAGMENT_SHADER] = R"(
 		#version 310 es
 		precision highp float;
-		uniform vec4 globalColor;
+		uniform highp ivec3 source_codes;
+		uniform int source_normalizer;
 
 		uniform int color_format;
 
@@ -1836,7 +1838,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		uniform int normalizer;
 		uniform int rgb_quant_range;
 		uniform int bits;
-		uniform int passthrough_422;
 		uniform vec3 coeffs_num;
 		uniform vec3 coeffs_div;
 		uniform sampler2D tex0;
@@ -1844,15 +1845,21 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		in vec2 texCoordVarying;
 		out vec4 outputColor;
 		
-		vec4 RGBtoYCbCr(vec4 rgb)
+		float roundCode(float code) {
+			return is_image == 1 ? round(code) : floor(code + 0.5);
+		}
+
+		vec4 RGBtoYCbCr(vec4 rgb, bool solid)
 		{
-			if (color_format == 2 && passthrough_422 == 1) {
-				return rgb;
+			// Solid inputs are link-depth codes, already range-normalized by the app.
+			vec3 codes = solid ? vec3(source_codes) : rgb.rgb * float(scale);
+			if (color_format == 0) {
+				return solid ? vec4(codes / float(source_normalizer), 1.0) : rgb;
 			}
 			float Y, Cb, Cr, a;
-			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
-			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
-			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
+			Y = roundCode(coeffs_num.x * codes.r + coeffs_num.y* codes.g + coeffs_num.z * codes.b);
+			Cb = roundCode(((-coeffs_num.x/coeffs_div.x) * codes.r - (coeffs_num.y/coeffs_div.x) * codes.g + coeffs_div.z * codes.b)*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
+			Cr = roundCode((coeffs_div.z * codes.r - (coeffs_num.y/coeffs_div.y) * codes.g - (coeffs_num.z/coeffs_div.y) * codes.b)*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
 			a = 1.0;
 
 
@@ -1879,14 +1886,21 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		void main() {
 			if (is_image == 1) {
 				vec4 color = texture(tex0, texCoordVarying);
-				outputColor = RGBtoYCbCr(color.rgba);
+				outputColor = RGBtoYCbCr(color.rgba, false);
 			} else {
-				outputColor = RGBtoYCbCr(globalColor.rgba);
+				outputColor = RGBtoYCbCr(vec4(1.0), true);
 			}
 		}
 		
 	)";
-	shader.setup(settings);	
+	if (!shader.setup(settings))
+		throw std::runtime_error("PGenerator colour shader failed to link");
+	for (const char *name : {"source_codes", "source_normalizer", "is_image"}) {
+		if (shader.getUniformLocation(name) < 0) {
+			ofLogError("PGenerator") << "Colour shader missing required uniform: " << name;
+			throw std::runtime_error("PGenerator colour shader input missing");
+		}
+	}
 }
 #endif
 #if 0
@@ -2160,7 +2174,14 @@ void ofxRPI4Window::dovi_pattern_shader()
 	)";
 		
 	
-	shader.setup(settings);	
+	if (!shader.setup(settings))
+		throw std::runtime_error("PGenerator DV pattern shader failed to link");
+	for (const char *name : {"source_rgb", "source_max"}) {
+		if (shader.getUniformLocation(name) < 0) {
+			ofLogError("PGenerator") << "DV shader missing required uniform: " << name;
+			throw std::runtime_error("PGenerator DV shader input missing");
+		}
+	}
 //	dovi_shader.setup(settings);
 }
 
@@ -2489,11 +2510,12 @@ void ofxRPI4Window::HDRWindowSetup()
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
 		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
-
+		if (usesColourShader()) {
 			rgb2ycbcr_shader();
+			shader_init = 0; // Ready in this context before the first draw.
 		}
-		if (is_std_DoVi && shader_init) {
+		if (is_std_DoVi) {
+			shader_init = 1;
 			if (colorspace_on) {
 				dovi_pattern_shader();
 			} else {
@@ -3035,12 +3057,13 @@ int ret;
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
 		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
-
+		if (usesColourShader()) {
 			rgb2ycbcr_shader();
+			shader_init = 0; // Ready in this context before the first draw.
 
 		}
-		if (is_std_DoVi && shader_init) {
+		if (is_std_DoVi) {
+			shader_init = 1;
 			if (colorspace_on) {
 				dovi_pattern_shader();
 			} else {

@@ -55,6 +55,8 @@ class ofApp : public ofBaseApp{
   int bits;
   int source_max=255;
   int source_range=0;
+  int solid_red=0, solid_green=0, solid_blue=0;
+  float background_color[4]={0,0,0,1};
   int dv_source_red=0;
   int dv_source_green=0;
   int dv_source_blue=0;
@@ -133,6 +135,8 @@ class ofApp : public ofBaseApp{
   /* Start Patch For RPI 4 */
   void setColor(int red, int green, int blue);
   void setBackground(int redbg, int greenbg, int bluebg);
+  void clearBackground(int red, int green, int blue, int maximum);
+  void restoreBackground();
   int normalizeSourceValue(int value, int source_range_mode);
   void normalizeImageSourcePixels(int source_range_mode);
   void setDoViBackground(int redbg, int greenbg, int bluebg);
