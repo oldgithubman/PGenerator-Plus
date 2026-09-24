@@ -14686,14 +14686,140 @@ sub webui_automation_listing_run (@) {
  return $row;
 }
 
+# Where the LG greyscale worker archives restorable 1D curves (lg.pm keeps its
+# own copy of this path). A variable so tests can point it at a fixture.
+our $WEBUI_CAL_HIST_1D_DIR="/var/lib/PGenerator/lg/calibration-history/1d";
+
+# Named top-level scalars from a worker state, without decoding it: JSON::PP
+# reads about 100 KB/s on the appliance and a state is 100-200 KB. Every key
+# asked for occurs once per file in the appliance's 31 saved runs (23 Sep
+# 2026); a key seen twice is nested somewhere and is left unknown.
+sub webui_automation_state_scalars (@) {
+ my ($path,@keys)=@_;
+ my %found;
+ return \%found if(!defined($path) || !-f $path || !open(my $fh,"<",$path));
+ my $raw=do { local $/; <$fh> };
+ close($fh);
+ return \%found if(!defined($raw));
+ foreach my $key (@keys) {
+  my @hits=($raw=~/"\Q$key\E"\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9][0-9.eE+-]*|true|false|null)/g);
+  next if(@hits != 1 || $hits[0] eq "null");
+  my $value=$hits[0];
+  if($value=~/\A"(.*)"\z/s) { $value=$1; $value=~s/\\(.)/$1/g; }
+  elsif($value eq "true") { $value=1; }
+  elsif($value eq "false") { $value=0; }
+  $found{$key}=$value;
+ }
+ return \%found;
+}
+
+# The fields that tie each archived 1D curve to a run. Each file holds a
+# 3,072-value curve, so it is scanned, not decoded.
+sub webui_automation_cal_hist_1d_index (@) {
+ my @entries;
+ return \@entries if(!opendir(my $dh,$WEBUI_CAL_HIST_1D_DIR));
+ foreach my $file (sort grep { /\A[A-Za-z0-9._-]+\.json\z/ } readdir($dh)) {
+  my $meta=&webui_automation_state_scalars("$WEBUI_CAL_HIST_1D_DIR/$file",qw(id picture_mode signal_mode variant archived_at source_run));
+  (my $base=$file)=~s/\.json\z//;
+  push @entries,{id=>$meta->{id}||"1dfile:$base",picture_mode=>$meta->{picture_mode}||"",signal_mode=>$meta->{signal_mode}||"",
+   variant=>$meta->{variant}||"",archived_at=>($meta->{archived_at}||0)+0,source_run=>$meta->{source_run}||""};
+ }
+ closedir($dh);
+ return \@entries;
+}
+
+# What a History row says about one job without the browser opening its
+# files: target, stages, outcome, headline greyscale result, and the LG
+# Calibration History entries it produced.
+sub webui_automation_job_digest (@) {
+ my ($run,$index,$archives)=@_;
+ my $item=ref($run->{items}) eq "ARRAY" ? $run->{items}[$index] : undef;
+ return undef if(ref($item) ne "HASH");
+ my $dir=PGAutomation::run_dir($run->{id})."/items/".int($index);
+ my $stages=ref($item->{stages}) eq "HASH" ? $item->{stages} : {};
+ # Unset stages take the editor's defaults: calibrate and apply, no sweeps.
+ my @stages=grep { defined($stages->{$_}) ? $stages->{$_} : ($_ eq "calibration" || $_ eq "apply_all") } qw(pre_readings calibration apply_all post_readings);
+ my %checkpoint=map { (($_->{name}||"")=>$_) } grep { ref($_) eq "HASH" } @{$item->{checkpoints}||[]};
+ my $done=sub { my $c=$checkpoint{$_[0]}; return ref($c) eq "HASH" && ($c->{status}||"") eq "done" ? 1 : 0; };
+ my $grey=&webui_automation_state_scalars("$dir/calibration/grey-state.json",
+  qw(hdr20_1d_dpg_final_de sdr_1d_dpg_final_de delta_e_formula final_1d_lut_uploaded hdr20_1d_tonemap_peak_luminance calibrated_white_luminance));
+ my $three=&webui_automation_state_scalars("$dir/calibration/3d-state.json",qw(upload_status tone_map_upload_peak_luminance));
+ my $signal=lc($item->{signal_format}||"");
+ # The final committed dE, not the best one seen: it describes the curve left
+ # on the TV. HDR10, HLG and DV greyscales all run the HDR20 solver.
+ my $de=$signal eq "sdr" ? $grey->{sdr_1d_dpg_final_de} : $grey->{hdr20_1d_dpg_final_de};
+ $de=$grey->{hdr20_1d_dpg_final_de}//$grey->{sdr_1d_dpg_final_de} if(!defined($de));
+ # SDR has no tone-map peak; its calibrated white is the brightest it shows.
+ my $peak=$grey->{hdr20_1d_tonemap_peak_luminance}//$three->{tone_map_upload_peak_luminance}//$grey->{calibrated_white_luminance};
+ my @luts=glob("$dir/calibration/*.bin");
+ my @post=glob("$dir/post/*.json");
+ my @artifacts=map { my $base=(split m{/},$_)[-1]; $base=~s/\.bin\z//; {id=>"3d:$base",type=>"3d"} } sort @luts;
+ # Checkpoint times bound the job, so an archive written before the run ID
+ # was recorded (the 3D worker's final smoothing, before 24 Sep 2026) can
+ # still be matched by time and picture mode. Such a match is flagged.
+ my $started=ref($checkpoint{"item-started"}) eq "HASH" ? $checkpoint{"item-started"}{completed_at} : undef;
+ $started=$run->{started_at}||$run->{created_at} if(!$started);
+ my $ended=ref($checkpoint{"item-complete"}) eq "HASH" ? $checkpoint{"item-complete"}{completed_at} : undef;
+ $ended=$run->{completed_at} if(!$ended);
+ foreach my $entry (@{$archives||[]}) {
+  next if($entry->{picture_mode} ne ($item->{picture_mode}||""));
+  my $inferred=0;
+  if($entry->{source_run} eq "") {
+   next if(!$started || !$ended || $entry->{archived_at} < $started || $entry->{archived_at} > $ended+120);
+   next if($entry->{signal_mode} ne "" && $signal ne "" && $entry->{signal_mode} ne $signal);
+   $inferred=1;
+  } elsif($entry->{source_run} ne ($run->{id}||"")) {
+   next;
+  }
+  push @artifacts,{id=>$entry->{id},type=>"1d",variant=>$entry->{variant},inferred=>$inferred};
+ }
+ my $digest={
+  name=>$item->{name}||"",signal=>$signal,picture_mode=>$item->{picture_mode}||"",tv_input=>$item->{tv_input}||"",
+  stages=>\@stages,status=>$item->{status}||"not-started",
+  lut_1d=>($grey->{final_1d_lut_uploaded} || $done->("greyscale-done")) ? 1 : 0,
+  lut_3d=>(@luts || ($three->{upload_status}||"") eq "ok") ? 1 : 0,
+  post_readings=>scalar(@post),artifacts=>\@artifacts,
+ };
+ my $number=sub { return defined($_[0]) && $_[0]=~/\A-?[0-9.]+(?:[eE][+-]?[0-9]+)?\z/ ? 1 : 0; };
+ $digest->{de}=$de+0 if($number->($de));
+ $digest->{formula}=lc($grey->{delta_e_formula}||$item->{delta_e_formula}||(ref($item->{calibration}) eq "HASH" ? $item->{calibration}{delta_e_formula} : "")||"");
+ $digest->{peak_nits}=$peak+0 if($number->($peak) && $peak > 0);
+ $digest->{started_at}=$started+0 if($started);
+ $digest->{completed_at}=$ended+0 if($ended);
+ return $digest;
+}
+
+sub webui_automation_run_jobs (@) {
+ my ($run,$archives)=@_;
+ return [] if(ref($run) ne "HASH" || ref($run->{items}) ne "ARRAY");
+ return [grep { ref($_) eq "HASH" } map { &webui_automation_job_digest($run,$_,$archives) } 0..$#{$run->{items}}];
+}
+
+# The part of the job digests the History row title uses. Kept small: the
+# list carries every run, and the full digests are fetched per run on demand.
+sub webui_automation_digest_brief (@) {
+ my ($jobs)=@_;
+ my $brief={job_count=>scalar(@$jobs),job_names=>[map { $_->{name} } grep { $_->{name} ne "" } @$jobs[0..($#$jobs < 2 ? $#$jobs : 2)]]};
+ if(@$jobs == 1) {
+  $brief->{$_}=$jobs->[0]{$_} foreach(grep { defined($jobs->[0]{$_}) } qw(status lut_1d lut_3d de formula));
+ }
+ return $brief;
+}
+
 # The format of the summary kept beside each manifest. A summary without
 # this version is replaced the first time History is listed: trimmed from
 # the old summary when that still matches the manifest, rebuilt from the
 # manifest otherwise.
-# 4: the row carries preflight_only (21 Sep 2026); 3: the row carries no items
-# (19 Sep 2026); 2 still carried the trimmed job list; 1 and unversioned
-# carried the whole public run.
-our $WEBUI_LISTING_CACHE_VERSION=4;
+# 5: the entry carries the job digests and the row a brief of them for its
+# title (24 Sep 2026); 4: the row carries preflight_only (21 Sep 2026); 3: the
+# row carries no items (19 Sep 2026); 2 still carried the trimmed job list; 1
+# and unversioned carried the whole public run.
+our $WEBUI_LISTING_CACHE_VERSION=5;
+# Seconds one listing may spend decoding manifests only to add job digests to
+# summaries that are otherwise current. The first listing after an update
+# would otherwise decode every run at once (about 1 s each on the appliance)
+# and outlast the browser's 30 s request; later listings finish the rest.
+our $WEBUI_LISTING_DIGEST_BUDGET=4;
 sub webui_automation_listing_upgrade (@) {
  my ($old)=@_;
  # Anything short of a row (no run id, a failure that is not a record) is
@@ -14738,8 +14864,13 @@ sub webui_automation_write_listing_cache (@) {
  return 1;
 }
 
-sub webui_automation_list_runs (@) {
- my @runs;
+# The cached entry for each run: {summary=>row, jobs=>digests}. An entry whose
+# digests are still to be built carries a trimmed row marked digest_pending
+# and no jobs.
+sub webui_automation_listing_entries (@) {
+ my @entries;
+ my $deadline=Time::HiRes::time()+$WEBUI_LISTING_DIGEST_BUDGET;
+ my $archives;
  foreach my $id (PGAutomation::list_run_ids()) {
   my $dir=PGAutomation::run_dir($id);
   my $key=&webui_automation_listing_key("$dir/run.json");
@@ -14748,30 +14879,83 @@ sub webui_automation_list_runs (@) {
   # nothing for an unchanged run on the next request.
   my $cached=PGAutomation::read_json_cached("$dir/listing-cache.json");
   if(ref($cached) eq "HASH" && ($cached->{version}||0)==$WEBUI_LISTING_CACHE_VERSION && ($cached->{key}||"") eq $key && ref($cached->{summary}) eq "HASH") {
-   push @runs,$cached->{summary};
+   push @entries,{summary=>$cached->{summary},jobs=>ref($cached->{jobs}) eq "ARRAY" ? $cached->{jobs} : []};
    next;
   }
   # A summary in any other format for this same manifest holds every row
-  # field (the row keys are a subset of every shape written so far). Trim
-  # it in place rather than decode the manifest again: 72 of them on the
-  # appliance would take minutes. One that does not hold a row is rebuilt
-  # from the manifest.
-  my $summary;
-  $summary=&webui_automation_listing_upgrade($cached->{summary})
+  # field (the row keys are a subset of every shape written so far), but no
+  # job digests, which need the manifest. Past the time budget the trimmed
+  # row is listed as it is and left on disk for a later listing to finish.
+  # One that does not hold a row is always rebuilt from the manifest, budget
+  # or not: without a row the run could not be listed at all. A wiped store
+  # therefore decodes every manifest in one listing, as it did before v5.
+  my $trimmed;
+  $trimmed=&webui_automation_listing_upgrade($cached->{summary})
    if(ref($cached) eq "HASH" && ($cached->{version}||0) != $WEBUI_LISTING_CACHE_VERSION && ($cached->{key}||"") eq $key && ref($cached->{summary}) eq "HASH");
-  if(ref($summary) ne "HASH") {
-   my $run=&webui_automation_read_run($id);
-   next if(ref($run) ne "HASH");
-   $summary=&webui_automation_listing_run($run);
+  if(ref($trimmed) eq "HASH" && Time::HiRes::time() >= $deadline) {
+   push @entries,{summary=>{%$trimmed,digest_pending=>1},jobs=>[]};
+   next;
   }
+  my $run=&webui_automation_read_run($id);
+  if(ref($run) ne "HASH") {
+   # An unreadable manifest keeps the row it already had.
+   push @entries,{summary=>{%$trimmed,digest_pending=>1},jobs=>[]} if(ref($trimmed) eq "HASH");
+   next;
+  }
+  my $summary=&webui_automation_listing_run($run);
   next if(ref($summary) ne "HASH");
-  push @runs,$summary;
+  $archives=&webui_automation_cal_hist_1d_index() if(!$archives);
+  my $jobs=&webui_automation_run_jobs($run,$archives);
+  $summary->{digest}=&webui_automation_digest_brief($jobs);
+  push @entries,{summary=>$summary,jobs=>$jobs};
   # Only cache what was read from the manifest version that was stat'ed.
-  &webui_automation_write_listing_cache($dir,{version=>$WEBUI_LISTING_CACHE_VERSION,key=>$key,summary=>$summary})
+  &webui_automation_write_listing_cache($dir,{version=>$WEBUI_LISTING_CACHE_VERSION,key=>$key,summary=>$summary,jobs=>$jobs})
    if(&webui_automation_listing_key("$dir/run.json") eq $key);
  }
- @runs=sort { ($b->{created_at}||0) <=> ($a->{created_at}||0) } @runs;
- return \@runs;
+ @entries=sort { ($b->{summary}{created_at}||0) <=> ($a->{summary}{created_at}||0) } @entries;
+ return \@entries;
+}
+
+sub webui_automation_list_runs (@) {
+ return [map { $_->{summary} } @{&webui_automation_listing_entries()}];
+}
+
+# One run's job digests for its expanded History row; a pending summary is
+# built here and cached for the list.
+sub webui_automation_run_digest (@) {
+ my ($id)=@_;
+ $id=PGAutomation::safe_component($id);
+ return undef if($id eq "");
+ my $dir=PGAutomation::run_dir($id);
+ my $key=&webui_automation_listing_key("$dir/run.json");
+ return undef if($key eq "");
+ my $cached=PGAutomation::read_json_cached("$dir/listing-cache.json");
+ return {status=>"ok",run_id=>$id,jobs=>$cached->{jobs}}
+  if(ref($cached) eq "HASH" && ($cached->{version}||0)==$WEBUI_LISTING_CACHE_VERSION && ($cached->{key}||"") eq $key && ref($cached->{jobs}) eq "ARRAY");
+ my $run=&webui_automation_read_run($id);
+ return undef if(ref($run) ne "HASH");
+ my $summary=&webui_automation_listing_run($run);
+ my $jobs=&webui_automation_run_jobs($run,&webui_automation_cal_hist_1d_index());
+ $summary->{digest}=&webui_automation_digest_brief($jobs);
+ &webui_automation_write_listing_cache($dir,{version=>$WEBUI_LISTING_CACHE_VERSION,key=>$key,summary=>$summary,jobs=>$jobs})
+  if(&webui_automation_listing_key("$dir/run.json") eq $key);
+ return {status=>"ok",run_id=>$id,jobs=>$jobs};
+}
+
+# LG Calibration History entry ID -> the run and job that produced it.
+sub webui_automation_artifact_links (@) {
+ my %links;
+ foreach my $entry (@{&webui_automation_listing_entries()}) {
+  my $summary=$entry->{summary};
+  foreach my $job (@{$entry->{jobs}}) {
+   foreach my $artifact (@{ref($job->{artifacts}) eq "ARRAY" ? $job->{artifacts} : []}) {
+    next if(ref($artifact) ne "HASH" || !$artifact->{id} || $links{$artifact->{id}});
+    $links{$artifact->{id}}={run_id=>$summary->{id},job=>$job->{name},created_at=>$summary->{created_at},
+     created_at_iso=>$summary->{created_at_iso},inferred=>$artifact->{inferred} ? 1 : 0};
+   }
+  }
+ }
+ return \%links;
 }
 
 sub webui_automation_shell_quote (@) {
@@ -16399,6 +16583,7 @@ sub webui_automation_api (@) {
  if($path eq '/api/automation/readiness/dismiss' && $method eq 'POST') { return &webui_automation_dismiss_readiness($payload); }
  if(($path eq "/api/automation/start" || $path eq "/api/automation/runs/start") && $method eq "POST") { return &webui_automation_start($payload); }
  if($path eq "/api/automation/runs" && $method eq "GET") { return &webui_automation_json({status=>"ok",runs=>&webui_automation_list_runs()}); }
+ if($path eq "/api/automation/artifact-links" && $method eq "GET") { return &webui_automation_json({status=>"ok",links=>&webui_automation_artifact_links()}); }
  if($path=~m{^/api/automation/runs/([^/]+)/queue$} && $method eq 'GET') {
   my $run=&webui_automation_run($1);
   return &webui_automation_error('Automation run not found','not-found') if(ref($run) ne 'HASH');
@@ -16446,6 +16631,11 @@ sub webui_automation_api (@) {
    }
   }
   return &webui_automation_json($reply);
+ }
+ if($path=~m{^/api/automation/runs/([^/]+)/digest$} && $method eq "GET") {
+  my $digest=&webui_automation_run_digest($1);
+  return &webui_automation_error("Automation run not found","not-found") if(ref($digest) ne "HASH");
+  return &webui_automation_json($digest);
  }
  if($path=~m{^/api/automation/runs/([^/]+)/jobs/(\d+)$} && $method eq "GET") {
   my $detail=&webui_automation_job_detail($1,$2);

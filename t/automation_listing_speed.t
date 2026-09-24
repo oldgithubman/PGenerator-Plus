@@ -69,12 +69,14 @@ require "$Bin/../usr/share/PGenerator/lg.pm";
  my $list=main::webui_automation_list_runs();
  is(scalar(@$list),70,'seventy runs are listed');
  is($list->[0]{queue_name},'Queue 70','newest first');
- is_deeply([sort keys %{$list->[0]}],[qw(completed_at created_at created_at_iso failure id preflight_only queue_name status)],'a run row holds what the History row renders and nothing of the jobs');
+ is_deeply([sort keys %{$list->[0]}],[qw(completed_at created_at created_at_iso digest failure id preflight_only queue_name status)],'a run row holds what the History row renders and nothing of the jobs');
+ # The title brief names at most three jobs, whatever the queue holds.
+ is_deeply($list->[0]{digest},{job_count=>6,job_names=>['Job 0','Job 1','Job 2']},'a six-job run is briefed as a count and three names');
  is_deeply($list->[0]{failure},{stage=>'post-readings-done',message=>'Meter read failed',error_code=>'meter-read'},'the failure keeps its stage, message and code');
  my $public=main::webui_automation_public_run(PGAutomation::read_json_file(PGAutomation::run_dir('run-70').'/run.json'));
  # preflight_only is normalized to 0/1 on the row: it is re-encoded into the
  # listing cache, where a JSON boolean would survive as a blessed object.
- is_deeply($list->[0],{(map { ($_=>$public->{$_}) } qw(id queue_name status created_at created_at_iso completed_at failure)),preflight_only=>($public->{preflight_only}?1:0)},'a row says what the live view says of the run');
+ is_deeply($list->[0],{(map { ($_=>$public->{$_}) } qw(id queue_name status created_at created_at_iso completed_at failure)),preflight_only=>($public->{preflight_only}?1:0),digest=>$list->[0]{digest}},'a row says what the live view says of the run');
  my $bytes=length(PGAutomation::encode_json({status=>'ok',runs=>$list}));
  cmp_ok($bytes,'<',60000,"seventy six-job runs list under 60 KB ($bytes)");
  my $cache=PGAutomation::read_json_file(PGAutomation::run_dir('run-01').'/listing-cache.json');
@@ -103,14 +105,27 @@ require "$Bin/../usr/share/PGenerator/lg.pm";
  PGAutomation::write_json_atomic(PGAutomation::run_dir('run-02').'/listing-cache.json',{key=>'older',summary=>$old});
  my $reads=0;my $real=\&main::webui_automation_read_run;
  {
+  # Past the digest budget an old summary for the same manifest is trimmed,
+  # listed and left on disk; only the changed manifest is decoded.
+  local $main::WEBUI_LISTING_DIGEST_BUDGET=0;
   local *main::webui_automation_read_run=sub {$reads++;$real->(@_)};
   my %by_id=map {($_->{id}=>$_)} @{main::webui_automation_list_runs()};
-  is($reads,1,'only the summary for a changed manifest is rebuilt from the manifest');
-  is_deeply($by_id{'run-01'},$list->[-1],'a first-format summary is trimmed in place to the row fields');
-  is_deeply($by_id{'run-02'},$list->[-2],'the rebuilt one carries the same');
+  is($reads,1,'past the budget only the summary for a changed manifest is rebuilt from the manifest');
+  my %row=%{$list->[-1]};delete $row{digest};
+  is_deeply($by_id{'run-01'},{%row,digest_pending=>1},'a first-format summary is trimmed to the row fields and marked pending');
+  is_deeply($by_id{'run-02'},$list->[-2],'the rebuilt one carries the digest');
+  ok(!exists PGAutomation::read_json_file(PGAutomation::run_dir('run-01').'/listing-cache.json')->{version},'a pending row does not replace the old summary');
+ }
+ {
+  # Within the budget the old summary is replaced by a full one.
+  local *main::webui_automation_read_run=sub {$reads++;$real->(@_)};
+  $reads=0;
+  my %by_id=map {($_->{id}=>$_)} @{main::webui_automation_list_runs()};
+  is($reads,1,'within the budget the pending summary is completed from its manifest');
+  is_deeply($by_id{'run-01'},$list->[-1],'and lists exactly as a fresh one');
  }
  is(PGAutomation::read_json_file(PGAutomation::run_dir('run-01').'/listing-cache.json')->{version},$main::WEBUI_LISTING_CACHE_VERSION,'the trimmed summary replaces the old one on disk');
- cmp_ok(-s PGAutomation::run_dir('run-01').'/listing-cache.json','<',2000,'and is a fraction of its size');
+ cmp_ok(-s PGAutomation::run_dir('run-01').'/listing-cache.json','<',4000,'and is a fraction of its size, six job digests included');
  # A first-format summary that does not hold a row is rebuilt from the manifest.
  my $key3=main::webui_automation_listing_key(PGAutomation::run_dir('run-03').'/run.json');
  PGAutomation::write_json_atomic(PGAutomation::run_dir('run-03').'/listing-cache.json',{key=>$key3,summary=>{%$old,id=>''}});
@@ -241,8 +256,9 @@ require "$Bin/../usr/share/PGenerator/lg.pm";
  is($invalid->{status},'blocked','an invalid queue still refuses the start immediately');
  is($tv,0,'and neither refusal talks to the TV');
 }
-# A version-2 row (still carrying the trimmed job list) is upgraded in place
-# to the current shape without a manifest read.
+# A version-2 row (still carrying the trimmed job list) is trimmed in place to
+# the current row shape; past the digest budget it is listed without a
+# manifest read, and within it the manifest completes the summary.
 {
  local $ENV{PGEN_AUTOMATION_DIR}=tempdir(CLEANUP=>1);
  PGAutomation::ensure_store();
@@ -253,12 +269,23 @@ require "$Bin/../usr/share/PGenerator/lg.pm";
   summary=>{id=>'run-v2',queue_name=>'Version two',status=>'complete',created_at=>1,items=>[{name=>'fat job',status=>'complete',settings=>{brightness=>50}}]}},0644);
  my $decoded=0;
  no warnings 'redefine';
- local *main::webui_automation_read_run=sub { $decoded++; return undef; };
- my $runs=main::webui_automation_list_runs();
- my ($row)=grep { ($_->{id}||'') eq 'run-v2' } @$runs;
- ok($row && !exists($row->{items}),'a version-2 row loses its job list on the next listing');
- is($row->{queue_name},'Version two','and keeps the fields the row renders');
- is($decoded,0,'without decoding the manifest');
+ {
+  local $main::WEBUI_LISTING_DIGEST_BUDGET=0;
+  local *main::webui_automation_read_run=sub { $decoded++; return undef; };
+  my ($row)=grep { ($_->{id}||'') eq 'run-v2' } @{main::webui_automation_list_runs()};
+  ok($row && !exists($row->{items}),'a version-2 row loses its job list on the next listing');
+  is($row->{queue_name},'Version two','and keeps the fields the row renders');
+  is($decoded,0,'without decoding the manifest past the budget');
+  ok($row->{digest_pending},'and is marked as awaiting its digest');
+ }
+ {
+  local *main::webui_automation_read_run=sub { $decoded++; return undef; };
+  my ($row)=grep { ($_->{id}||'') eq 'run-v2' } @{main::webui_automation_list_runs()};
+  is($decoded,1,'within the budget the manifest is read');
+  is($row->{queue_name},'Version two','and an unreadable one still leaves the old row listed');
+ }
+ my ($row)=grep { ($_->{id}||'') eq 'run-v2' } @{main::webui_automation_list_runs()};
+ is_deeply($row->{digest},{job_count=>1,job_names=>['fat job'],status=>'complete',lut_1d=>0,lut_3d=>0,formula=>''},'a readable manifest completes the digest');
  my $rewritten=PGAutomation::read_json_file("$dir/listing-cache.json");
  is($rewritten->{version},$main::WEBUI_LISTING_CACHE_VERSION,'and the cache is rewritten at the current version');
 }

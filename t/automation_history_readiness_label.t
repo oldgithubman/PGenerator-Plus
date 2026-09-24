@@ -69,6 +69,8 @@ is($row{'run-check'}{status},$row{'run-cal'}{status},
  PGAutomation::write_json_atomic("$dir/listing-cache.json",{version=>3,key=>$key,
   summary=>{id=>'run-check',queue_name=>'TV calibration queue',status=>'complete',created_at=>1}});
  my $reads=0;my $real=\&main::webui_automation_read_run;
+ # Past the digest budget, which bounds the manifests one listing decodes.
+ local $main::WEBUI_LISTING_DIGEST_BUDGET=0;
  local *main::webui_automation_read_run=sub {$reads++;$real->(@_)};
  my ($again)=grep { $_->{id} eq 'run-check' } @{main::webui_automation_list_runs()};
  is($reads,0,'a stale pre-v4 summary is trimmed without decoding the manifest');

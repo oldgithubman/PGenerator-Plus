@@ -6321,7 +6321,9 @@ eval {
      # the pre-smoothing curve, so both ends of the change stay recoverable.
      archive_history => json_true(),
      archive_variant => "smoothed",
-     archive_run_id => ($config->{"run_id"}||""),
+     # Automation starts this worker with full_autocal_run_id only; reading
+     # run_id alone archived every smoothed curve with an empty source_run.
+     archive_run_id => ($config->{"full_autocal_run_id"}||$config->{"run_id"}||""),
     },120);
     preserve_unconfirmed_lg_calibration_session($state,$smooth_resp,"Final 1D DPG smoothing write");
     my $sm_ok=(ref($smooth_resp) eq "HASH" && (($smooth_resp->{status}//"") eq "ok")) ? 1 : 0;

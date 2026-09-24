@@ -3458,7 +3458,8 @@ sub _lg_cal_hist_fingerprint {
  require Digest::MD5;
  eval { require Time::HiRes; 1 };
  my $md5=Digest::MD5->new;
- $md5->add("calibration-history-list:1\n");
+ # 2: 1D archive items carry source_run (24 Sep 2026).
+ $md5->add("calibration-history-list:2\n");
  my $add=sub {
   my ($path)=@_;
   my @st=eval { Time::HiRes::stat($path) };
@@ -3571,6 +3572,9 @@ sub _lg_cal_hist_list_uncached (@) {
     display_model => $display_model,
     mtime => $mtime+0,
     de => defined($meta->{"de"}) ? ($meta->{"de"}+0) : undef,
+    # The automation run that archived it; empty for older archives and for
+    # curves saved outside a run. The Web UI resolves either to a run name.
+    source_run => $meta->{"source_run"}||"",
     source => "archive",
     reuploadable => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 1 : 0,
     note => ($pm ne '' && $sm =~ /^(?:sdr|hdr10|dv)$/) ? 'Restores the 1D LUT only; other settings and profiles are unchanged.' : 'Saved signal or picture mode is missing; automatic restore is unavailable.',
