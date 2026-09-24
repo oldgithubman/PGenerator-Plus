@@ -377,6 +377,12 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
     exceeds 44px at the current font size; min-width holds the floor if the
     declared width ever shrinks again (it measured 39px back at 6ch). */
  #meterNoiseFloorControl #meterRgbBalanceNoiseFloor{min-height:44px;min-width:44px}
+ /* The Empirical-mode select was added to this row after the touch pass
+    and measured 94x28 under pointer:coarse — the one control that turns
+    the whole empirical feature on was the smallest target in the row.
+    Same min-* rule; the select's 24px right padding (arrow gutter) keeps
+    the label legible at the grown height. */
+ #meterNoiseFloorControl #meterNoiseFloorMode{min-height:44px}
 }
 /* Preset button look lives here, not inline: the highlight reset in
    meterUpdateNoiseFloorControlAvailability sets style.color='' /
