@@ -6,11 +6,8 @@ use IPC::Open3;
 use Symbol qw(gensym);
 use Test::More;
 
-# PR #39 round two: ICC profile steps carry ire:index (position, not light
-# level) because readings are keyed by ire, so read_timeout_seconds must be
-# fed a stimulus derived from the drive codes for colors_* series. Extracting
-# the real bash helpers and pinning the matrix here mirrors the timeout
-# selection without USB or a display.
+# PR #39: ICC steps carry ire:index, so the timeout must come from drive
+# codes. Extract the real bash helpers and pin the matrix without USB.
 open my $fh,'<',"$Bin/../usr/bin/meter_series.sh" or die $!;
 my $source=do {local $/;<$fh>};close $fh;
 my @functions;
@@ -25,8 +22,8 @@ sub timeout {
  my ($series,$total,$range,$r,$g,$b,$imax,$ire,$path_prefix)=@_;
  my $script="set -u\nSERIES_ID='$series'\nTOTAL='$total'\nPATTERN_SIGNAL_RANGE='$range'\n"
   .$functions."\nread_timeout_seconds \"\$(step_timeout_stimulus '$r' '$g' '$b' '$imax' '$ire')\"\n";
- # Feed via stdin (the extracted helpers contain single quotes, so bash -c
- # quoting would collide; same open3 pattern as t/meter_series_identity.t).
+ # Feed via stdin: the extracted helpers contain single quotes that would
+ # collide with bash -c quoting (pattern from t/meter_series_identity.t).
  my $err=gensym;
  my $run = sub {
   local $ENV{PATH} = defined($path_prefix) ? "$path_prefix:$ENV{PATH}" : $ENV{PATH};
@@ -63,8 +60,6 @@ sub stimulus {
  return $got;
 }
 
-# ICC colors_* series (>=100 steps): the low-grey ladder gets its tolerance
-# from drive codes, and bright patches no longer inherit it from a low index.
 is(timeout('colors_test',107,'',255,255,255,255,0),30,'white at index 0 gets the profile bump, not 90s');
 is(timeout('colors_test',107,'',0,0,0,255,1),90,'black code 0 gets 90s');
 is(timeout('colors_test',107,'',3,3,3,255,5),70,'Grey 1 (code 3/255, ~1.2%) gets 70s');
@@ -75,32 +70,20 @@ is(timeout('colors_test',175,'',12,12,12,1023,40),70,'HDR 12-bit near-black code
 # Limited/legal range maps 16..235 into stimulus.
 is(timeout('colors_test',107,1,16,16,16,255,7),90,'legal-range black code 16 reads 0% -> 90s');
 is(timeout('colors_test',107,1,235,235,235,255,8),30,'legal-range white code 235 reads 100% -> 30s');
-# Malformed codes must not produce awk garbage; fall back to the ire argument.
-# ire 50 distinguishes: awk-coerced garbage would read code 0 -> 90s, while
-# the fallback ire 50 lands in the profile-sized colors_* branch (30s).
+# ire 50 separates the ire fallback (profile bump 30) from awk-coerced
+# garbage or an empty argument (both would read 0 -> 90s).
 is(timeout('colors_test',107,'',q{x},q{y},q{z},255,50),30,'non-numeric codes fall back to ire');
-
-# The stimulus is clamped to [0,100] like the webui.pm achromatic inference:
-# over-range codes read 100, below-black legal-range codes read 0.
 is(stimulus('colors_test','',300,300,300,255,0),'100.000','over-range codes clamp to 100');
 is(stimulus('colors_test',1,5,5,5,255,0),'0.000','legal-range code under black clamps to 0');
-
-# input_max = 0 must take the ire fallback, not divide (awk would coerce to
-# im=255 and hide a regressed guard; ire 50 vs a derived 0 separates them).
 is(timeout('colors_test',107,'',128,128,128,0,50),30,'input_max 0 falls back to ire');
 is(stimulus('colors_test','',128,128,128,0,50),'50','input_max 0 stimulus is the raw ire');
 
-# Scientific-notation input_max passes is_number but used to make
-# [[ -gt ]] print 'value too great for base' to stderr; float_le is silent.
-# stimulus() asserts empty stderr on every run, so the second assertion
-# pins the no-log-noise property.
+# Sci-notation input_max passes is_number; the float_le guard must stay
+# silent ([[ -gt ]] used to print 'value too great for base').
 is(timeout('colors_test',107,'',255,255,255,'1e3',0),30,'sci-notation input_max reaches the ladder');
 is(stimulus('colors_test','',255,255,255,'1e3',0),'25.500','sci-notation input_max derives from codes silently');
 
-# An awk failure (empty output) must not hand read_timeout_seconds an empty
-# argument (which ${1:-0} would silently read as 0 -> 90 s for a bright
-# patch). Shadow awk with a stub that dies silently: ire 50 distinguishes
-# the fallback (profile bump 30) from an empty argument (90).
+# Dead awk (PATH stub) must fall back like any un-derivable step.
 my $stub_dir = tempdir(CLEANUP => 1);
 open my $stub,'>',"${stub_dir}/awk" or die $!;
 print {$stub} "#!/bin/sh\nexit 1\n";

@@ -1333,18 +1333,9 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
   fi
 }
 
-# Timeout input for one step. ICC profile steps carry ire:index (their
-# position in the series, from icc_profile.js meterIccSteps/
-# meterIccPatchesToSteps) because readings are keyed by ire -- so for
-# colors_* series the stimulus must be derived from the drive codes, which
-# are always the physical patch. Every other series (greyscale_*,
-# saturations_*, autocal) carries a real light-level ire in the same
-# code-percent domain, so it keeps using ire. Note the derivation is code
-# percentage, not photometric EOTF output, for HDR code domains too -- the
-# same conflation the ire ladder already makes.
-# NOTE: t/meter_series_icc_timeout_stimulus.t extracts the timeout helpers
-# with a ^name() { regex at column zero -- keep this brace style if these
-# functions are ever reformatted (e.g. shellcheck's "function name {").
+# Timeout input for one step. ICC steps carry ire:index (position, not light
+# level), so colors_* derive stimulus from drive codes; other series carry a
+# real code-percent ire. The test extracts helpers by ^name() { — keep style.
 step_timeout_stimulus() {
  local r="$1" g="$2" b="$3" input_max="$4" ire="$5"
  if [[ "$SERIES_ID" == colors_* ]] && is_number "$r" && is_number "$g" \
@@ -1354,9 +1345,7 @@ step_timeout_stimulus() {
    if (im + 0 <= 0) im = 255
    m = r; if (g + 0 > m + 0) m = g; if (b + 0 > m + 0) m = b
    if (int(sr) == 1) {
-    # Limited/legal range: scale (code - black) / (white - black) using the
-    # 16..235 window scaled into this input_max, matching the achromatic
-    # stimulus inference in the webui.pm patch path.
+    # Limited range: 16..235 window scaled into input_max (webui.pm mirror).
     black = int(16 * (im + 1) / 256 + 0.5)
     white = int(235 * (im + 1) / 256 + 0.5)
     pct = (white > black) ? (m - black) * 100 / (white - black) : m * 100 / im
@@ -1366,10 +1355,8 @@ step_timeout_stimulus() {
    if (pct < 0) pct = 0
    if (pct > 100) pct = 100
    printf "%.3f\n", pct
-  }' 2>/dev/null)
-  # An awk failure must not hand the timeout ladder an empty argument
-  # (which ${1:-0} would silently read as 0 -> 90 s for a bright patch);
-  # fall back to the ire argument like any other un-derivable step.
+  }')
+  # Empty awk output would read as 0 -> 90 s for any patch; fall back to ire.
   if [[ -n "$derived" ]]; then
    printf '%s\n' "$derived"
    return
@@ -1380,26 +1367,14 @@ step_timeout_stimulus() {
 
 read_timeout_seconds() {
  local ire="${1:-0}"
- # Near-black reads integrate longest; keep the stimulus ladder FIRST and
- # unconditional. The profile-sized rule below must not override it:
- # ICC profile sets (175+ patches) interleave near-black greys mid-series,
- # and an unconditional 20 s for those patches aborted Windows-sdr ICC runs
- # at "ICC Grey 1" (code 3/255, ~1.2 stimulus) -- reproduced on an i1Display
- # Pro Plus: first 100 bright patches passed at 20 s, the low-grey ladder
- # then failed at Grey 5 after exhausting retries on 1-4. Callers pass the
- # value from step_timeout_stimulus so ICC index-ire reaches this ladder by
- # its drive codes.
+ # Near-black rungs first and unconditional: ICC sets interleave low greys
+ # mid-series and a profile-sized override aborted runs at Grey 1 (20 s).
  if float_le "$ire" 1; then
   echo 90
  elif float_le "$ire" 5; then
   echo 70
- # Large ICC sets can enter a slower adaptive integration after hundreds of
- # readings even when their synthetic IRE field is high.  Ten seconds then
- # expires just before a valid result and needlessly starts a second trigger.
- # Keep the longer bound scoped to profile-sized colour series, and give it
- # 30 s: a bench repro (i1Display Pro Plus, 100 bright patches then the
- # low-grey ladder) exhausted 20 s at "ICC Grey 5" (~5.1 IRE) on a dim panel
- # after heavy adaptation.
+ # Profile-sized colour series adapt slower after hundreds of readings
+ # (Grey 5 exhausted 20 s on a dim panel); 10 s needlessly retriggers.
  elif [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
   echo 30
  elif float_le "$ire" 20; then
