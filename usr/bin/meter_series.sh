@@ -1342,11 +1342,15 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
 # code-percent domain, so it keeps using ire. Note the derivation is code
 # percentage, not photometric EOTF output, for HDR code domains too -- the
 # same conflation the ire ladder already makes.
+# NOTE: t/meter_series_icc_timeout_stimulus.t extracts the timeout helpers
+# with a ^name() { regex at column zero -- keep this brace style if these
+# functions are ever reformatted (e.g. shellcheck's "function name {").
 step_timeout_stimulus() {
  local r="$1" g="$2" b="$3" input_max="$4" ire="$5"
  if [[ "$SERIES_ID" == colors_* ]] && is_number "$r" && is_number "$g" \
-  && is_number "$b" && is_number "$input_max" && [[ "$input_max" -gt 0 ]]; then
-  awk -v r="$r" -v g="$g" -v b="$b" -v im="$input_max" -v sr="$PATTERN_SIGNAL_RANGE" 'BEGIN {
+  && is_number "$b" && is_number "$input_max" && ! float_le "$input_max" 0; then
+  local derived
+  derived=$(awk -v r="$r" -v g="$g" -v b="$b" -v im="$input_max" -v sr="$PATTERN_SIGNAL_RANGE" 'BEGIN {
    if (im + 0 <= 0) im = 255
    m = r; if (g + 0 > m + 0) m = g; if (b + 0 > m + 0) m = b
    if (int(sr) == 1) {
@@ -1360,9 +1364,16 @@ step_timeout_stimulus() {
     pct = m * 100 / im
    }
    if (pct < 0) pct = 0
+   if (pct > 100) pct = 100
    printf "%.3f\n", pct
-  }' 2>/dev/null
-  return
+  }' 2>/dev/null)
+  # An awk failure must not hand the timeout ladder an empty argument
+  # (which ${1:-0} would silently read as 0 -> 90 s for a bright patch);
+  # fall back to the ire argument like any other un-derivable step.
+  if [[ -n "$derived" ]]; then
+   printf '%s\n' "$derived"
+   return
+  fi
  fi
  printf '%s\n' "${ire:-0}"
 }
