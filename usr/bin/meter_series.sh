@@ -1333,18 +1333,50 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
   fi
 }
 
+# Timeout input for one step. ICC steps carry ire:index (position, not light
+# level), so colors_* derive stimulus from drive codes; other series carry a
+# real code-percent ire. The test extracts helpers by ^name() { — keep style.
+step_timeout_stimulus() {
+ local r="$1" g="$2" b="$3" input_max="$4" ire="$5"
+ if [[ "$SERIES_ID" == colors_* ]] && is_number "$r" && is_number "$g" \
+  && is_number "$b" && is_number "$input_max" && ! float_le "$input_max" 0; then
+  local derived
+  derived=$(awk -v r="$r" -v g="$g" -v b="$b" -v im="$input_max" -v sr="$PATTERN_SIGNAL_RANGE" 'BEGIN {
+   if (im + 0 <= 0) im = 255
+   m = r; if (g + 0 > m + 0) m = g; if (b + 0 > m + 0) m = b
+   if (int(sr) == 1) {
+    # Limited range: 16..235 window scaled into input_max (webui.pm mirror).
+    black = int(16 * (im + 1) / 256 + 0.5)
+    white = int(235 * (im + 1) / 256 + 0.5)
+    pct = (white > black) ? (m - black) * 100 / (white - black) : m * 100 / im
+   } else {
+    pct = m * 100 / im
+   }
+   if (pct < 0) pct = 0
+   if (pct > 100) pct = 100
+   printf "%.3f\n", pct
+  }')
+  # Empty awk output would read as 0 -> 90 s for any patch; fall back to ire.
+  if [[ -n "$derived" ]]; then
+   printf '%s\n' "$derived"
+   return
+  fi
+ fi
+ printf '%s\n' "${ire:-0}"
+}
+
 read_timeout_seconds() {
  local ire="${1:-0}"
- # Large ICC sets can enter a slower adaptive integration after hundreds of
- # readings even when their synthetic IRE field is high.  Ten seconds then
- # expires just before a valid result and needlessly starts a second trigger.
- # Keep the longer bound scoped to profile-sized colour series.
- if [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
-  echo 20
- elif float_le "$ire" 1; then
+ # Near-black rungs first and unconditional: ICC sets interleave low greys
+ # mid-series and a profile-sized override aborted runs at Grey 1 (20 s).
+ if float_le "$ire" 1; then
   echo 90
  elif float_le "$ire" 5; then
   echo 70
+ # Profile-sized colour series adapt slower after hundreds of readings
+ # (Grey 5 exhausted 20 s on a dim panel); 10 s needlessly retriggers.
+ elif [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
+  echo 30
  elif float_le "$ire" 20; then
   echo 20
  else
@@ -2392,7 +2424,7 @@ EOJSON
 
  # Near-black reads can take much longer than mid/high greys. Match the
  # manual-read tolerance here so the low end does not time out prematurely.
- READ_TIMEOUT=$(read_timeout_seconds "$IRE")
+ READ_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
 
  # Trigger reading: send space
  PREV_COUNT=$(count_results)
@@ -2508,7 +2540,7 @@ EOJSON
    SCAN_OFFSET=$(output_size)
    printf " " >&3
    READ_START=$SECONDS
-   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
@@ -2592,7 +2624,7 @@ EOJSON
    SCAN_OFFSET=$(output_size)
    printf " " >&3
    READ_START=$SECONDS
-   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
@@ -2685,7 +2717,7 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (sample $average_index/$AVERAGE_SAMPLE_COUNT)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-   capture_series_average_sample "$(read_timeout_seconds "$IRE")"
+   capture_series_average_sample "$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")"
    SAMPLE_RC=$?
    if (( SAMPLE_RC != 0 )); then
     echo "[$(date '+%H:%M:%S.%3N')] averaging sample failed: step=$STEP_NUM sample=$average_index/$AVERAGE_SAMPLE_COUNT rc=$SAMPLE_RC name=$NAME" >> /tmp/meter_series_debug.log
@@ -2828,7 +2860,7 @@ EOJSON
   SCAN_OFFSET=$(output_size)
   printf " " >&3
 
-  READ_TIMEOUT=$(read_timeout_seconds "$FIRST_IRE")
+  READ_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$FIRST_R" "$FIRST_G" "$FIRST_B" "$FIRST_INPUT_MAX" "$FIRST_IRE")")
   READ_START=$SECONDS
   GOT_RESULT=false
   RETRIED_COMM=0
