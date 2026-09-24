@@ -15387,7 +15387,8 @@ sub webui_automation_readiness_data (@) {
  $check->(@$items ? (1,"queue-present","Queue contains items") : (0,"queue-present","Add at least one automation item"));
  $progress->(undef,"Checking TV connection") if(!$static_only);
  my $lg=$static_only ? {} : PGAutomation::decode_json(eval { &webui_lg_status_json("Automation readiness") }||"")||{};
- my $lg_connected=$static_only ? 1 : ($lg->{paired} && !$lg->{disconnected}) || ($lg->{connected} && !$lg->{disconnected});
+ # `paired` alone is not a connection: a sleeping TV is paired, so gate on `connected`.
+ my $lg_connected=$static_only ? 1 : ($lg->{connected} && !$lg->{disconnected}) ? 1 : 0;
  $progress->(undef,"Checking physical meter");
  my $meter=PGAutomation::decode_json(eval { &webui_meter_status() }||"")||{};
  my $meter_detected=$meter->{detected} ? 1 : 0;
