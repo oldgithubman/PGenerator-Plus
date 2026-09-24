@@ -4,7 +4,7 @@ var pgAutomation = {
  supportedKeys:[],supportedValues:{},pinnedKeys:[],supportedSignal:'',supportedPictureMode:'',
  editorTarget:'queue',editingQueueIndex:null,editingRecipe:null,editorEpoch:0,
  editorSettingsKey:'',editorSettingsDrafts:{},fillingEditor:false,gammaFollowsTarget:false,
- editingRunId:'',firstPending:0,busy:false,polling:false,tab:'queue',
+ editingRunId:'',firstPending:0,editChecked:'',editChecking:'',busy:false,polling:false,tab:'queue',
  jobViews:{},followLive:true,liveSelection:null,logFollow:true,logNotices:[],logObserved:[]
 };
 const PG_AUTOMATION_SERIES=[['Grey','greyscale-21','Greyscale'],['Colors','colors-30','ColorChecker'],['Sats','saturations-24','Saturation']];
@@ -1013,7 +1013,7 @@ function pgAutomationRenderQueue(){
  pgAutomationEl('QueueSaveState').textContent=pgAutomation.editingRunId?'Editing pending jobs':reference?(dirty?'Reference copy · unsaved changes':'Reference settings · copy this queue to make your own'):pgAutomation.queue.id?(dirty?'Unsaved changes':'Saved queue'):'Not saved yet';
  const save=pgAutomationEl('SaveQueueButton');save.textContent=reference?'Copy queue':pgAutomation.queue.id?'Save changes':'Save queue';save.disabled=!!pgAutomation.editingRunId||(!reference&&!!pgAutomation.queue.id&&!dirty);
  pgAutomationRenderSavedQueues();
- pgAutomationEl('QueueContext').textContent=pgAutomation.editingRunId?'Editing pending items for '+pgAutomation.editingRunId+'. Active and completed items are locked.':'';
+ pgAutomationEl('QueueContext').innerHTML=pgAutomation.editingRunId?'Editing pending items for '+pgAutomationEscape(pgAutomation.editingRunId)+'. Active and completed items are locked. <button class="btn btn-sm btn-secondary" id="pgAutomationStopEditingButton" type="button" style="margin:4px 0 8px" onclick="pgAutomationStopEditing()">Stop editing</button>':'';
  pgAutomationEl('SavePendingButton').style.display=pgAutomation.editingRunId?'':'none';
  pgAutomationEl('StartButton').style.display=pgAutomation.editingRunId?'none':'';
  pgAutomationEl('QueueItems').innerHTML=pgAutomation.queue.items.length?pgAutomation.queue.items.map((item,i)=>{
@@ -1059,11 +1059,26 @@ function pgAutomationDragStart(event,index){
 }
 function pgAutomationDragCancel(){pgAutomation.dragCancel?.();}
 function pgAutomationNewQueue(){
- pgAutomationNameQueue('new');
+ // Opens at once when nothing is being edited; callers fill the dialog next.
+ if(!pgAutomation.editingRunId){pgAutomationNameQueue('new');return Promise.resolve();}
+ return pgAutomationStopEditing().then(ok=>{if(ok)pgAutomationNameQueue('new');});
+}
+// The way out of editing a batch's pending jobs. The batch keeps the jobs it
+// has saved; only this browser's unsaved pending changes are dropped, and the
+// page starts over from an empty queue.
+async function pgAutomationStopEditing(){
+ const id=pgAutomation.editingRunId;if(!id)return true;
+ if(!await pgAutomationConfirm('Stop editing the pending jobs of '+id+' and start an empty queue? Unsaved pending changes are discarded. The batch itself is not changed.','Stop editing'))return false;
+ if(pgAutomation.editingRunId!==id)return true;
+ pgAutomation.queue={name:'TV calibration queue',items:[]};
+ pgAutomation.editingRunId='';pgAutomation.firstPending=0;pgAutomation.editChecked='';pgAutomation.selectedQueue='';pgAutomation.loadedQueueSnapshot='';
+ pgAutomationSaveDraft();pgAutomationRenderSavedQueues();pgAutomationRenderQueue();
+ pgAutomationNotice('Stopped editing '+id+'. The batch keeps its saved jobs; this queue is empty.');
+ return true;
 }
 function pgAutomationSaveSelectedQueue(){if(pgAutomation.queue.id&&!pgAutomation.editingRunId)pgAutomationQueueSave();else pgAutomationNameQueue('copy');}
 function pgAutomationNameQueue(action){
- if(pgAutomation.editingRunId){pgAutomationNotice('Save pending changes before creating or renaming a queue.',true);return;}
+ if(pgAutomation.editingRunId){pgAutomationNotice('Save Pending Changes, or choose Stop editing, before copying or renaming a queue.',true);return;}
  pgAutomation.queueNameAction=action;
  pgAutomationEl('QueueMenu').open=false;
  pgAutomationEl('QueueDialogTitle').textContent=action==='new'?'New queue':action==='copy'?'Copy queue':'Rename queue';
@@ -1592,7 +1607,45 @@ async function pgAutomationEditActiveQueue(){
  try{
   const result=await pgAutomationRequest('runs/'+encodeURIComponent(pgAutomation.editingRunId)+'/edit',{first_pending:pgAutomation.firstPending,items:pgAutomation.queue.items.slice(pgAutomation.firstPending)});
   pgAutomationNotice(result.warning?'Pending changes saved. '+result.warning:'Pending changes saved',result.warning?'warning':false);await pgAutomationPollLive();
- }catch(e){pgAutomationNotice(e.message+' Reload pending items if the batch has advanced.',true);}
+ }catch(e){
+  pgAutomationNotice(e.message+' Reload pending items if the batch has advanced.',true);
+  pgAutomation.editChecked='';await pgAutomationCheckEditBinding(pgAutomationCurrentRun());
+ }
+}
+// Pending edits bind the saved draft to one run. Once that run ends or is
+// deleted, the binding would hide Run queue for good, even across reloads.
+// Mirrors webui_automation_active_status (pinned by t/automation_active_status_sync.t).
+const PG_AUTOMATION_ACTIVE_STATUSES=['starting','running','paused','stopping','completing','interrupted'];
+function pgAutomationReleaseEdit(reason){
+ if(!pgAutomation.editingRunId)return;
+ const ran=pgAutomation.firstPending;
+ pgAutomation.queue={...pgAutomation.queue,name:pgAutomationQueueName(pgAutomation.queue.name),items:pgAutomation.queue.items.map(pgAutomationSnapshot)};
+ pgAutomation.editingRunId='';pgAutomation.firstPending=0;pgAutomation.editChecked='';pgAutomation.selectedQueue='';pgAutomation.loadedQueueSnapshot='';
+ pgAutomationSaveDraft();pgAutomationRenderSavedQueues();pgAutomationRenderQueue();
+ pgAutomationNotice('The run these jobs belonged to '+reason+'; they are now an ordinary unsaved draft.'+(ran>0?' The first '+(ran===1?'job':ran+' jobs')+' already ran in that batch; remove '+(ran===1?'it':'them')+' if you do not want to run '+(ran===1?'it':'them')+' again.':'')+' Nothing has started.','warning');
+}
+// Checks the run the draft is bound to. Only a definite answer releases it;
+// a failed or slow request keeps the binding and retries on the next poll.
+async function pgAutomationCheckEditBinding(current){
+ const id=pgAutomation.editingRunId;
+ if(!id||pgAutomation.editChecking===id)return;
+ if(current?.id===id){
+  if(!PG_AUTOMATION_ACTIVE_STATUSES.includes(current.status))pgAutomationReleaseEdit('has ended ('+String(current.status||'finished').replace(/-/g,' ')+')');
+  return;
+ }
+ // A run that is not current cannot advance, so one confirmed answer holds.
+ if(pgAutomation.editChecked===id)return;
+ pgAutomation.editChecking=id;
+ try{
+  // fetchJSON resolves null on failure or timeout; neither branch below matches, so the binding stays.
+  const result=await fetchJSON('/api/automation/runs/'+encodeURIComponent(id),{_quiet:true,_timeoutMs:30000});
+  if(pgAutomation.editingRunId!==id)return;
+  if(result?.run){
+   if(PG_AUTOMATION_ACTIVE_STATUSES.includes(result.run.status))pgAutomation.editChecked=id;
+   else pgAutomationReleaseEdit('has ended ('+String(result.run.status||'finished').replace(/-/g,' ')+')');
+  }else if(result?.error_code==='not-found')pgAutomationReleaseEdit('no longer exists on the generator');
+ }catch(e){}
+ finally{if(pgAutomation.editChecking===id)pgAutomation.editChecking='';}
 }
 function pgAutomationRenderLiveRun(run,execution){
  pgAutomationSyncCalibrationView(run);
@@ -1704,6 +1757,7 @@ async function pgAutomationPollLive(){
    pgAutomation.pollMisses=0;pgAutomation.pollDelayed=false;
    pgAutomation.statusError='';pgAutomation.receivedAt=Date.now()/1000;pgAutomation.current=result;pgAutomationRenderLiveRun(result.run,result.execution);
    pgAutomationSyncLiveMark();
+   if(pgAutomation.editingRunId)pgAutomationCheckEditBinding(result.run);
   }
   else pgAutomationPollMissed('Cannot refresh run status. Showing the last known state; progress is unconfirmed. Do not start another run.');
  }catch(e){pgAutomationPollMissed('Run status connection failed: '+e.message+'. Showing the last known state.');

@@ -92,6 +92,7 @@ jobs:
           node t/browser/automation_report_refresh.cjs
           node t/browser/automation_table_follow.cjs
           node t/browser/automation_editor.cjs
+          node t/browser/automation_stale_edit_draft.cjs
           node t/browser/automation_settings_plan.cjs
           node t/browser/automation_review_fixes.cjs
           node t/browser/automation_dismiss_readiness.cjs
