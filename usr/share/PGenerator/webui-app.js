@@ -830,6 +830,20 @@ function updateModeVisibility(){
  el.addEventListener('input',sync);
  el.addEventListener('change',sync);
 });
+// Out-of-range HDR metadata values only surface via the native
+// validationMessage on submit; mirror the validity state onto aria-invalid so
+// assistive tech and the CSS red border react while the operator types.
+['max_luma','min_luma','max_cll','max_fall','dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'].forEach(function(id){
+ const el=document.getElementById(id);
+ if(!el) return;
+ const mark=function(){
+  const bad=el.validity&&(el.validity.rangeOverflow||el.validity.rangeUnderflow);
+  if(bad) el.setAttribute('aria-invalid','true');
+  else el.removeAttribute('aria-invalid');
+ };
+ el.addEventListener('input',mark);
+ el.addEventListener('change',mark);
+});
 [['dv_max_luma','max_luma'],['dv_min_luma','min_luma'],['dv_max_cll','max_cll'],['dv_max_fall','max_fall']].forEach(function(pair){
  const el=document.getElementById(pair[0]);
  if(!el) return;
@@ -1491,8 +1505,8 @@ async function loadInfo(quiet){
  }else{
   calDot.style.background='var(--text2)';
   calText.style.color='var(--text2)';
-  calText.textContent='No SW';
-  calWrap.title='No calibration software connected';
+  calText.textContent='Cal: none';
+  calWrap.title='Calibration software: not connected. Connect Calman or another calibration app to pair.';
  }
  // Update Resolve card status
  const rBadge=document.getElementById('resolveStatusBadge');
