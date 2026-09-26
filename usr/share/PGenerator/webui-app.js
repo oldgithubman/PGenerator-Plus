@@ -1904,6 +1904,8 @@ function diagPromptVideoRange(){
   const label=document.createElement('span');
   label.textContent='Frame range for extracted frames:';
   const sel=document.createElement('select');
+  // The caption is a sibling span, not a <label>; name the select directly.
+  sel.setAttribute('aria-label','Frame range for extracted frames');
   sel.className='inline-select';
   sel.style.cssText='font-size:.68rem;max-width:unset';
   sel.innerHTML='<option value="limited">Limited (16-235, recommended)</option><option value="full">Full (0-255)</option>';
@@ -19993,7 +19995,7 @@ function meterRenderGreyProfileEditor(){
   return '<tr style="border-bottom:1px solid #1a1a28">'
    +'<td style="padding:6px">'+slot+'%</td>'
    +'<td style="padding:6px;color:#999">'+slot+'%</td>'
-   +'<td style="padding:6px"><input type="number" min="0" max="100" step="0.1" data-grey-slot="'+slot+'" value="'+val+'" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box"></td>'
+   +'<td style="padding:6px"><input type="number" aria-label="Patch stimulus ('+slot+'%)" min="0" max="100" step="0.1" data-grey-slot="'+slot+'" value="'+val+'" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box"></td>'
    +'</tr>';
  }).join('');
 }

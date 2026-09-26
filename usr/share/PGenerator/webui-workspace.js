@@ -1562,21 +1562,21 @@ function meterRenderCustomSeriesEditor(){
   +(isHdr?th('Target Y (cd/m²)'):'')
   +th('');
  const inputStyle='width:72px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box';
- const codeInput=(row,field,value,max)=>'<td style="padding:6px"><input type="number" min="0" max="'+max+'" step="1" data-cs-row="'+row+'" data-cs-field="'+field+'" value="'+value+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+ const codeInput=(row,field,value,max,aria)=>'<td style="padding:6px"><input type="number" aria-label="'+aria+'" min="0" max="'+max+'" step="1" data-cs-row="'+row+'" data-cs-field="'+field+'" value="'+value+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
  body.innerHTML=editor.patches.map((p,i)=>{
   let cells='<td style="padding:6px 2px;text-align:center"><button type="button" class="custom-series-patch-drag" data-cs-drag-row="'+i+'" onpointerdown="meterCustomSeriesPatchDragStart(event,'+i+')" title="Drag to reorder patch" aria-label="Drag patch '+(i+1)+' to reorder">&#9776;</button></td>';
-  cells+='<td style="padding:6px"><input type="text" maxlength="40" data-cs-row="'+i+'" data-cs-field="name" value="'+String(p.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+';width:120px"></td>';
+  cells+='<td style="padding:6px"><input type="text" aria-label="Patch name" maxlength="40" data-cs-row="'+i+'" data-cs-field="name" value="'+String(p.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+';width:120px"></td>';
   if(isColor){
-   cells+=codeInput(i,'r8',p.r8,255)+codeInput(i,'g8',p.g8,255)+codeInput(i,'b8',p.b8,255);
-   cells+=codeInput(i,'r10',p.r10,1023)+codeInput(i,'g10',p.g10,1023)+codeInput(i,'b10',p.b10,1023);
+   cells+=codeInput(i,'r8',p.r8,255,'Patch R code, 8-bit')+codeInput(i,'g8',p.g8,255,'Patch G code, 8-bit')+codeInput(i,'b8',p.b8,255,'Patch B code, 8-bit');
+   cells+=codeInput(i,'r10',p.r10,1023,'Patch R code, 10-bit')+codeInput(i,'g10',p.g10,1023,'Patch G code, 10-bit')+codeInput(i,'b10',p.b10,1023,'Patch B code, 10-bit');
   } else {
-   cells+=codeInput(i,'grey8',p.g8,255)+codeInput(i,'grey10',p.g10,1023);
+   cells+=codeInput(i,'grey8',p.g8,255,'Patch code, 8-bit')+codeInput(i,'grey10',p.g10,1023,'Patch code, 10-bit');
   }
   if(isColor){
-   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity x. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_x" value="'+(p.target_x!=null?p.target_x:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
-   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity y. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_y" value="'+(p.target_y!=null?p.target_y:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+   cells+='<td style="padding:6px"><input type="number" aria-label="Target chromaticity x" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity x. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_x" value="'+(p.target_x!=null?p.target_x:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+   cells+='<td style="padding:6px"><input type="number" aria-label="Target chromaticity y" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity y. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_y" value="'+(p.target_y!=null?p.target_y:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
   }
-  if(isHdr) cells+='<td style="padding:6px"><input type="number" min="0" max="10000" step="0.1" placeholder="auto" data-cs-row="'+i+'" data-cs-field="target_nits" value="'+(p.target_nits!=null?p.target_nits:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+  if(isHdr) cells+='<td style="padding:6px"><input type="number" aria-label="Target luminance (cd/m²)" min="0" max="10000" step="0.1" placeholder="auto" data-cs-row="'+i+'" data-cs-field="target_nits" value="'+(p.target_nits!=null?p.target_nits:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
   cells+='<td style="padding:6px"><button class="btn btn-sm btn-danger" onclick="meterCustomSeriesEditorRemoveRow('+i+')" title="Remove patch">&#10005;</button></td>';
   return '<tr data-cs-row-index="'+i+'" class="'+(meterCustomSeriesPatchDrag&&meterCustomSeriesPatchDrag.index===i?'is-patch-dragging':'')+'" style="border-bottom:1px solid var(--border)">'+cells+'</tr>';
  }).join('');
@@ -1976,10 +1976,10 @@ function meterImportWizardRenderCsv(text,filename){
  const inpStyle='background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;box-sizing:border-box';
  const body=document.getElementById('meterImportWizardBody');
  body.innerHTML='<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:.8rem;color:#ddd;max-width:560px">'
-  +'<label>Series name</label><input type="text" id="meterImpCsvName" maxlength="96" value="'+esc(base)+'" style="'+inpStyle+';width:100%">'
-  +'<label>Bit depth</label><select id="meterImpCsvBits" style="'+inpStyle+'">'+meterImportBitOptions(bits)+'</select>'
-  +'<label>Mode</label><select id="meterImpCsvMode" style="'+inpStyle+'">'+meterImportModeOptions(md)+'</select>'
-  +'<label title="The signal range these codes are in. The series is only offered while the display outputs this range.">Range</label><select id="meterImpCsvRange" style="'+inpStyle+'">'+meterImportRangeOptions(rg)+'</select>'
+  +'<label for="meterImpCsvName">Series name</label><input type="text" id="meterImpCsvName" maxlength="96" value="'+esc(base)+'" style="'+inpStyle+';width:100%">'
+  +'<label for="meterImpCsvBits">Bit depth</label><select id="meterImpCsvBits" style="'+inpStyle+'">'+meterImportBitOptions(bits)+'</select>'
+  +'<label for="meterImpCsvMode">Mode</label><select id="meterImpCsvMode" style="'+inpStyle+'">'+meterImportModeOptions(md)+'</select>'
+  +'<label for="meterImpCsvRange" title="The signal range these codes are in. The series is only offered while the display outputs this range.">Range</label><select id="meterImpCsvRange" style="'+inpStyle+'">'+meterImportRangeOptions(rg)+'</select>'
   +'</div>'
   +'<div style="font-size:.72rem;color:var(--text2);margin-top:8px">CSV codes are used as-is at the chosen bit depth and range.</div>';
  const act=document.getElementById('meterImportWizardActions'); act.style.display='';
@@ -1994,11 +1994,11 @@ function meterImportWizardRenderCcfx(text,filename){
  let rows='';
  sets.forEach((s,i)=>{
   rows+='<tr style="border-bottom:1px solid #1a1a28">'
-   +'<td style="padding:4px;text-align:center"><input type="checkbox" id="meterImpCk_'+i+'" checked></td>'
-   +'<td style="padding:4px"><input type="text" id="meterImpNm_'+i+'" maxlength="96" value="'+esc(s.name)+'" style="'+inpStyle+';width:100%;min-width:220px"></td>'
-   +'<td style="padding:4px"><select id="meterImpBd_'+i+'" style="'+inpStyle+'">'+meterImportBitOptions(meterImportDetectBits(s.name))+'</select></td>'
-   +'<td style="padding:4px"><select id="meterImpMd_'+i+'" style="'+inpStyle+'">'+meterImportModeOptions(meterImportDetectMode(s.name))+'</select></td>'
-   +'<td style="padding:4px"><select id="meterImpRg_'+i+'" style="'+inpStyle+'">'+meterImportRangeOptions(meterImportRangeKeyFromName(s.name))+'</select></td>'
+   +'<td style="padding:4px;text-align:center"><input type="checkbox" aria-label="Import series" id="meterImpCk_'+i+'" checked></td>'
+   +'<td style="padding:4px"><input type="text" aria-label="Series name" id="meterImpNm_'+i+'" maxlength="96" value="'+esc(s.name)+'" style="'+inpStyle+';width:100%;min-width:220px"></td>'
+   +'<td style="padding:4px"><select aria-label="Bit depth" id="meterImpBd_'+i+'" style="'+inpStyle+'">'+meterImportBitOptions(meterImportDetectBits(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select aria-label="Mode" id="meterImpMd_'+i+'" style="'+inpStyle+'">'+meterImportModeOptions(meterImportDetectMode(s.name))+'</select></td>'
+   +'<td style="padding:4px"><select aria-label="Range" id="meterImpRg_'+i+'" style="'+inpStyle+'">'+meterImportRangeOptions(meterImportRangeKeyFromName(s.name))+'</select></td>'
    +'<td style="padding:4px;text-align:center">'+s.patches.length+'</td>'
    +'</tr>';
  });

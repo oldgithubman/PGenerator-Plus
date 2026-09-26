@@ -593,9 +593,9 @@ function pgAutomationRenderSettingsEditor(){
    const attrs=' data-pg-automation-key="'+pgAutomationEscape(key)+'" onchange="pgAutomationSettingChanged(this.dataset.pgAutomationKey)"'+(pin?'':' disabled');
    if(meta.type==='select'&&Array.isArray(meta.options)){
     const options=meta.options.slice();if(value&&!options.includes(value))options.unshift(value);
-    input='<select'+attrs+'>'+options.map(option=>'<option value="'+pgAutomationEscape(option)+'"'+(String(option)===value?' selected':'')+'>'+pgAutomationEscape(meta.labels?.[option]||option)+'</option>').join('')+'</select>';
+    input='<select'+attrs+' aria-label="'+pgAutomationEscape(meta.label||key)+'">'+options.map(option=>'<option value="'+pgAutomationEscape(option)+'"'+(String(option)===value?' selected':'')+'>'+pgAutomationEscape(meta.labels?.[option]||option)+'</option>').join('')+'</select>';
    }else{
-    input='<input'+attrs+' type="'+(meta.type==='number'?'number':'text')+'"'+(meta.min!=null?' min="'+pgAutomationEscape(meta.min)+'"':'')+(meta.max!=null?' max="'+pgAutomationEscape(meta.max)+'"':'')+' value="'+pgAutomationEscape(value)+'">';
+    input='<input'+attrs+' aria-label="'+pgAutomationEscape(meta.label||key)+'" type="'+(meta.type==='number'?'number':'text')+'"'+(meta.min!=null?' min="'+pgAutomationEscape(meta.min)+'"':'')+(meta.max!=null?' max="'+pgAutomationEscape(meta.max)+'"':'')+' value="'+pgAutomationEscape(value)+'">';
    }
    return '<div class="field"><label><input type="checkbox" data-pg-automation-pin="'+pgAutomationEscape(key)+'"'+(pin?' checked':'')+(unavailable?' disabled':'')+' onchange="pgAutomationTogglePin(this)"> '+pgAutomationEscape(meta.label||key)+'</label>'+input+(unavailable?'<span class="auto-muted">'+pgAutomationEscape(unavailable.reason)+'</span>':'')+'</div>';
   }).join('');

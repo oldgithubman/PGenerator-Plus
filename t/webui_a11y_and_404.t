@@ -8,7 +8,9 @@
 # pin the fixes in the shipped fragments: every visible input/select in the
 # page fragments must have a programmatic label, apPass must stay masked, the
 # page 404 must be an HTML page with a link home, and the calibration chip must
-# read unambiguously. Model: t/dv_transport_lldv_retired.t (static fragments).
+# read unambiguously. A companion sweep covers controls the JS files render at
+# runtime (innerHTML string-built tags), where the static fragment scan cannot
+# see them. Model: t/dv_transport_lldv_retired.t (static fragments).
 use strict;
 use warnings;
 use FindBin qw($Bin);
@@ -64,6 +66,46 @@ for my $file (sort keys %frag) {
 }
 is_deeply(\@dangling, [], 'no label targets a missing id');
 
+# Same guarantee for controls the app JS renders at runtime via innerHTML
+# string-built tags: the static fragment scan above cannot see those lines.
+# Physical lines starting with '+' are joined into one logical line (these
+# builders concatenate tags across lines), the scan counts an interpolated
+# aria-label="'+...+'" as labeled, and it exempts controls wrapped inside a
+# <label> still open before them. Comment lines are skipped.
+my @dyn_unlabeled;
+sub scan_logical {
+ my ($js, $logical)=@_;
+ return if $logical =~ /^\s*(?:\/\/|\*)/;
+ return if $logical =~ /a\s+<(?:input|select)>/; # prose, not markup
+ while ($logical =~ /(<(?:input|select)\b[^>]*?)(?:>|\z)/g) {
+  my $tag = $1;
+  my $start = $-[0]; # capture before further matches clobber @-
+  next if $tag =~ /type="hidden"/;
+  next if $tag =~ /aria-label/;
+  if ($tag =~ /\bid="([^"]+)"/) {
+   my $id = $1;
+   next if $logical =~ /<label[^>]*\bfor="\Q$id\E"/;
+  }
+  my $pre = substr($logical, 0, $start);
+  my $li = rindex($pre, '<label');
+  next if $li >= 0 && index(substr($pre, $li), '</label>') < 0;
+  push @dyn_unlabeled, "$js: $tag";
+ }
+}
+opendir(my $dh, $dir) or die "opendir: $!";
+for my $js (sort grep { /\.js$/ } readdir($dh)) {
+ my $logical = '';
+ for my $line (split /\n/, slurp($js)) {
+  next if $line =~ /^\s*(?:\/\/|\*)/;
+  if ($logical ne '' && $line =~ /^\s*\+/) { $logical .= $line; next; }
+  scan_logical($js, $logical) if $logical ne '';
+  $logical = $line;
+ }
+ scan_logical($js, $logical) if $logical ne '';
+}
+is_deeply(\@dyn_unlabeled, [], 'runtime-rendered controls carry labels too')
+ or diag explain \@dyn_unlabeled;
+
 # --- AP passphrase masking ----------------------------------------------
 like($frag{'webui-body.html'}, qr/<input[^>]*\btype="password"[^>]*\bid="apPass"/,
  'the AP passphrase field is masked like the Wi-Fi PSK');
@@ -76,9 +118,17 @@ my $pm;
 }
 like($pm, qr/sub webui_not_found_html/, 'webui.pm builds a styled 404 page');
 like($pm, qr/webui_not_found_html\(\$path\)/, 'the page 404 catch-all serves the styled page');
-# Unknown API routes must keep the compact body clients parse.
-like($pm, qr{\$path=~/\^\\/api\\/}, 'the page 404 branch keeps /api/* on the compact response');
 like($pm, qr/PG_404_PAGE/, 'the 404 page carries its marker');
+# Unknown API routes must keep the compact body clients parse. The pin reads
+# the catch-all 404 block itself — comment line through the styled print —
+# so it cannot be satisfied by the unrelated /api/ route matchers elsewhere
+# in webui.pm that a whole-file regex would match.
+my ($block404) = $pm =~ /(# Unknown page routes[\s\S]*?charset=utf-8[^\n]*)/;
+ok($block404, 'the catch-all page-404 block is present');
+ok(defined($block404) && index($block404, '$path=~/^\\/api\\//') >= 0,
+ 'the page 404 branch keeps /api/* on the compact response');
+ok(defined($block404) && index($block404, '&webui_not_found_html($path)') >= 0,
+ 'the page 404 branch serves the styled page');
 
 # --- calibration chip wording --------------------------------------------
 unlike($frag{'webui-body.html'}, qr/>No SW</, 'the header chip no longer reads cryptic "No SW"');
