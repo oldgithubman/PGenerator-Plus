@@ -2575,8 +2575,16 @@ sub webui_handle_request (@) {
      }
     }
    else {
-    my $msg="404 Not Found";
-    print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
+    # Unknown page routes get the styled page with a way back; unknown API
+    # routes keep the compact body callers parse.
+    if($path=~/^\/api\//) {
+     my $msg="404 Not Found";
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
+    } else {
+     my $msg=&webui_not_found_html($path);
+     my $len=length($msg);
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: $len\r\n\r\n$msg";
+    }
    }
   }
 }
@@ -16759,6 +16767,43 @@ sub _webui_html_escape (@) {
  return $value;
 }
 
+# Styled 404 for unknown page routes: a bare "404 Not Found" text body gave
+# operators no way back to the WebUI and looked like a crash. API routes keep
+# their compact JSON/plain 404s — only page navigation lands here.
+sub webui_not_found_html (@) {
+ my ($path)=@_;
+ my $path_html=&_webui_html_escape(defined($path) ? $path : "");
+ my $html=<<'WEBUI_404';
+<!doctype html>
+<!--PG_404_PAGE-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PGenerator+ — Page not found</title>
+<style>
+html{background:#0a0a0f;color:#e0e0e8;font-family:system-ui,sans-serif}
+body{max-width:680px;margin:12vh auto;padding:24px;line-height:1.5}
+main{background:#14141f;border:1px solid #2a2a3a;border-radius:10px;padding:28px}
+h1{margin-top:0;font-size:1.35rem}
+p{color:#b4b4c2}
+code{background:#0b0b12;border:1px solid #2a2a3a;border-radius:4px;padding:1px 6px;overflow-wrap:anywhere}
+a.button{display:inline-block;margin-top:18px;background:#5b7fff;color:#fff;border-radius:6px;padding:10px 16px;text-decoration:none}
+a.button:hover{background:#718fff}
+</style>
+</head>
+<body>
+<main>
+<h1>Page not found</h1>
+<p>No page exists at <code>__PG_404_PATH__</code>. The Web UI is a single page, so use the button below to return to it.</p>
+<a class="button" href="/">Open PGenerator+ Web UI</a>
+</main>
+</body>
+</html>
+WEBUI_404
+ $html =~ s/__PG_404_PATH__/$path_html/;
+ return $html;
+}
 sub webui_recovery_html (@) {
  my ($missing)=@_;
  $missing="unknown fragment" if(!defined($missing) || $missing eq "");

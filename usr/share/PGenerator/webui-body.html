@@ -42,7 +42,7 @@ __PG_LOGO_DARK__
   <div class="status-bar">
    <span title="" id="statusWrap"><span class="status-dot" id="statusDot"></span><span id="statusText">...</span></span>
    <span id="tempDisplay"></span>
-   <span id="calStatusWrap" title="No calibration software connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">No SW</span></span>
+   <span id="calStatusWrap" title="Calibration software: not connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">Cal: none</span></span>
    <span id="meterDisplayStatusStack" class="status-stack" title="Meter, display and PGenerator+ Patch Companion">
     <span id="meterStatusWrap" class="status-line" style="display:none" title="Colorimeter"><span class="status-dot" id="meterDot" style="background:var(--text2)"></span><span class="status-label" id="meterStatusText" style="color:var(--text2)">Meter</span></span>
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
@@ -118,12 +118,12 @@ __PG_LOGO_DARK__
   <div class="field field-display">
     <label>Resolution</label>
     <div class="mode-select-wrap">
-     <select id="mode_idx"></select>
+     <select id="mode_idx" aria-label="Resolution"></select>
      <span id="mode_idx_text" class="mode-select-value"></span>
     </div>
    </div>
   <div class="field field-gamut">
-    <label>Signal Mode</label>
+    <label for="signal_mode">Signal Mode</label>
     <select id="signal_mode">
      <option value="sdr">SDR</option>
      <option value="hdr10">HDR10 (PQ)</option>
@@ -132,7 +132,7 @@ __PG_LOGO_DARK__
     </select>
    </div>
   <div class="field field-gamma">
-    <label>Bit Depth</label>
+    <label for="max_bpc">Bit Depth</label>
     <select id="max_bpc">
      <option value="8">8-bit</option>
      <option value="10">10-bit</option>
@@ -140,7 +140,7 @@ __PG_LOGO_DARK__
     </select>
    </div>
   <div class="field field-display">
-    <label>Color Format</label>
+    <label for="color_format">Color Format</label>
     <select id="color_format" onchange="uiEnforceQuantRangeForColorFormat()">
      <option value="0">RGB</option>
      <option value="1">YCbCr 4:4:4</option>
@@ -148,14 +148,14 @@ __PG_LOGO_DARK__
     </select>
    </div>
   <div class="field field-gamut">
-    <label>Colorimetry</label>
+    <label for="colorimetry">Colorimetry</label>
     <select id="colorimetry">
      <option value="2">BT.709</option>
      <option value="9">BT.2020</option>
     </select>
    </div>
   <div class="field field-gamma">
-    <label>Range</label>
+    <label for="rgb_quant_range">Range</label>
     <select id="rgb_quant_range">
      <option value="0">Default</option>
      <option value="1">Limited (16-235)</option>
@@ -170,7 +170,7 @@ __PG_LOGO_DARK__
   <h2>HDR Metadata</h2>
   <div class="grid">
    <div class="field">
-    <label>EOTF</label>
+    <label for="eotf">EOTF</label>
     <select id="eotf">
      <option value="0">SDR Gamma</option>
      <option value="1">HDR Gamma</option>
@@ -179,7 +179,7 @@ __PG_LOGO_DARK__
     </select>
    </div>
    <div class="field">
-    <label>Primaries</label>
+    <label for="primaries">Primaries</label>
     <select id="primaries">
      <option value="0">Custom / BT.709</option>
      <option value="1">BT.2020 / D65</option>
@@ -188,19 +188,19 @@ __PG_LOGO_DARK__
     </select>
    </div>
    <div class="field">
-    <label>Max Luma (nits)</label>
+    <label for="max_luma">Max Luma (nits)</label>
     <input type="number" id="max_luma" min="0" max="10000" step="1">
    </div>
    <div class="field">
-    <label>Min Luma (nits)</label>
+    <label for="min_luma">Min Luma (nits)</label>
     <input type="number" id="min_luma" min="0" max="100" step="0.0001">
    </div>
    <div class="field">
-    <label>MaxCLL</label>
+    <label for="max_cll">MaxCLL</label>
     <input type="number" id="max_cll" min="0" max="10000" step="1">
    </div>
    <div class="field">
-    <label>MaxFALL</label>
+    <label for="max_fall">MaxFALL</label>
     <input type="number" id="max_fall" min="0" max="10000" step="1">
    </div>
   </div>
@@ -212,32 +212,32 @@ __PG_LOGO_DARK__
 	  <div class="grid">
 	   <input type="hidden" id="dv_interface" value="0">
 	   <div class="field">
-	    <label>Transport</label>
+	    <label for="dv_transport">Transport</label>
 	    <select id="dv_transport">
 	     <option value="standard">Standard</option>
 	    </select>
 	   </div>
 	   <div class="field">
-	    <label>Map Mode</label>
+	    <label for="dv_map_mode">Map Mode</label>
     <select id="dv_map_mode">
      <option value="2">Relative (Calibration)</option>
      <option value="1">Absolute (Mastering)</option>
     </select>
    </div>
      <div class="field">
-      <label>Max Luma (nits)</label>
+      <label for="dv_max_luma">Max Luma (nits)</label>
       <input type="number" id="dv_max_luma" min="0" max="10000" step="1">
      </div>
      <div class="field">
-      <label>Min Luma (nits)</label>
+      <label for="dv_min_luma">Min Luma (nits)</label>
       <input type="number" id="dv_min_luma" min="0" max="100" step="0.0001">
      </div>
      <div class="field">
-      <label>MaxCLL</label>
+      <label for="dv_max_cll">MaxCLL</label>
       <input type="number" id="dv_max_cll" min="0" max="10000" step="1">
      </div>
      <div class="field">
-      <label>MaxFALL</label>
+      <label for="dv_max_fall">MaxFALL</label>
       <input type="number" id="dv_max_fall" min="0" max="10000" step="1">
      </div>
   </div>
@@ -305,7 +305,7 @@ __PG_LOGO_DARK__
       </div>
       <div class="diag-custom-asset" style="margin-top:10px">
        <div class="diag-custom-picker">
-        <select id="diagCustomVideoSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('video')">
+        <select id="diagCustomVideoSelect" aria-label="Custom diagnostic video" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('video')">
          <option value="">Custom Diagnostic Video...</option>
          <option value="__upload__">Upload video...</option>
         </select>
@@ -327,7 +327,7 @@ __PG_LOGO_DARK__
       </div>
       <div class="diag-custom-asset" style="margin-top:10px">
        <div class="diag-custom-picker">
-        <select id="diagCustomImageSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('image')">
+        <select id="diagCustomImageSelect" aria-label="Custom diagnostic image" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('image')">
          <option value="">Custom Diagnostic Image...</option>
          <option value="__upload__">Upload image...</option>
         </select>
@@ -340,8 +340,8 @@ __PG_LOGO_DARK__
      </div>
     </div>
     <div style="margin-top:10px">
-     <input type="file" id="diagCustomVideoInput" accept="video/mp4,.mp4,.m4v,.mov,.webm,.mkv,.avi,.hevc,.h265,.h264,.ts,.m2ts" style="display:none">
-     <input type="file" id="diagCustomImageInput" accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/bmp,.bmp,.ppm,image/gif,.gif" style="display:none">
+     <input type="file" id="diagCustomVideoInput" aria-label="Upload custom diagnostic video" accept="video/mp4,.mp4,.m4v,.mov,.webm,.mkv,.avi,.hevc,.h265,.h264,.ts,.m2ts" style="display:none">
+     <input type="file" id="diagCustomImageInput" aria-label="Upload custom diagnostic image" accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/bmp,.bmp,.ppm,image/gif,.gif" style="display:none">
      <div id="diagUploadStatus" style="display:none;font-size:.68rem;color:var(--text2);margin-top:8px"></div>
     </div>
     <div id="diagInfo" style="font-size:.7rem;color:var(--text2);margin-top:8px;padding:8px 10px;background:#0d0d15;border-radius:6px;line-height:1.5;display:none"></div>
@@ -356,17 +356,17 @@ __PG_LOGO_DARK__
   <div class="meter-card-header-row">
    <div class="meter-card-header-col meter-card-header-col-meter">
     <label class="meter-header-label">Meter</label>
-    <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="Below the Trigger, take 2, 3, or 5 physical meter samples on the same patch and average them in linear XYZ. The meter process stays open between samples." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="One physical meter sample">Off (single read)</option><option value="a" title="Average 2 physical XYZ samples">2 reads (a)</option><option value="aa" title="Average 3 physical XYZ samples">3 reads (aa)</option><option value="aaa" title="Average 5 physical XYZ samples">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Expected target luminance below which repeated sampling is used. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+    <div class="meter-card-header-meter"><select id="meterMeasurementPort" aria-label="Measurement meter" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="Below the Trigger, take 2, 3, or 5 physical meter samples on the same patch and average them in linear XYZ. The meter process stays open between samples." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label for="meterLowLightMode">Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="One physical meter sample">Off (single read)</option><option value="a" title="Average 2 physical XYZ samples">2 reads (a)</option><option value="aa" title="Average 3 physical XYZ samples">3 reads (aa)</option><option value="aaa" title="Average 5 physical XYZ samples">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" aria-label="Low light handler trigger luminance" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Expected target luminance below which repeated sampling is used. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-display">
-    <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
+    <label class="meter-header-label" for="meterDisplayType">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
     <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile."><option value="non_refresh">Non-refresh display</option><option value="refresh">Refresh display</option></select>
    </div>
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
      <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" id="meterCorrectionProfileHelp" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
      <div class="meter-ccss-profile-control-row">
-      <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
+      <select id="meterCcssProfile" aria-label="Meter correction profile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
       <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2)">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
      </div>
     </div>
@@ -374,7 +374,7 @@ __PG_LOGO_DARK__
    <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
     <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator+ output sends calibration patches through the Pi HDMI output. PGenerator+ Patch Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGenerator+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
     <div class="meter-generator-control-row">
-     <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
+     <select id="meterPatternProvider" aria-label="Patch generator" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
       <option value="local">PGenerator+ output</option>
       <option value="companion" disabled title="Run PGenerator+ Patch Companion on the target computer to enable this option">PGenerator+ Patch Companion</option>
      </select>
@@ -460,8 +460,8 @@ __PG_LOGO_DARK__
            <div class="field-whitepoint" id="meterTargetWhitePointField">
             <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
             <div class="meter-whitepoint-row">
-             <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
-             <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+             <input type="number" id="meterTargetWhiteX" aria-label="Target white point x" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
+             <input type="number" id="meterTargetWhiteY" aria-label="Target white point y" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
              <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
             </div>
            </div>
@@ -509,14 +509,14 @@ __PG_LOGO_DARK__
          </label>
         </div>
         <div class="meter-target-white-row">
-         <label class="meter-target-inline-label">Target White <span class="meter-help-tip" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
+         <label class="meter-target-inline-label" for="meterTargetWhite">Target White <span class="meter-help-tip" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
          <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
         <div class="meter-target-black-row">
-         <label class="meter-target-inline-label">Target Black <span class="meter-help-tip" title="Sets the black-floor luminance used to anchor the bottom of the target EOTF curve. Use measured follows the series black reading; Measure displays black and stores a fixed value." aria-label="Target black luminance help">?</span></label>
+         <label class="meter-target-inline-label" for="meterTargetBlack">Target Black <span class="meter-help-tip" title="Sets the black-floor luminance used to anchor the bottom of the target EOTF curve. Use measured follows the series black reading; Measure displays black and stores a fixed value." aria-label="Target black luminance help">?</span></label>
          <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
@@ -526,7 +526,7 @@ __PG_LOGO_DARK__
      </div>
     </div>
    <div class="field field-gamut">
-    <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
+    <label for="meterTargetGamut">Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
      <option value="auto">Auto (match signal)</option>
      <option value="bt709" selected>BT.709</option>
@@ -536,7 +536,7 @@ __PG_LOGO_DARK__
     </select>
   </div>
   <div class="field field-gamma">
-    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
+    <label for="meterTargetGamma">Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
@@ -546,7 +546,7 @@ __PG_LOGO_DARK__
      </select>
     </div>
    <div class="field field-chromaticity">
-    <label>Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a selected spectrophotometer.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It requires a selected spectrophotometer.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a selected spectrophotometer.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They require a selected spectrophotometer.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It requires a selected spectrophotometer.&#10;&#10;A colorimeter and CCMX contain only tristimulus or 3x3 matrix data and cannot supply the spectra needed for these alternate observers. ArgyllCMS can derive alternate observers from certain CCSS-capable colorimeters, but PGenerator enables them only with a spectrophotometer selected to prevent unsupported meter modes. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
+    <label for="meterChromaticityChart">Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a selected spectrophotometer.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It requires a selected spectrophotometer.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a selected spectrophotometer.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They require a selected spectrophotometer.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It requires a selected spectrophotometer.&#10;&#10;A colorimeter and CCMX contain only tristimulus or 3x3 matrix data and cannot supply the spectra needed for these alternate observers. ArgyllCMS can derive alternate observers from certain CCSS-capable colorimeters, but PGenerator enables them only with a spectrophotometer selected to prevent unsupported meter modes. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
     <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
      <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
      <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
@@ -567,7 +567,7 @@ __PG_LOGO_DARK__
 	    </div>
 	   </div>
   <div class="field field-patch">
-    <label>Patch Size <span class="meter-help-tip" title="Controls the measurement pattern area. Window options set the patch percentage; APL options add a background to maintain the stated average picture level." aria-label="Patch size help">?</span></label>
+    <label for="meterPatchSize">Patch Size <span class="meter-help-tip" title="Controls the measurement pattern area. Window options set the patch percentage; APL options add a background to maintain the stated average picture level." aria-label="Patch size help">?</span></label>
     <select id="meterPatchSize">
      <option value="2">2% Window</option>
      <option value="5">5% Window</option>
@@ -594,7 +594,7 @@ __PG_LOGO_DARK__
   <div class="field field-hdr" id="meterHdrDiffuseConfig" style="display:none">
     <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator+'s PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator+'s encoded 50% PQ patch at the active bit depth and limited/full range. For example, 10-bit Limited resolves to about 92.25 cd/m² while 8-bit Limited resolves to about 94.38 cd/m² because the midpoint is quantized differently. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
     <div class="meter-inline-value">
-     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="92.2457" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator+'s encoded 50% PQ target at the active bit depth and range" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+     <input type="number" id="meterHdrDiffuseWhite" aria-label="HDR diffuse white" min="1" max="200" step="0.1" value="92.2457" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator+'s encoded 50% PQ target at the active bit depth and range" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
      <span class="meter-inline-unit">cd/m&sup2;</span>
      <input type="checkbox" id="meterHdrDiffuseWhiteAuto" onchange="meterOnHdrDiffuseWhiteAutoChange()" checked>
      <label for="meterHdrDiffuseWhiteAuto" class="meter-toggle-label">Auto</label>
@@ -608,7 +608,7 @@ __PG_LOGO_DARK__
 	    </div>
 	   </div>
   <div class="field field-refresh">
-    <label>Refresh Rate</label>
+    <label for="meterRefreshRate">Refresh Rate</label>
     <select id="meterRefreshRate">
      <option value="auto">Auto (meter detects)</option>
      <option value="" selected>Match Display Setting</option>
@@ -765,7 +765,7 @@ __PG_LOGO_DARK__
     <button class="btn btn-sm btn-secondary" onclick="meterExportGreyProfile()">Export</button>
     <button class="btn btn-sm btn-secondary" onclick="meterOpenGreyProfileImport()">Import</button>
    </div>
-   <input type="file" id="meterGreyProfileImportInput" accept="application/json,.json" style="display:none">
+   <input type="file" id="meterGreyProfileImportInput" aria-label="Import greyscale profile JSON" accept="application/json,.json" style="display:none">
   </div>
   <div id="meterThumbsWrap" class="meter-thumbs-shell" style="display:none;margin-bottom:10px">
    <button type="button" id="meterThumbsLeftBtn" class="meter-thumbs-nav" onclick="meterThumbsPage(-1)" aria-label="Scroll thumbnails left" title="Scroll thumbnails left">&#10094;</button>
@@ -946,7 +946,7 @@ __PG_LOGO_DARK__
     </div>
     <div class="btn-row" style="margin:0 0 12px 0;align-items:center;gap:8px;flex-wrap:wrap">
      <button class="btn btn-sm btn-primary" onclick="meterImportWizardChooseFile()">Choose file&hellip;</button>
-     <input type="file" id="meterImportWizardFile" style="display:none">
+     <input type="file" id="meterImportWizardFile" aria-label="Import session file" style="display:none">
      <span id="meterImportWizardFileName" style="font-size:.76rem;color:var(--text2)"></span>
     </div>
     <div id="meterImportWizardBody" style="margin-bottom:12px"></div>
@@ -966,7 +966,7 @@ __PG_LOGO_DARK__
     </div>
     <div class="btn-row meter-lut-tools-import" style="margin:0 0 12px 0">
      <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()" title="Parse and preview a .cube 3D LUT file (not applied to the display)">Import .cube (preview)</button>
-     <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
+     <input type="file" id="meterCubeImportInput" aria-label="Import .cube LUT file" accept=".cube,text/plain" style="display:none">
     </div>
     <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
     <div class="meter-lut-tools-content">
@@ -1035,7 +1035,7 @@ __PG_LOGO_DARK__
    <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT AutoCal</div>
     <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose how the display is profiled before the 3D LUT is solved and uploaded. Greyscale / 1D should already be calibrated. Regardless of profiling method, the worker always generates and uploads a full 33&sup3; (35,937-node) 12-bit payload for the active picture mode. Patch counts below are the profile measurements only.</div>
-    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
+    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em" for="meterLg3dModalProfileSource">Profiling method</label>
     <select id="meterLg3dModalProfileSource" onchange="meterLg3dModalProfileSourceChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
      <option value="matrix">Matrix (5-point) — 5 patches, fastest</option>
      <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
@@ -1046,11 +1046,11 @@ __PG_LOGO_DARK__
      <option value="imported">Imported .cube — upload only (0 profile patches)</option>
     </select>
     <div id="meterLg3dModalLatticeRow" style="display:none;margin-bottom:10px">
-     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px" for="meterLg3dModalLatticeSeries">Lattice series</label>
      <select id="meterLg3dModalLatticeSeries" onchange="meterLg3dModalProfileSourceChanged()" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
     </div>
     <div id="meterLg3dModalImportedRow" style="display:none;margin-bottom:10px">
-     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">.cube to upload</label>
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px" for="meterLg3dModalImportedLut">.cube to upload</label>
      <select id="meterLg3dModalImportedLut" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
     </div>
     <div id="meterLg3dModalExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
@@ -1076,7 +1076,7 @@ __PG_LOGO_DARK__
    <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:8px">Select 3D LUT Series</div>
     <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:14px">Choose a profiling series to measure. It uses the same method chooser as the standalone 3D LUT AutoCal; the descriptions below note what each set samples.</div>
-    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Profiling method</label>
+    <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em" for="meterLg3dSelSeriesSource">Profiling method</label>
     <select id="meterLg3dSelSeriesSource" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;max-width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box;margin-bottom:10px">
      <option value="matrix">Matrix (5-point) — 5 patches, fastest</option>
      <option value="skeleton">Skeleton (multi-level WRGB) — 45 patches</option>
@@ -1086,7 +1086,7 @@ __PG_LOGO_DARK__
      <option value="lattice">Lattice series — full N&sup3; volume only</option>
     </select>
     <div id="meterLg3dSelSeriesLatticeRow" style="display:none;margin-bottom:10px">
-     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px">Lattice series</label>
+     <label style="display:block;font-size:.72rem;color:var(--text2);margin-bottom:6px" for="meterLg3dSelSeriesLattice">Lattice series</label>
      <select id="meterLg3dSelSeriesLattice" onchange="meterLg3dSelectSeriesChanged()" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:6px;color:#eee;padding:8px 10px;box-sizing:border-box"></select>
     </div>
     <div id="meterLg3dSelSeriesExplain" style="font-size:.8rem;color:var(--text);line-height:1.5;background:#0d0d15;border:1px solid #2a3140;border-radius:8px;padding:12px;margin-bottom:10px;min-height:7.5em"></div>
@@ -1155,7 +1155,7 @@ __PG_LOGO_DARK__
      </div>
     </div>
     <div style="margin-bottom:12px">
-     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Type</label>
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="meterCcssCreateFormat">Profile Type</label>
      <select id="meterCcssCreateFormat" onchange="meterCcssCreateFormatChanged()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
       <option value="ccss">CCSS - spectral display correction</option>
       <option value="ccmx">CCMX - meter correction matrix</option>
@@ -1163,7 +1163,7 @@ __PG_LOGO_DARK__
      <div id="meterCcssCreateFormatHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
     </div>
     <div id="meterCcssCreateMethodSection" style="display:none;margin-bottom:12px">
-     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">CCMX Creation Method</label>
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="meterCcssCreateMethod">CCMX Creation Method</label>
      <select id="meterCcssCreateMethod" onchange="meterCcssCreateMethodChanged()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
       <option value="measure">Measure with a reference meter</option>
       <option value="json">Import an XYZ correction matrix JSON</option>
@@ -1172,7 +1172,7 @@ __PG_LOGO_DARK__
      <div id="meterCcssCreateMethodHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
     </div>
       <div style="margin-bottom:12px">
-       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="meterCcssCreateDisplayType">Display Technology</label>
        <select id="meterCcssCreateDisplayType" onchange="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box"></select>
        <div id="meterCcssCreateDisplayHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
       </div>
@@ -1195,26 +1195,26 @@ __PG_LOGO_DARK__
     </div>
     <div id="meterCcssCreateMatrixSection" style="display:none;margin-bottom:12px">
      <div id="meterCcssCreateJsonSection" style="display:none;margin-bottom:10px">
-      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">XYZ Correction Matrix JSON</label>
+      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="meterCcssCreateJsonInput">XYZ Correction Matrix JSON</label>
       <input type="file" id="meterCcssCreateJsonInput" accept=".json,.txt,application/json" onchange="meterCcssCreateImportJson(event)" style="width:100%;font-size:.74rem;color:var(--text2)">
       <div id="meterCcssCreateJsonStatus" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">Choose a JSON file exported by the former PGenerator+ XYZ Correction Matrix tool.</div>
      </div>
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">3x3 XYZ Correction Matrix</label>
      <div class="meter-matrix-grid">
-      <input type="number" id="meterCcmxM11" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM12" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM13" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM21" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM22" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM23" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM31" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM32" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM33" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM11" aria-label="Matrix row 1 column 1 (X to X)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM12" aria-label="Matrix row 1 column 2 (X to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM13" aria-label="Matrix row 1 column 3 (X to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM21" aria-label="Matrix row 2 column 1 (Y to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM22" aria-label="Matrix row 2 column 2 (Y to Y)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM23" aria-label="Matrix row 2 column 3 (Y to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM31" aria-label="Matrix row 3 column 1 (Z to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM32" aria-label="Matrix row 3 column 2 (Z to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM33" aria-label="Matrix row 3 column 3 (Z to Z)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
      </div>
      <div style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">The CCMX applies corrected XYZ = matrix x measured XYZ. The selected target meter is written into the profile so ArgyllCMS can apply it as a meter correction.</div>
     </div>
     <div style="margin-bottom:12px">
-     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="meterCcssCreateName">Profile Name</label>
     <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" oninput="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
     </div>
     <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select a profile type and the required meter or meters, then start.</div>
@@ -1241,10 +1241,10 @@ __PG_LOGO_DARK__
     </div>
     <div class="ccss-editor-layout" style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
      <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
-       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, CCMX, EDR, TI3, or spectral CSV</label>
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="ccssFileInput">Import CCSS, CCMX, EDR, TI3, or spectral CSV</label>
        <input type="file" id="ccssFileInput" accept=".ccss,.ccmx,.edr,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
       <div style="display:flex;gap:6px;align-items:center">
-       <input type="text" id="ccssName" placeholder="Profile name" style="flex:1;font-size:.8rem;padding:5px 7px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
+       <input type="text" id="ccssName" aria-label="Profile name" placeholder="Profile name" style="flex:1;font-size:.8rem;padding:5px 7px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <button id="ccssUploadBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap;font-size:.74rem;padding:5px 10px" disabled>Upload</button>
       </div>
       <div id="ccssUploadStatus" style="font-size:.72rem;color:var(--text2);margin-top:6px;min-height:1.1em"></div>
@@ -1254,7 +1254,7 @@ __PG_LOGO_DARK__
       </div>
      </div>
      <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px;min-width:0">
-       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Viewer</label>
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px" for="ccssPreviewSelect">Profile Viewer</label>
       <select id="ccssPreviewSelect" style="width:100%;font-size:.78rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <option value="">Choose installed meter profile...</option>
       </select>
@@ -1262,7 +1262,7 @@ __PG_LOGO_DARK__
          <label style="font-size:.72rem;color:var(--text2);display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Keep every CCSS preview on the same 380 to 780 nm wavelength scale">
           <input type="checkbox" id="ccssPreviewLockXAxis" checked onchange="if(ccssPreviewLastPayload) ccssPreviewRender(ccssPreviewLastPayload)"> Lock X axis (380-780 nm)
          </label>
-         <select id="ccssExportFormat" style="min-width:160px;font-size:.74rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)" disabled>
+         <select id="ccssExportFormat" aria-label="Profile export format" style="min-width:160px;font-size:.74rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)" disabled>
           <option value="ccss">Export CCSS</option>
           <option value="ccmx">Export CCMX</option>
           <option value="csv">Export CSV</option>
@@ -1643,7 +1643,7 @@ __PG_LOGO_DARK__
    <span class="session-button-wrap">
     <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenHcfrImport()">Import</button>
     <span class="meter-help-tip" tabindex="0" title="Import an HCFR CHC session as preserved chart series and map supported analysis preferences. Existing sessions are not overwritten and pattern output is not restarted." aria-label="HCFR session import help">?</span>
-    <input type="file" id="meterHcfrImportInput" accept=".chc,application/octet-stream" style="display:none" onchange="meterImportHcfrChcFile(this)">
+    <input type="file" id="meterHcfrImportInput" aria-label="Import HCFR CHC session file" accept=".chc,application/octet-stream" style="display:none" onchange="meterImportHcfrChcFile(this)">
    </span>
   </div>
   <div class="session-format-note" id="meterHcfrSessionStatus">HCFR v17 export; supported historical CHC versions can be imported. Output changes are never applied automatically.</div>
@@ -1711,11 +1711,11 @@ __PG_LOGO_DARK__
   <div id="wifiConnect" class="hidden" style="margin-top:8px">
    <div class="grid">
     <div class="field">
-     <label>Network</label>
+     <label for="wifiSsid">Network</label>
      <input type="text" id="wifiSsid" readonly>
     </div>
     <div class="field">
-     <label>Password</label>
+     <label for="wifiPsk">Password</label>
      <input type="password" id="wifiPsk" placeholder="Enter password">
     </div>
    </div>
@@ -1757,15 +1757,15 @@ __PG_LOGO_DARK__
   <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect via HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
   <div class="grid">
    <div class="field">
-    <label>Calibration PC IP</label>
+    <label for="resolveIp">Calibration PC IP</label>
     <input type="text" id="resolveIp" placeholder="192.168.1.x">
    </div>
    <div class="field">
-    <label>Port</label>
+    <label for="resolvePort">Port</label>
     <input type="number" id="resolvePort" value="20002" min="1" max="65535">
    </div>
    <div class="field">
-    <label>Patch Size Override</label>
+    <label for="resolvePatchSize">Patch Size Override</label>
     <select id="resolvePatchSize" onchange="resolvePatchSizeChanged(this.value)">
      <option value="">Auto (follow software)</option>
      <option value="2">2% Window</option>
@@ -1795,12 +1795,12 @@ __PG_LOGO_DARK__
   <div class="info-grid" id="apStatus" style="margin-bottom:8px"></div>
   <div class="grid">
    <div class="field">
-    <label>SSID</label>
+    <label for="apSsid">SSID</label>
     <input type="text" id="apSsid" placeholder="PGenerator">
    </div>
    <div class="field">
-    <label>Password</label>
-    <input type="text" id="apPass" placeholder="Min 8 characters">
+    <label for="apPass">Password</label>
+    <input type="password" id="apPass" placeholder="Min 8 characters" autocomplete="off">
    </div>
   </div>
   <div class="btn-row" style="margin-top:8px">
@@ -1852,7 +1852,7 @@ __PG_AUTOMATION_CARD__
   <div class="info-grid" id="gpuMemInfo" style="margin-bottom:8px"></div>
   <div class="grid">
    <div class="field" id="gpuMemField">
-    <label>GPU Memory Allocation</label>
+    <label for="gpu_mem">GPU Memory Allocation</label>
     <select id="gpu_mem">
      <option value="64">64 MB</option>
      <option value="128">128 MB</option>
@@ -1861,7 +1861,7 @@ __PG_AUTOMATION_CARD__
     </select>
    </div>
    <div class="field" id="cmaMemField" style="display:none">
-    <label>Graphics Memory (CMA pool)</label>
+    <label for="cma_mb">Graphics Memory (CMA pool)</label>
     <select id="cma_mb">
      <option value="default">64 MB (Raspberry Pi OS default)</option>
      <option value="128">128 MB</option>
@@ -1902,7 +1902,7 @@ __PG_AUTOMATION_CARD__
     <button class="btn btn-sm btn-secondary" id="submitLogsBtn" onclick="submitLogs()" title="Download a diagnostic log bundle">&#128230; Submit Logs</button>
     <button class="btn btn-sm btn-secondary" id="exportSystemSettingsBtn" onclick="exportSystemSettings()" title="Download PGenerator+ settings, profiles, calibration history and custom diagnostic media">Export System Settings</button>
     <button class="btn btn-sm btn-secondary" id="importSystemSettingsBtn" onclick="selectSystemSettingsImport()" title="Restore PGenerator+ settings, profiles, calibration history and custom diagnostic media">Import System Settings</button>
-    <input type="file" id="systemSettingsImportFile" accept=".pgbackup,application/gzip" style="display:none" onchange="importSystemSettingsFile(this.files&&this.files[0])">
+    <input type="file" id="systemSettingsImportFile" aria-label="Import system settings backup" accept=".pgbackup,application/gzip" style="display:none" onchange="importSystemSettingsFile(this.files&&this.files[0])">
    </div>
    <div id="updateStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>
    <div id="systemBackupStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>
@@ -2009,11 +2009,11 @@ __PG_AUTOMATION_CARD__
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
 	   <div class="field">
-	    <label>Panel technology</label>
+	    <label for="meterAutoCalDisplayTypeSelect">Panel technology</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
 	   </div>
 	   <div class="field meter-autocal-ccss-row">
-	     <label>Meter profile (CCSS)</label>
+	     <label for="meterAutoCalCcssProfile">Meter profile (CCSS)</label>
 	     <select id="meterAutoCalCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
@@ -2048,8 +2048,8 @@ __PG_AUTOMATION_CARD__
 	      <div class="meter-autocal-panel-light-value" id="meterAutoCalPanelLightValue" style="font-size:.72rem;color:var(--text2);min-width:34px;text-align:right">--</div>
 	     </div>
 	     <div class="meter-autocal-panel-light-row" style="display:flex;align-items:center;gap:8px">
-	      <input type="range" id="meterAutoCalPanelLightRange" min="0" max="100" step="1" value="0" oninput="meterAutoCalSchedulePanelLightCommit(this.value,false)" onchange="meterAutoCalSchedulePanelLightCommit(this.value,true)" data-meter-autocal-panel-light disabled>
-	      <input type="number" id="meterAutoCalPanelLightInput" min="0" max="100" step="1" value="0" oninput="meterAutoCalSyncPanelLightRange(this.value)" onchange="meterAutoCalCommitPanelLight(this.value)" data-meter-autocal-panel-light disabled style="width:68px;min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 8px;box-sizing:border-box;color-scheme:dark">
+	      <input type="range" id="meterAutoCalPanelLightRange" aria-label="Panel light level" min="0" max="100" step="1" value="0" oninput="meterAutoCalSchedulePanelLightCommit(this.value,false)" onchange="meterAutoCalSchedulePanelLightCommit(this.value,true)" data-meter-autocal-panel-light disabled>
+	      <input type="number" id="meterAutoCalPanelLightInput" aria-label="Panel light level" min="0" max="100" step="1" value="0" oninput="meterAutoCalSyncPanelLightRange(this.value)" onchange="meterAutoCalCommitPanelLight(this.value)" data-meter-autocal-panel-light disabled style="width:68px;min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 8px;box-sizing:border-box;color-scheme:dark">
 	     </div>
 	    </div>
    </div>
