@@ -1111,6 +1111,13 @@ test('noise_floor_row_has_coarse_pointer_touch_target_css', () => {
   for (const sel of ['.noise-floor-preset', '#meterRgbBalanceNoiseFloorClear', '#meterRgbBalanceNoiseFloorHint', '#meterRgbBalanceNoiseFloor\\b'.replace('\\b','')]) {
     assert(block.includes(sel.replace(/\\b/,'')), 'block covers ' + sel);
   }
+  // The Empirical-mode select joined the row after the first touch pass
+  // and measured 94x28 under pointer:coarse: the one control that turns the
+  // whole empirical feature on was the smallest target in the row. The loop
+  // above cannot catch it — a bare substring match on the input id also hits
+  // the select id (prefix) — so pin its own declaration, anchored.
+  assert(/#meterNoiseFloorControl #meterNoiseFloorMode\{min-height:44px\}/.test(block),
+    'mode select has its own 44px min-height rule');
   const html = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'usr', 'share', 'PGenerator', 'webui-body.html'), 'utf8');
   assert(/id="meterNoiseFloorControl"/.test(html), 'row label carries the scoping id');
 });
