@@ -21,6 +21,21 @@
 #   etc/udev/rules.d/*
 #
 # The archive is extracted over / so paths must match the installed layout.
+# Each release carries one payload per build target; the asset name records
+# the target (pi4-biasi ships unsuffixed -- legacy name predates multi-
+# target releases; pi5-bookworm-armhf carries a "-pi5" tag). The device
+# detects its own target and refuses a payload built for another board.
+#
+# OTA family gate (see ota_gate_reason):
+#   Same MAJOR.MINOR family always applies. Crossing MINOR (2.13.x ->
+#   2.14.0) applies only when the release notes declare the payload a
+#   pure overlay by carrying a line reading exactly
+#       OTA-Family: cross
+#   within the first 2000 characters (the excerpt release_field body
+#   returns). The directive is a release-side promise: no kernel,
+#   driver, boot or rootfs-layout changes. Crossing the MAJOR component
+#   (2.x -> 3.x) is never OTA -- that is a new image line, re-flash.
+#   Releases without the directive keep the old same-family behaviour.
 #
 
 set -euo pipefail
@@ -229,10 +244,18 @@ json_escape() {
 }
 
 # ── Extract a field from the GitHub release JSON ──
+# asset_url picks the payload for THIS device: PG_OTA_TARGET (set by the
+# caller from device_target()) filters asset names via the same rule as
+# asset_matches_target(). Without a target, behaviour is the legacy
+# first-tarball pick (kept for the standalone "version" use of this
+# script and for old releases that shipped one unsuffixed asset).
 release_field() {
  local key="$1"
  printf '%s' "$release_json" | perl -MJSON::PP -e '
   use JSON::PP qw(decode_json);
+  # Release notes carry UTF-8 (names, arrows); decode_json gives wide
+  # chars that warn on print without an output layer.
+  binmode(STDOUT, ":encoding(UTF-8)");
   my $key = shift;
   local $/;
   my $json = <STDIN>;
@@ -240,12 +263,21 @@ release_field() {
   exit 1 if(!$rel || ref($rel) ne "HASH");
   my $value = "";
   if($key eq "asset_url") {
+   my $target = $ENV{PG_OTA_TARGET} // "";
    if(ref($rel->{assets}) eq "ARRAY") {
     for my $asset (@{$rel->{assets}}) {
      next if(ref($asset) ne "HASH");
      my $url = $asset->{browser_download_url} // "";
      my $name = $asset->{name} // "";
      next if($url !~ /\.tar\.gz$/i);
+     if($target ne "") {
+      my $is_pi5 = ($name =~ /(?:^|-)pi5/) ? 1 : 0;
+      # A payload tagged for another board is never a candidate, even
+      # when it is the only tarball the release carries.
+      next if($target eq "pi5-bookworm-armhf" ? !$is_pi5 : $is_pi5);
+     }
+     # Preferred: the named payload. Fallback: first surviving tarball
+     # (keeps old single-asset releases with a different name working).
      if($name =~ /pgenerator[-_]?plus.*\.tar\.gz/i) {
       $value = $url;
       last;
@@ -257,7 +289,9 @@ release_field() {
    $value = $rel->{body} // "";
    $value =~ s/\r\n/\n/g;
    $value =~ s/\r/\n/g;
-   $value = substr($value,0,500);
+   # 2000 chars: the visible changelog excerpt, and the window the OTA
+   # family directive must appear in (see ota_gate_reason).
+   $value = substr($value,0,2000);
   } else {
    $value = $rel->{$key} // "";
   }
@@ -292,6 +326,40 @@ same_ota_family() {
  [ "$(major_version "${1:-0}")" = "$(major_version "${2:-0}")" ]
 }
 
+# Major component (first dotted segment) of a version.
+major_component() {
+ local v
+ v=$(normalize_version "${1:-0}")
+ printf '%s' "$(printf '%s' "$v" | cut -d. -f1)"
+}
+
+# OTA gate for a candidate release. Echoes an empty string when the
+# update may proceed, or a one-line refusal reason. Three tiers:
+#   same MAJOR.MINOR family   -> always allowed (interim updates).
+#   cross MINOR, same major   -> allowed only when the release notes
+#     carry the directive line "OTA-Family: cross" (case-insensitive),
+#     a release-side promise that the payload is a pure /usr overlay
+#     with no kernel/driver/boot changes. Default (no directive) keeps
+#     the old refuse-and-reflash behaviour, so forgetting the marker
+#     fails safe.
+#   cross major (2.x -> 3.x)  -> never; that is a new image line.
+# Release notes template gains the directive line when the maintainer
+# judges a MINOR release overlay-safe (see tools/How to Build.txt step
+# for release notes; checker: tools/check_release_manifest.sh).
+ota_gate_reason() {
+ local current="$1" latest="$2" body="$3"
+ same_ota_family "$current" "$latest" && return 0
+ if [ "$(major_component "$current")" != "$(major_component "$latest")" ]; then
+  printf 'Release %s crosses the major version boundary from %s. Major releases are image-only: download the full image and re-flash your SD card.' "$latest" "$current"
+  return 1
+ fi
+ if printf '%s' "$body" | grep -qiE 'OTA-Family:[[:space:]]*cross'; then
+  return 0
+ fi
+ printf 'A newer image release (%s) is available, but it is outside the OTA family of your current version (%s). OTA updates apply within the same major.minor series, or across minor versions only when the release is published as overlay-safe. To move to %s, download the full image and re-flash your SD card.' "$latest" "$current" "$latest"
+ return 1
+}
+
 is_prerelease_version() {
  local version
  version=$(normalize_version "$1")
@@ -299,6 +367,42 @@ is_prerelease_version() {
   *[!0-9.]* ) return 0 ;;
  esac
  return 1
+}
+
+# ── Device build target ──
+# One OTA payload per target; the payload for the wrong board must never
+# be extracted. The target is an operator-set key in PGenerator.conf
+# (the image builder writes it; the WebUI can override it), with a
+# fallback probe of the Pi model string for devices flashed before the
+# key existed. Values must match the release asset naming:
+#   pi4-biasi           -> unsuffixed tarball (legacy)
+#   pi5-bookworm-armhf  -> tarball tagged "-pi5"
+device_target() {
+ local t model
+ t=$(read_conf_val ota_target)
+ # Values outside the known set are treated as unset: a typo in the conf
+ # must not turn asset selection into an unknown-target refusal.
+ case "$t" in
+  pi4-biasi|pi5-bookworm-armhf ) printf '%s' "$t"; return 0 ;;
+ esac
+ model=""
+ [ -r /proc/device-tree/model ] && model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
+ case "$model" in
+  *"Raspberry Pi 5"*|*"Raspberry Pi 400"* ) printf 'pi5-bookworm-armhf' ;;
+  * ) printf 'pi4-biasi' ;;
+ esac
+}
+
+# True when an asset name belongs to this device's target. Unknown target
+# tags on other assets do NOT disqualify them for a pi4 device: pi4 ships
+# unsuffixed and a bare match list keeps old single-asset releases working.
+asset_matches_target() {
+ local name="$1" target="$2"
+ case "$target" in
+  pi5-bookworm-armhf ) [[ "$name" == *-pi5* ]] ;;
+  pi4-biasi          ) [[ "$name" != *-pi5* ]] ;;
+  * ) return 2 ;; # unknown target: caller must refuse to pick blindly
+ esac
 }
 
 version_gt() {
@@ -425,6 +529,7 @@ case "$cmd" in
 
  check)
   current=$(get_current_version)
+  export PG_OTA_TARGET="$(device_target)"
   release_json=$(get_latest_release)
   if [ -z "$release_json" ]; then
    printf '{"status":"error","message":%s}\n' "$(json_escape "Cannot reach GitHub")"
@@ -466,13 +571,15 @@ case "$cmd" in
    update_available=false
   fi
 
-  # OTA family gate: only offer OTA updates within the same MAJOR.MINOR
-  # family (e.g. 2.7.x -> 2.7.x). Crossing to a new family (2.7.x -> 2.8.x)
-  # requires re-flashing because the release may ship a new kernel driver
-  # or other changes that cannot be expressed as a tar overlay.
-  if ! same_ota_family "$current" "$latest"; then
+  # OTA family gate: offer the update only within the same MAJOR.MINOR
+  # family, or across MINOR when the release declares itself overlay-safe
+  # with the "OTA-Family: cross" directive (see ota_gate_reason). A major
+  # crossing or an undeclared minor crossing stays re-flash-only.
+  gate_reason=""
+  if ! gate_reason=$(ota_gate_reason "$current" "$latest" "$changelog"); then
    update_available=false
-   changelog="A newer image release ($latest) is available, but it is outside the OTA family of your current version ($current). OTA updates only apply within the same major.minor series (e.g. 2.7.x -> 2.7.x). To move to $latest, download the full image and re-flash your SD card."
+   changelog="$gate_reason"
+   asset_url=""
   fi
 
   trusted=false
@@ -490,6 +597,7 @@ case "$cmd" in
 
  apply)
   current=$(get_current_version)
+  export PG_OTA_TARGET="$(device_target)"
   log_msg "Update check started (current: $current)"
 
   # Custom-repo root-trust gate (PR-20 review finding #1): apply extracts
@@ -514,6 +622,7 @@ case "$cmd" in
   latest=$(release_field tag_name 2>/dev/null | sed 's/^v//')
   asset_url=$(release_field asset_url 2>/dev/null || true)
   message=$(release_field message 2>/dev/null || true)
+  body=$(release_field body 2>/dev/null || true)
 
     if is_prerelease_version "$current"; then
      log_msg "ERROR: OTA updates are disabled on beta builds ($current)"
@@ -534,20 +643,20 @@ case "$cmd" in
    exit 0
   fi
 
-  # OTA family gate: refuse to apply an update that crosses a MAJOR.MINOR
-  # boundary. Such releases may ship a new kernel driver or other changes
-  # that cannot be delivered as a tar overlay; the user must re-flash.
-  if ! same_ota_family "$current" "$latest"; then
-   log_msg "ERROR: $latest is outside the OTA family of $current -- re-flash the image"
-   echo "ERROR: Release $latest is outside the OTA family of your current version $current."
-   echo "OTA updates only apply within the same major.minor series (e.g. 2.7.x -> 2.7.x)."
-   echo "To install $latest, download the full image and re-flash your SD card."
+  # OTA family gate: same family applies; cross-MINOR applies only with
+  # the release-side "OTA-Family: cross" directive; cross-major never.
+  # (Same check the check-branch used to offer the update.)
+  gate_reason=""
+  if ! gate_reason=$(ota_gate_reason "$current" "$latest" "$body"); then
+   log_msg "ERROR: $gate_reason"
+   echo "ERROR: $gate_reason"
    exit 1
   fi
 
   if [ -z "$asset_url" ]; then
-   log_msg "ERROR: No .tar.gz asset found in release $latest"
-   echo "ERROR: No .tar.gz asset found in release"
+   log_msg "ERROR: No OTA payload for target $PG_OTA_TARGET in release $latest"
+   echo "ERROR: Release $latest has no update payload for this device (target $PG_OTA_TARGET)."
+   echo "Check the release assets or re-flash the image for this board."
    exit 1
   fi
 
@@ -555,6 +664,15 @@ case "$cmd" in
     require_writable_path "/usr/share/PGenerator" "PGenerator install tree"
 
   log_msg "Downloading $latest from $asset_url"
+  # Second target check at the download site: even if asset selection or
+  # config changed between check and apply, a payload tagged for another
+  # board never gets extracted.
+  asset_name="${asset_url##*/}"
+  if ! asset_matches_target "$asset_name" "$PG_OTA_TARGET"; then
+   log_msg "ERROR: refusing to extract payload for wrong target: $asset_name (device: $PG_OTA_TARGET)"
+   echo "ERROR: Selected payload $asset_name does not match this device (target $PG_OTA_TARGET)."
+   exit 1
+  fi
   mkdir -p "$UPDATE_DIR"
   tarball="$UPDATE_DIR/pgenerator-plus-${latest}.tar.gz"
   if ! curl -f $CURL_OPTS -H "$GITHUB_UA" -o "$tarball" "$asset_url" 2>/dev/null; then
