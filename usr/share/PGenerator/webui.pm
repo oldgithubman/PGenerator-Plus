@@ -10612,6 +10612,7 @@ sub webui_apply_config (@) {
    # gate (deferred drive-by install). Any new security-gated conf key
    # must be denied here too.
    next if($k eq "ota_repo" || $k eq "ota_repo_trusted"); # gated keys
+   next if($k eq "ota_target"); # picks which board's OTA payload lands at /
    my $cur=defined($pgenerator_conf{$k}) ? "$pgenerator_conf{$k}" : "";
    my $value_changed=("$changes{$k}" ne $cur);
    # Every POST derives 7-14 keys beyond what the caller sent and each sudo is
