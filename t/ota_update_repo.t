@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 40;
+use Test::More tests => 41;
 
 my $script = "$Bin/../usr/sbin/pgenerator-update";
 ok(-f $script, 'pgenerator-update is present');
@@ -226,6 +226,8 @@ my ($write_loop) = $pm_src =~ /(foreach my \$k \(sort keys %changes\) \{.*?\n   
 ok($write_loop, 'generic config write loop extracted');
 ok($write_loop && $write_loop =~ /next if\(\$k eq "ota_repo" \|\| \$k eq "ota_repo_trusted"\)/,
    'generic config writer denylists ota_repo and ota_repo_trusted');
+ok($write_loop && $write_loop =~ /next if\(\$k eq "ota_target"\)/,
+   'generic config writer denylists ota_target (picks the OTA payload board)');
 
 # Behavioral sim: parse a drive-by-shaped body exactly as the route does,
 # then run only the extracted deny decisions; the gated keys must not

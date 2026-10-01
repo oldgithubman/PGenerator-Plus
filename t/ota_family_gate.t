@@ -15,7 +15,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 24;
+use Test::More tests => 35;
 
 my $script = "$Bin/../usr/sbin/pgenerator-update";
 ok(-f $script, 'pgenerator-update is present');
@@ -64,7 +64,7 @@ sub run_bash {
  like($out, qr/outside the OTA family/, 'cross-MINOR refusal is the reflash message');
 }
 {
- my ($out) = run_bash(q{if ota_gate_reason "2.13.4" "2.14.0" "What is new\n\nOTA-Family: cross\n\n- features"; then echo "RC=0"; else echo "RC=1"; fi});
+ my ($out) = run_bash(q{if ota_gate_reason "2.13.4" "2.14.0" $'What is new\n\nOTA-Family: cross\n\n- features'; then echo "RC=0"; else echo "RC=1"; fi});
  like($out, qr/RC=0/, 'cross-MINOR with directive: allowed');
 }
 {
@@ -79,6 +79,24 @@ sub run_bash {
 {
  my ($out) = run_bash(q{if ota_gate_reason "2.13.4-beta" "2.14.0" "OTA-Family: cross"; then echo "RC=0"; else echo "RC=1"; fi});
  like($out, qr/RC=0/, 'prerelease suffix normalizes for the gate (apply has its own beta guard)');
+}
+
+{
+ # The directive vouches only for the step from the previous minor; a
+ # device two minors behind may lack an image-only minor's kernel/driver.
+ my ($out) = run_bash(q{if ota_gate_reason "2.13.4" "2.15.0" "OTA-Family: cross"; then echo "RC=0"; else echo "RC=1"; fi});
+ like($out, qr/RC=1/, 'cross-MINOR skipping a minor refuses even WITH the directive');
+ like($out, qr/re-flash/, 'skipped-minor refusal points at re-flash');
+}
+# The directive must be a line of its own; prose that mentions or negates
+# it must not open the gate.
+for my $body (
+ "Do NOT add OTA-Family: cross here; 2.14 ships a new kernel",
+ "OTA-Family: crossing minor is not supported",
+ "Earlier releases used OTA-Family: cross",
+) {
+ my ($out) = run_bash(qq{if ota_gate_reason "2.13.4" "2.14.0" "$body"; then echo "RC=0"; else echo "RC=1"; fi});
+ like($out, qr/RC=1/, "prose mention does not open the gate: $body");
 }
 
 # ── asset_matches_target ──
@@ -138,6 +156,21 @@ is($empty, '', 'pi4 device gets no asset from a pi5-only release (apply refuses)
  # No /proc/device-tree/model here (non-Pi test host) -> falls back to pi4.
  my ($out2) = run_bash("device_target", PGENERATOR_CONF_FILE => $conf);
  is($out2, 'pi4-biasi', 'unknown ota_target value falls back to model probe (pi4 default off-Pi)');
+}
+
+# ── model_target: Pi model string -> build target ──
+# Pi 400 and CM4 are BCM2711 (Pi 4 family); Pi 500 and CM5 are BCM2712.
+for my $c (
+ [ 'Raspberry Pi 4 Model B Rev 1.5',        'pi4-biasi'          ],
+ [ 'Raspberry Pi 400 Rev 1.1',              'pi4-biasi'          ],
+ [ 'Raspberry Pi Compute Module 4 Rev 1.1', 'pi4-biasi'          ],
+ [ 'Raspberry Pi 5 Model B Rev 1.0',        'pi5-bookworm-armhf' ],
+ [ 'Raspberry Pi 500 Rev 1.0',              'pi5-bookworm-armhf' ],
+ [ 'Raspberry Pi Compute Module 5 Rev 1.0', 'pi5-bookworm-armhf' ],
+) {
+ my ($model,$want) = @$c;
+ my ($out) = run_bash("model_target '$model'");
+ is($out, $want, "model_target: $model");
 }
 
 # ── directive window: body excerpt must reach past the old 500-char cap ──

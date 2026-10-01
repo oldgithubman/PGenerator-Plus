@@ -27,15 +27,10 @@
 # detects its own target and refuses a payload built for another board.
 #
 # OTA family gate (see ota_gate_reason):
-#   Same MAJOR.MINOR family always applies. Crossing MINOR (2.13.x ->
-#   2.14.0) applies only when the release notes declare the payload a
-#   pure overlay by carrying a line reading exactly
-#       OTA-Family: cross
-#   within the first 2000 characters (the excerpt release_field body
-#   returns). The directive is a release-side promise: no kernel,
-#   driver, boot or rootfs-layout changes. Crossing the MAJOR component
-#   (2.x -> 3.x) is never OTA -- that is a new image line, re-flash.
-#   Releases without the directive keep the old same-family behaviour.
+#   Same MAJOR.MINOR family always applies. Stepping to the NEXT minor
+#   (2.13.x -> 2.14.0) applies only when the release notes carry a line
+#   reading exactly "OTA-Family: cross" within the first 2000 characters.
+#   Skipping a minor, or crossing MAJOR, is never OTA: re-flash.
 #
 
 set -euo pipefail
@@ -326,26 +321,27 @@ same_ota_family() {
  [ "$(major_version "${1:-0}")" = "$(major_version "${2:-0}")" ]
 }
 
-# Major component (first dotted segment) of a version.
+# Major / minor component of a version as a bare integer (0 if absent).
 major_component() {
  local v
- v=$(normalize_version "${1:-0}")
- printf '%s' "$(printf '%s' "$v" | cut -d. -f1)"
+ v=$(normalize_version "${1:-0}" | cut -d. -f1 | sed 's/[^0-9].*//')
+ printf '%s' "${v:-0}"
+}
+minor_component() {
+ local v
+ v=$(normalize_version "${1:-0}" | cut -s -d. -f2 | sed 's/[^0-9].*//')
+ printf '%s' "${v:-0}"
 }
 
-# OTA gate for a candidate release. Echoes an empty string when the
-# update may proceed, or a one-line refusal reason. Three tiers:
-#   same MAJOR.MINOR family   -> always allowed (interim updates).
-#   cross MINOR, same major   -> allowed only when the release notes
-#     carry the directive line "OTA-Family: cross" (case-insensitive),
-#     a release-side promise that the payload is a pure /usr overlay
-#     with no kernel/driver/boot changes. Default (no directive) keeps
-#     the old refuse-and-reflash behaviour, so forgetting the marker
-#     fails safe.
-#   cross major (2.x -> 3.x)  -> never; that is a new image line.
-# Release notes template gains the directive line when the maintainer
-# judges a MINOR release overlay-safe (see tools/How to Build.txt step
-# for release notes; checker: tools/check_release_manifest.sh).
+# OTA gate for a candidate release. Prints nothing and returns 0 when the
+# update may proceed, or prints a one-line refusal reason and returns 1.
+#   same MAJOR.MINOR          -> allowed (interim updates).
+#   next MINOR, same major    -> allowed only when the notes carry a line
+#     reading exactly "OTA-Family: cross" (case-insensitive). The marker
+#     vouches only for the step from the previous minor, so a device two
+#     minors behind could lack an image-only minor's kernel or driver
+#     (2.8.1's vc4 HDMI driver is why this gate exists).
+#   skipped MINOR, or MAJOR   -> never; re-flash.
 ota_gate_reason() {
  local current="$1" latest="$2" body="$3"
  same_ota_family "$current" "$latest" && return 0
@@ -353,10 +349,11 @@ ota_gate_reason() {
   printf 'Release %s crosses the major version boundary from %s. Major releases are image-only: download the full image and re-flash your SD card.' "$latest" "$current"
   return 1
  fi
- if printf '%s' "$body" | grep -qiE 'OTA-Family:[[:space:]]*cross'; then
+ if [ "$(minor_component "$latest")" -eq $(( $(minor_component "$current") + 1 )) ] &&
+    printf '%s\n' "$body" | grep -qiE '^[[:space:]]*OTA-Family:[[:space:]]*cross[[:space:]]*$'; then
   return 0
  fi
- printf 'A newer image release (%s) is available, but it is outside the OTA family of your current version (%s). OTA updates apply within the same major.minor series, or across minor versions only when the release is published as overlay-safe. To move to %s, download the full image and re-flash your SD card.' "$latest" "$current" "$latest"
+ printf 'A newer image release (%s) is available, but it is outside the OTA family of your current version (%s). OTA updates apply within the same major.minor series, or to the next minor version only when that release is published as overlay-safe. To move to %s, download the full image and re-flash your SD card.' "$latest" "$current" "$latest"
  return 1
 }
 
@@ -371,10 +368,9 @@ is_prerelease_version() {
 
 # ── Device build target ──
 # One OTA payload per target; the payload for the wrong board must never
-# be extracted. The target is an operator-set key in PGenerator.conf
-# (the image builder writes it; the WebUI can override it), with a
-# fallback probe of the Pi model string for devices flashed before the
-# key existed. Values must match the release asset naming:
+# be extracted. An operator may pin the target with the ota_target key in
+# PGenerator.conf (hand-edited; the generic WebUI config writer refuses
+# it); otherwise the Pi model string decides. Values match asset naming:
 #   pi4-biasi           -> unsuffixed tarball (legacy)
 #   pi5-bookworm-armhf  -> tarball tagged "-pi5"
 device_target() {
@@ -387,8 +383,15 @@ device_target() {
  esac
  model=""
  [ -r /proc/device-tree/model ] && model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
- case "$model" in
-  *"Raspberry Pi 5"*|*"Raspberry Pi 400"* ) printf 'pi5-bookworm-armhf' ;;
+ model_target "$model"
+}
+
+# Map a /proc/device-tree/model string to a build target. BCM2712 boards
+# (Pi 5, Pi 500, CM5) take the Pi 5 payload; BCM2711 boards (Pi 4, Pi 400,
+# CM4) take the Pi 4 one -- same split as conf.pm and pg_is_pi4_family.
+model_target() {
+ case "$1" in
+  *"Raspberry Pi 5"*|*"Raspberry Pi Compute Module 5"*|*BCM2712* ) printf 'pi5-bookworm-armhf' ;;
   * ) printf 'pi4-biasi' ;;
  esac
 }
@@ -571,10 +574,7 @@ case "$cmd" in
    update_available=false
   fi
 
-  # OTA family gate: offer the update only within the same MAJOR.MINOR
-  # family, or across MINOR when the release declares itself overlay-safe
-  # with the "OTA-Family: cross" directive (see ota_gate_reason). A major
-  # crossing or an undeclared minor crossing stays re-flash-only.
+  # OTA family gate (see ota_gate_reason); apply re-runs the same check.
   gate_reason=""
   if ! gate_reason=$(ota_gate_reason "$current" "$latest" "$changelog"); then
    update_available=false
@@ -643,9 +643,7 @@ case "$cmd" in
    exit 0
   fi
 
-  # OTA family gate: same family applies; cross-MINOR applies only with
-  # the release-side "OTA-Family: cross" directive; cross-major never.
-  # (Same check the check-branch used to offer the update.)
+  # OTA family gate: the same check the check-branch used (ota_gate_reason).
   gate_reason=""
   if ! gate_reason=$(ota_gate_reason "$current" "$latest" "$body"); then
    log_msg "ERROR: $gate_reason"
