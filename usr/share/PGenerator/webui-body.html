@@ -359,14 +359,14 @@ __PG_LOGO_DARK__
     <div class="meter-card-header-meter"><select id="meterMeasurementPort" aria-label="Measurement meter" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="Below the Trigger, take 2, 3, or 5 physical meter samples on the same patch and average them in linear XYZ. The meter process stays open between samples." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label for="meterLowLightMode">Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="One physical meter sample">Off (single read)</option><option value="a" title="Average 2 physical XYZ samples">2 reads (a)</option><option value="aa" title="Average 3 physical XYZ samples">3 reads (aa)</option><option value="aaa" title="Average 5 physical XYZ samples">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" aria-label="Low light handler trigger luminance" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Expected target luminance below which repeated sampling is used. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-display">
-    <label class="meter-header-label" for="meterDisplayType">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
+    <label class="meter-header-label" for="meterDisplayType">Display Type <span class="meter-help-tip" aria-hidden="true" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
     <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile."><option value="non_refresh">Non-refresh display</option><option value="refresh">Refresh display</option></select>
    </div>
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
-     <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" id="meterCorrectionProfileHelp" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
+     <label id="meterCcssProfileCaption" for="meterCcssProfile">Meter Profile (CCSS / CCMX) <span class="meter-help-tip" aria-hidden="true" id="meterCorrectionProfileHelp" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
      <div class="meter-ccss-profile-control-row">
-      <select id="meterCcssProfile" aria-label="Meter correction profile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
+      <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
       <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2)">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
      </div>
     </div>
@@ -509,14 +509,14 @@ __PG_LOGO_DARK__
          </label>
         </div>
         <div class="meter-target-white-row">
-         <label class="meter-target-inline-label" for="meterTargetWhite">Target White <span class="meter-help-tip" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
+         <label class="meter-target-inline-label" for="meterTargetWhite">Target White <span class="meter-help-tip" aria-hidden="true" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
          <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
         <div class="meter-target-black-row">
-         <label class="meter-target-inline-label" for="meterTargetBlack">Target Black <span class="meter-help-tip" title="Sets the black-floor luminance used to anchor the bottom of the target EOTF curve. Use measured follows the series black reading; Measure displays black and stores a fixed value." aria-label="Target black luminance help">?</span></label>
+         <label class="meter-target-inline-label" for="meterTargetBlack">Target Black <span class="meter-help-tip" aria-hidden="true" title="Sets the black-floor luminance used to anchor the bottom of the target EOTF curve. Use measured follows the series black reading; Measure displays black and stores a fixed value." aria-label="Target black luminance help">?</span></label>
          <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
@@ -526,7 +526,7 @@ __PG_LOGO_DARK__
      </div>
     </div>
    <div class="field field-gamut">
-    <label for="meterTargetGamut">Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
+    <label for="meterTargetGamut">Target Colorspace <span class="meter-help-tip" aria-hidden="true" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
      <option value="auto">Auto (match signal)</option>
      <option value="bt709" selected>BT.709</option>
@@ -536,7 +536,7 @@ __PG_LOGO_DARK__
     </select>
   </div>
   <div class="field field-gamma">
-    <label for="meterTargetGamma">Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
+    <label for="meterTargetGamma">Target Gamma <span class="meter-help-tip" aria-hidden="true" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
@@ -546,7 +546,7 @@ __PG_LOGO_DARK__
      </select>
     </div>
    <div class="field field-chromaticity">
-    <label for="meterChromaticityChart">Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a selected spectrophotometer.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It requires a selected spectrophotometer.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a selected spectrophotometer.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They require a selected spectrophotometer.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It requires a selected spectrophotometer.&#10;&#10;A colorimeter and CCMX contain only tristimulus or 3x3 matrix data and cannot supply the spectra needed for these alternate observers. ArgyllCMS can derive alternate observers from certain CCSS-capable colorimeters, but PGenerator enables them only with a spectrophotometer selected to prevent unsupported meter modes. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
+    <label for="meterChromaticityChart">Observer <span class="meter-help-tip" aria-hidden="true" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a selected spectrophotometer.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It requires a selected spectrophotometer.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a selected spectrophotometer.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They require a selected spectrophotometer.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It requires a selected spectrophotometer.&#10;&#10;A colorimeter and CCMX contain only tristimulus or 3x3 matrix data and cannot supply the spectra needed for these alternate observers. ArgyllCMS can derive alternate observers from certain CCSS-capable colorimeters, but PGenerator enables them only with a spectrophotometer selected to prevent unsupported meter modes. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
     <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
      <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
      <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
@@ -567,7 +567,7 @@ __PG_LOGO_DARK__
 	    </div>
 	   </div>
   <div class="field field-patch">
-    <label for="meterPatchSize">Patch Size <span class="meter-help-tip" title="Controls the measurement pattern area. Window options set the patch percentage; APL options add a background to maintain the stated average picture level." aria-label="Patch size help">?</span></label>
+    <label for="meterPatchSize">Patch Size <span class="meter-help-tip" aria-hidden="true" title="Controls the measurement pattern area. Window options set the patch percentage; APL options add a background to maintain the stated average picture level." aria-label="Patch size help">?</span></label>
     <select id="meterPatchSize">
      <option value="2">2% Window</option>
      <option value="5">5% Window</option>
@@ -1202,13 +1202,13 @@ __PG_LOGO_DARK__
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">3x3 XYZ Correction Matrix</label>
      <div class="meter-matrix-grid">
       <input type="number" id="meterCcmxM11" aria-label="Matrix row 1 column 1 (X to X)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM12" aria-label="Matrix row 1 column 2 (X to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM13" aria-label="Matrix row 1 column 3 (X to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM21" aria-label="Matrix row 2 column 1 (Y to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM12" aria-label="Matrix row 1 column 2 (Y to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM13" aria-label="Matrix row 1 column 3 (Z to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM21" aria-label="Matrix row 2 column 1 (X to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
       <input type="number" id="meterCcmxM22" aria-label="Matrix row 2 column 2 (Y to Y)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM23" aria-label="Matrix row 2 column 3 (Y to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM31" aria-label="Matrix row 3 column 1 (Z to X)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
-      <input type="number" id="meterCcmxM32" aria-label="Matrix row 3 column 2 (Z to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM23" aria-label="Matrix row 2 column 3 (Z to Y)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM31" aria-label="Matrix row 3 column 1 (X to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM32" aria-label="Matrix row 3 column 2 (Y to Z)" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
       <input type="number" id="meterCcmxM33" aria-label="Matrix row 3 column 3 (Z to Z)" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
      </div>
      <div style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">The CCMX applies corrected XYZ = matrix x measured XYZ. The selected target meter is written into the profile so ArgyllCMS can apply it as a meter correction.</div>
@@ -1800,7 +1800,7 @@ __PG_LOGO_DARK__
    </div>
    <div class="field">
     <label for="apPass">Password</label>
-    <input type="password" id="apPass" placeholder="Min 8 characters" autocomplete="off">
+    <input type="password" id="apPass" placeholder="Min 8 characters" autocomplete="new-password">
    </div>
   </div>
   <div class="btn-row" style="margin-top:8px">
@@ -2048,8 +2048,8 @@ __PG_AUTOMATION_CARD__
 	      <div class="meter-autocal-panel-light-value" id="meterAutoCalPanelLightValue" style="font-size:.72rem;color:var(--text2);min-width:34px;text-align:right">--</div>
 	     </div>
 	     <div class="meter-autocal-panel-light-row" style="display:flex;align-items:center;gap:8px">
-	      <input type="range" id="meterAutoCalPanelLightRange" aria-label="Panel light level" min="0" max="100" step="1" value="0" oninput="meterAutoCalSchedulePanelLightCommit(this.value,false)" onchange="meterAutoCalSchedulePanelLightCommit(this.value,true)" data-meter-autocal-panel-light disabled>
-	      <input type="number" id="meterAutoCalPanelLightInput" aria-label="Panel light level" min="0" max="100" step="1" value="0" oninput="meterAutoCalSyncPanelLightRange(this.value)" onchange="meterAutoCalCommitPanelLight(this.value)" data-meter-autocal-panel-light disabled style="width:68px;min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 8px;box-sizing:border-box;color-scheme:dark">
+	      <input type="range" id="meterAutoCalPanelLightRange" aria-labelledby="meterAutoCalPanelLightLabel" min="0" max="100" step="1" value="0" oninput="meterAutoCalSchedulePanelLightCommit(this.value,false)" onchange="meterAutoCalSchedulePanelLightCommit(this.value,true)" data-meter-autocal-panel-light disabled>
+	      <input type="number" id="meterAutoCalPanelLightInput" aria-labelledby="meterAutoCalPanelLightLabel" min="0" max="100" step="1" value="0" oninput="meterAutoCalSyncPanelLightRange(this.value)" onchange="meterAutoCalCommitPanelLight(this.value)" data-meter-autocal-panel-light disabled style="width:68px;min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 8px;box-sizing:border-box;color-scheme:dark">
 	     </div>
 	    </div>
    </div>

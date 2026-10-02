@@ -584,6 +584,7 @@ function applyConfigState(nextConfig){
  document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
  meterSyncHdrMetadata();
  try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  if(!meterSettingsLoaded) applyMeterTargetGammaDefault(true);
@@ -687,6 +688,10 @@ function meterCopyHdrMetadataFields(fromMode,toMode){
   const dst=document.getElementById(meterHdrMetadataFieldId(key,toMode));
   if(src&&dst) dst.value=src.value;
  });
+ // Direct .value writes fire no input/change event, so mirror validity after
+ // the copy: a DV-mode switch can move an out-of-range value into the dv_*
+ // fields with aria-invalid still absent.
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
 }
 
 let meterLastHdrMetadataMode=null;
@@ -833,7 +838,24 @@ function updateModeVisibility(){
 // Out-of-range HDR metadata values only surface via the native
 // validationMessage on submit; mirror the validity state onto aria-invalid so
 // assistive tech and the CSS red border react while the operator types.
-['max_luma','min_luma','max_cll','max_fall','dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'].forEach(function(id){
+// This is feedback only: Apply does not call reportValidity(), so an
+// out-of-range value still reaches the server when Apply is clicked.
+// resetDefaults(), the loadInfo()/config-seed writes and
+// meterCopyHdrMetadataFields() assign .value directly, which fires neither
+// input nor change — they must call pgRefreshHdrMetadataValidity() or
+// aria-invalid goes stale (stays true after Defaults clears a bad field, or
+// stays absent after a DV-mode copy moves one in).
+const PG_HDR_METADATA_FIELD_IDS=['max_luma','min_luma','max_cll','max_fall','dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'];
+function pgRefreshHdrMetadataValidity(){
+ PG_HDR_METADATA_FIELD_IDS.forEach(function(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const bad=el.validity&&(el.validity.rangeOverflow||el.validity.rangeUnderflow);
+  if(bad) el.setAttribute('aria-invalid','true');
+  else el.removeAttribute('aria-invalid');
+ });
+}
+PG_HDR_METADATA_FIELD_IDS.forEach(function(id){
  const el=document.getElementById(id);
  if(!el) return;
  const mark=function(){
@@ -2245,6 +2267,7 @@ function resetDefaults(){
 	 setVal('dv_transport','standard');
 	 setVal('dv_map_mode','2');
 	 setVal('dv_interface','0');
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
