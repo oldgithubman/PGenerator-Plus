@@ -1251,10 +1251,12 @@ function lgDisplayControlRender(){
   if(meta.type==='number'){
    const numeric=Number(value);
    const safe=Number.isFinite(numeric)?numeric:(meta.min||0);
-   html+='<input type="range" id="lgDcRange_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncNumber(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
-   html+='<input type="number" id="lgDcInput_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncRange(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
+   // The caption is a sibling div, not a <label>, so carry it onto each
+   // control via aria-label or AT announces the row's inputs unlabeled.
+   html+='<input type="range" aria-label="'+lgEscapeHtml(meta.label)+'" id="lgDcRange_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncNumber(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
+   html+='<input type="number" aria-label="'+lgEscapeHtml(meta.label)+'" id="lgDcInput_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncRange(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
   }else{
-   html+='<select id="lgDcInput_'+lgEscapeHtml(meta.key)+'" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>'+lgDisplayControlOptionHtml(meta,value)+'</select>';
+   html+='<select aria-label="'+lgEscapeHtml(meta.label)+'" id="lgDcInput_'+lgEscapeHtml(meta.key)+'" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>'+lgDisplayControlOptionHtml(meta,value)+'</select>';
   }
   html+='</div>';
   if(reason) html+='<div class="lg-display-control-note">'+lgEscapeHtml(reason)+'</div>';

@@ -584,6 +584,7 @@ function applyConfigState(nextConfig){
  document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
  meterSyncHdrMetadata();
  try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  if(!meterSettingsLoaded) applyMeterTargetGammaDefault(true);
@@ -687,6 +688,10 @@ function meterCopyHdrMetadataFields(fromMode,toMode){
   const dst=document.getElementById(meterHdrMetadataFieldId(key,toMode));
   if(src&&dst) dst.value=src.value;
  });
+ // Direct .value writes fire no input/change event, so mirror validity after
+ // the copy: a DV-mode switch can move an out-of-range value into the dv_*
+ // fields with aria-invalid still absent.
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
 }
 
 let meterLastHdrMetadataMode=null;
@@ -829,6 +834,37 @@ function updateModeVisibility(){
  };
  el.addEventListener('input',sync);
  el.addEventListener('change',sync);
+});
+// Out-of-range HDR metadata values only surface via the native
+// validationMessage on submit; mirror the validity state onto aria-invalid so
+// assistive tech and the CSS red border react while the operator types.
+// This is feedback only: Apply does not call reportValidity(), so an
+// out-of-range value still reaches the server when Apply is clicked.
+// resetDefaults(), the loadInfo()/config-seed writes and
+// meterCopyHdrMetadataFields() assign .value directly, which fires neither
+// input nor change — they must call pgRefreshHdrMetadataValidity() or
+// aria-invalid goes stale (stays true after Defaults clears a bad field, or
+// stays absent after a DV-mode copy moves one in).
+const PG_HDR_METADATA_FIELD_IDS=['max_luma','min_luma','max_cll','max_fall','dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'];
+function pgRefreshHdrMetadataValidity(){
+ PG_HDR_METADATA_FIELD_IDS.forEach(function(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const bad=el.validity&&(el.validity.rangeOverflow||el.validity.rangeUnderflow);
+  if(bad) el.setAttribute('aria-invalid','true');
+  else el.removeAttribute('aria-invalid');
+ });
+}
+PG_HDR_METADATA_FIELD_IDS.forEach(function(id){
+ const el=document.getElementById(id);
+ if(!el) return;
+ const mark=function(){
+  const bad=el.validity&&(el.validity.rangeOverflow||el.validity.rangeUnderflow);
+  if(bad) el.setAttribute('aria-invalid','true');
+  else el.removeAttribute('aria-invalid');
+ };
+ el.addEventListener('input',mark);
+ el.addEventListener('change',mark);
 });
 [['dv_max_luma','max_luma'],['dv_min_luma','min_luma'],['dv_max_cll','max_cll'],['dv_max_fall','max_fall']].forEach(function(pair){
  const el=document.getElementById(pair[0]);
@@ -1491,8 +1527,8 @@ async function loadInfo(quiet){
  }else{
   calDot.style.background='var(--text2)';
   calText.style.color='var(--text2)';
-  calText.textContent='No SW';
-  calWrap.title='No calibration software connected';
+  calText.textContent='Cal: none';
+  calWrap.title='Calibration software: not connected. Connect Calman or another calibration app to pair.';
  }
  // Update Resolve card status
  const rBadge=document.getElementById('resolveStatusBadge');
@@ -1890,6 +1926,8 @@ function diagPromptVideoRange(){
   const label=document.createElement('span');
   label.textContent='Frame range for extracted frames:';
   const sel=document.createElement('select');
+  // The caption is a sibling span, not a <label>; name the select directly.
+  sel.setAttribute('aria-label','Frame range for extracted frames');
   sel.className='inline-select';
   sel.style.cssText='font-size:.68rem;max-width:unset';
   sel.innerHTML='<option value="limited">Limited (16-235, recommended)</option><option value="full">Full (0-255)</option>';
@@ -2229,6 +2267,7 @@ function resetDefaults(){
 	 setVal('dv_transport','standard');
 	 setVal('dv_map_mode','2');
 	 setVal('dv_interface','0');
+ if(typeof pgRefreshHdrMetadataValidity==='function') pgRefreshHdrMetadataValidity();
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
@@ -19979,7 +20018,7 @@ function meterRenderGreyProfileEditor(){
   return '<tr style="border-bottom:1px solid #1a1a28">'
    +'<td style="padding:6px">'+slot+'%</td>'
    +'<td style="padding:6px;color:#999">'+slot+'%</td>'
-   +'<td style="padding:6px"><input type="number" min="0" max="100" step="0.1" data-grey-slot="'+slot+'" value="'+val+'" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box"></td>'
+   +'<td style="padding:6px"><input type="number" aria-label="Patch stimulus ('+slot+'%)" min="0" max="100" step="0.1" data-grey-slot="'+slot+'" value="'+val+'" style="width:100%;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box"></td>'
    +'</tr>';
  }).join('');
 }

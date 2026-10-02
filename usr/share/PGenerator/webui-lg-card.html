@@ -4,13 +4,13 @@
    <h2 style="margin:0 0 10px">LG TV detected</h2>
    <div id="lgConnectPromptText" style="font-size:.9rem;color:var(--text2);line-height:1.45;margin-bottom:12px"></div>
    <div class="field" style="margin-bottom:10px">
-    <label>Found TVs</label>
+    <label for="lgPromptDeviceList">Found TVs</label>
     <select id="lgPromptDeviceList" size="4" style="width:100%;min-height:98px" onchange="lgUsePromptSelectedIp()">
      <option value="">Scanning...</option>
     </select>
    </div>
 	   <div class="field" style="margin-bottom:12px">
-	    <label>TV IP</label>
+	    <label for="lgPromptManualIp">TV IP</label>
 	    <input type="text" id="lgPromptManualIp" placeholder="192.168.1.x" oninput="lgPromptManualIpChanged()">
 	   </div>
    <div id="lgConnectScanStatus" style="font-size:.75rem;color:var(--text2);line-height:1.35;margin-bottom:12px">Scanning the local network...</div>
@@ -99,11 +99,11 @@
 	  <div id="lgStatusMeta" style="font-size:.75rem;color:var(--text2);margin-bottom:8px"></div>
 		  <div class="grid">
 		   <div class="field">
-		    <label>TV IP</label>
+		    <label for="lgManualIp">TV IP</label>
 		    <input type="text" id="lgManualIp" placeholder="192.168.1.x">
 		   </div>
 	   <div class="field">
-	    <label>Picture Mode</label>
+	    <label for="lgPictureMode">Picture Mode</label>
     <select id="lgPictureMode" onchange="lgSetPictureMode()" disabled>
      <option value="">Connect display</option>
     </select>
