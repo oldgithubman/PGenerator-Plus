@@ -2463,8 +2463,16 @@ async function scanWifi(){
  nets.filter(n=>{if(seen[n.ssid])return false;seen[n.ssid]=1;return true;})
  .sort((a,b)=>b.signal-a.signal)
  .forEach(n=>{
+  // SSIDs are attacker-controlled over the air: a crafted beacon renders in
+  // this origin the moment the scan list is opened (issue #50). Build the row
+  // with createElement/textContent so scan values can never become markup.
   const d=document.createElement('div');d.className='wifi-item';
-  d.innerHTML='<div><div class="name">'+n.ssid+'</div><div class="meta">'+n.security+'</div></div><div class="meta">'+n.signal+' dBm</div>';
+  const left=document.createElement('div');
+  const name=document.createElement('div');name.className='name';name.textContent=n.ssid;
+  const sec=document.createElement('div');sec.className='meta';sec.textContent=n.security;
+  left.appendChild(name);left.appendChild(sec);
+  const sig=document.createElement('div');sig.className='meta';sig.textContent=n.signal+' dBm';
+  d.appendChild(left);d.appendChild(sig);
   d.onclick=()=>{
    list.querySelectorAll('.wifi-item.is-selected').forEach(item=>item.classList.remove('is-selected'));
    d.classList.add('is-selected');
