@@ -4044,6 +4044,21 @@ function selectSystemSettingsImport(){
  const input=document.getElementById('systemSettingsImportFile');
  if(input)input.click();
 }
+async function usbExportSystemSettings(){
+ const btn=document.getElementById('usbExportSystemSettingsBtn');
+ if(btn){btn.disabled=true;btn.textContent='Writing USB...';}
+ systemBackupSetStatus('Writing backup to the empty USB drive...',false);
+ try{
+  const response=await fetchJSON('/api/system-backup/usb-export',{method:'POST'});
+  if(!response||response.status!=='ok')throw new Error(response&&response.message?response.message:'USB backup failed');
+  systemBackupSetStatus('Backup written to USB ('+response.usb_archive+'). Keep this drive: a re-flashed device restores it automatically on first boot.',false);
+  toast('Backup written to USB drive');
+ }catch(error){
+  systemBackupSetStatus(error&&error.message?error.message:'USB backup failed',true);
+  toast(error&&error.message?error.message:'USB backup failed',true);
+ }
+ if(btn){btn.disabled=false;btn.textContent='Backup to USB';}
+}
 async function importSystemSettingsFile(file){
  const input=document.getElementById('systemSettingsImportFile');
  if(!file)return;

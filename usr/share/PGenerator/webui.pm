@@ -1818,6 +1818,16 @@ sub webui_handle_request (@) {
     my $code=($result=~/"status":"ok"/) ? 200 : 400;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/system-backup/usb-export" && $method eq "POST") {
+    # Write a fresh backup onto an empty USB stick, so a re-flash can
+    # restore settings without a browser (first-boot USB rescue). The
+    # helper only writes to a USB partition that is completely empty;
+    # a stick with any files is left untouched. sudoers already gates
+    # the helper through the PGENERATOR_BACKUP alias.
+    my $result=&_webui_system_backup_run("usb-export","--version",$version||"unknown");
+    my $code=($result=~/\"status\":\"ok\"/) ? 200 : 400;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/reboot") {
     my $r='{"status":"ok","message":"Rebooting..."}';
     my $len=length($r);
