@@ -2513,18 +2513,26 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s incomplete=$READ_INCOMPLETE elapsed=$((SECONDS - READ_START))s name=$NAME" >> /tmp/meter_series_debug.log
+  RETRY_TIMEOUT_SCALE=1
   if (( READ_INCOMPLETE == 1 )); then
-   series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   # Issue #59: a stalled trigger at a 100% patch ended the whole series.
+   # A second trigger on the same child could adopt the late first result,
+   # so retire that child first; the fresh one cannot deliver it. Re-read
+   # this patch once with a doubled budget. Stop only if that also fails.
+   if ! restart_spotread_session; then
+    series_meter_read_failure_exit "Meter read did not complete for $NAME and the meter could not be restarted; series stopped before a late result could contaminate another patch"
+   fi
+   echo "[$(date '+%H:%M:%S.%3N')] incomplete read recovery: step=$STEP_NUM name=$NAME; spotread child replaced, re-reading once" >> /tmp/meter_series_debug.log
+   READ_INCOMPLETE=0
+   COMM_RETRY_SEEN=1
+   RETRY_TIMEOUT_SCALE=2
   fi
-  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   PATCH_NO_READING_RETRIES=$NO_READING_RETRIES
-  # Only completed-but-unusable reads reach this retry: an implausibly dim
-  # HDR profile reading (cleared above with COMM_RETRY_SEEN set) or a result
-  # that would not parse. An incomplete trigger never gets here -- it took
-  # the terminal exit above, because a second trigger after an unaccounted
-  # one lets the late first result be adopted by a later patch. Give the
-  # dim-reading case one clean redisplay/read cycle; keep ordinary retries
-  # at the configured count.
+  # Completed-but-unusable reads (implausibly dim HDR profile reading or a
+  # result that would not parse) and incomplete reads recovered above on a
+  # fresh child get one clean redisplay/read cycle; keep ordinary retries at
+  # the configured count.
   if (( COMM_RETRY_SEEN == 1 && PATCH_NO_READING_RETRIES < 1 )); then
    PATCH_NO_READING_RETRIES=1
   fi
@@ -2541,6 +2549,7 @@ EOJSON
    printf " " >&3
    READ_START=$SECONDS
    RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
+   RETRY_TIMEOUT=$((RETRY_TIMEOUT * RETRY_TIMEOUT_SCALE))
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
