@@ -384,6 +384,13 @@ const METER_MADVR_PARAM_OFFSET=512;
 const METER_MADVR_LUT_OFFSET=16384;
 const METER_MADVR_CAL1_SIZE=1552;
 const METER_MADVR_D65_WP=[0.31273,0.32902];
+// The header always declares video range (DisplayCAL's madvr.py emits
+// Input_Range/Output_Range 16 235 unconditionally), so the lattice CONTENT
+// must be video-encoded to match: madVR reads node code i as the signal
+// (i-16)/219, and results are written back as video codes scaled to 16-bit
+// the way Argyll's TV-encoded writer does (code << 8, i.e. *256).
+const METER_MADVR_RANGE_MIN=16;
+const METER_MADVR_RANGE_SPAN=219;
 
 // Input_Primaries for the madVR header (rx ry gx gy bx by wx wy). Whitepoint
 // is always D65 as written by madVR's own install API (0.31273 0.32902), the
@@ -404,7 +411,9 @@ function meterMadvrPrimaries(gamut){
 // Solved names carry the signal mode and target gamut (…_sdr_method_mode_gamut_gamma.cube).
 // Defaults: SDR + Rec. 709; HDR10/DV defaults to Rec. 2020 (per solve rules).
 function meterMadvrParamsFromName(name){
- const s=String(name||'').toLowerCase();
+ // Strip any extension FIRST: the hdr token anchors on underscore/end, and
+ // '.cube' after a trailing token (lut_hdr10.cube) would defeat both.
+ const s=String(name||'').toLowerCase().replace(/\.[a-z0-9]+$/,'');
  const hdr=/(?:^|_)(hdr10|dv|pq)(?:_|$)/.test(s);
  let gamut='bt709';
  if(/bt2020/.test(s)) gamut='bt2020';
@@ -416,7 +425,12 @@ function meterMadvrParamsFromName(name){
 
 // Convert a parsed .cube to madVR .3dlut bytes (Uint8Array) or null. The
 // source LUT is resampled to madVR's fixed 256^3 lattice with trilinear
-// interpolation over its DOMAIN, then written as video-range BGR nodes.
+// interpolation over its DOMAIN, then written as video-range BGR nodes:
+// node code i presents signal (i-16)/219 to the source LUT and results are
+// encoded back as video codes scaled to 16-bit, matching the 16 235 range
+// the header always declares (see METER_MADVR_RANGE_MIN above).
+// opts.res is a test seam for the fill walk only — madVR accepts nothing
+// but the fixed 256 lattice, and no production caller sets it.
 function meterCubeToMadvr(parsed,opts){
  if(!parsed||!parsed.ok||!Array.isArray(parsed.values)) return null;
  const o=opts||{};
@@ -432,7 +446,9 @@ function meterCubeToMadvr(parsed,opts){
  const paramsText=plines.join('\r\n')+'\0';
  const paramsBytes=[];
  for(let i=0;i<paramsText.length;i++) paramsBytes.push(paramsText.charCodeAt(i)&0xff);
- const lutNodes=METER_MADVR_LUT_RES*METER_MADVR_LUT_RES*METER_MADVR_LUT_RES;
+ // opts.res is a test seam (see header comment); production is always 256.
+ const res=(Number.isInteger(o.res)&&o.res>0)?o.res:METER_MADVR_LUT_RES;
+ const lutNodes=res*res*res;
  const lutBytes=lutNodes*6;
  const total=METER_MADVR_LUT_OFFSET+lutBytes+METER_MADVR_CAL1_SIZE;
  const buf=new Uint8Array(total);
@@ -453,18 +469,21 @@ function meterCubeToMadvr(parsed,opts){
  dv.setInt32(88,lutBytes,true);   // compressed size
  dv.setInt32(92,lutBytes,true);   // uncompressed size
  for(let i=0;i<paramsBytes.length;i++) buf[METER_MADVR_PARAM_OFFSET+i]=paramsBytes[i];
- // Resample: output index i maps to signal i/255; the .cube lattice spans its
- // DOMAIN_MIN..DOMAIN_MAX. Walk red-slowest/blue-fastest, write B,G,R.
+ // Resample: output code i presents signal (i-16)/219 to the source LUT
+ // (video-range convention of the header); the .cube lattice spans its
+ // DOMAIN_MIN..DOMAIN_MAX; results are encoded back as video codes and
+ // scaled to 16-bit (code << 8, as Argyll's TV-encoded writer emits).
+ // Walk red-slowest/blue-fastest, write B,G,R.
  const S=parsed.size, vals=parsed.values;
  const dmin=parsed.domainMin, dmax=parsed.domainMax;
  const lut16=new Uint16Array(buf.buffer,METER_MADVR_LUT_OFFSET,lutNodes*3);
  let u=0;
- for(let r=0;r<METER_MADVR_LUT_RES;r++){
-  const xr=meterMadvrLatticePos(dmin[0],dmax[0],r/255)*(S-1);
-  for(let g=0;g<METER_MADVR_LUT_RES;g++){
-   const xg=meterMadvrLatticePos(dmin[1],dmax[1],g/255)*(S-1);
-   for(let b=0;b<METER_MADVR_LUT_RES;b++){
-    const xb=meterMadvrLatticePos(dmin[2],dmax[2],b/255)*(S-1);
+ for(let r=0;r<res;r++){
+  const xr=meterMadvrLatticePos(dmin[0],dmax[0],(r-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+  for(let g=0;g<res;g++){
+   const xg=meterMadvrLatticePos(dmin[1],dmax[1],(g-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+   for(let b=0;b<res;b++){
+    const xb=meterMadvrLatticePos(dmin[2],dmax[2],(b-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
     meterMadvrTrilinear(vals,S,xr,xg,xb,meterMadvrScratch);
     lut16[u++]=meterMadvrScratch[2]; lut16[u++]=meterMadvrScratch[1]; lut16[u++]=meterMadvrScratch[0];
    }
@@ -489,8 +508,9 @@ function meterMadvrLatticePos(lo,hi,v){
 }
 
 // Trilinear interpolate the .cube lattice at lattice coords (xr,xg,xb)
-// (0..S-1 each, .cube red-fastest indexing). Writes [R,G,B] clamped to
-// 0..65535 uint16 into the out array.
+// (0..S-1 each, .cube red-fastest indexing). Writes [R,G,B] encoded as
+// video-range codes scaled to 16-bit (code << 8, so 0 -> 4096, 1 -> 60160;
+// the black and white the header's 16 235 range promises) into the out array.
 function meterMadvrTrilinear(vals,S,xr,xg,xb,out){
  const r0=Math.min(Math.floor(xr),S-1),g0=Math.min(Math.floor(xg),S-1),b0=Math.min(Math.floor(xb),S-1);
  const r1=Math.min(r0+1,S-1),g1=Math.min(g0+1,S-1),b1=Math.min(b0+1,S-1);
@@ -504,7 +524,7 @@ function meterMadvrTrilinear(vals,S,xr,xg,xb,out){
   const a01=c001+(c101-c001)*fr, a11=c011+(c111-c011)*fr;
   const a0=a00+(a10-a00)*fg, a1=a01+(a11-a01)*fg;
   const v=a0+(a1-a0)*fb;
-  out[c]=Math.round(Math.max(0,Math.min(1,v))*65535);
+  out[c]=Math.round((METER_MADVR_RANGE_MIN+METER_MADVR_RANGE_SPAN*Math.max(0,Math.min(1,v)))*256);
  }
 }
 
@@ -562,10 +582,16 @@ async function meterDownloadPreviewedCubeAs3dlut(){
  const hdr=!!(hdrBox&&hdrBox.checked);
  const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(preview.filename||'imported .cube')+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel({gamut:gamut,hdr:hdr})+'.',acceptLabel:'Convert & download',cancelLabel:'Cancel'});
  if(!ok) return;
- const bytes=meterCubeToMadvr(preview.parsed,{gamut:gamut,hdr:hdr});
- if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
- meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut');
-}
+ try{
+  const bytes=meterCubeToMadvr(preview.parsed,{gamut:gamut,hdr:hdr});
+  if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
+  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut');
+ }catch(e){
+  // The ~96 MB lattice allocation can throw (RangeError) on a squeezed
+  // browser; without this the async failure would be a silent rejection.
+  toast('.3dlut conversion failed',true);
+ }
+ }
 
 function meterImportCubeFile(evt){
  const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;

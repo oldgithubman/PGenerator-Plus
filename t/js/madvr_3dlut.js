@@ -52,6 +52,7 @@ const names = [
   ['METER_MADVR_LUT_RES', 'const'], ['METER_MADVR_PARAM_OFFSET', 'const'],
   ['METER_MADVR_LUT_OFFSET', 'const'], ['METER_MADVR_CAL1_SIZE', 'const'],
   ['METER_MADVR_D65_WP', 'const'], ['meterMadvrScratch', 'const'],
+  ['METER_MADVR_RANGE_MIN', 'const'], ['METER_MADVR_RANGE_SPAN', 'const'],
   ['meterMadvrPrimaries', 'function'], ['meterMadvrParamsFromName', 'function'],
   ['meterMadvrLatticePos', 'function'], ['meterMadvrTrilinear', 'function'],
   ['meterCubeToMadvr', 'function'],
@@ -76,7 +77,21 @@ function rampParsed(S) {
   return { ok: true, size: S, values, domainMin: [0, 0, 0], domainMax: [1, 1, 1], errors: [] };
 }
 
+// Constant black-offset fixture: the exact class of non-identity correction
+// that silently mis-registers if the fill ignores the header's 16-235 range.
+function offsetParsed(S, off) {
+  const values = [];
+  for (let i = 0; i < S * S * S; i++) values.push([off, off, off]);
+  return { ok: true, size: S, values, domainMin: [0, 0, 0], domainMax: [1, 1, 1], errors: [] };
+}
+
 const parsed = rampParsed(5);
+
+// Decode a node back to signal under the header's declared video range.
+// This mirrors the writer's contract on purpose; the pins that matter for
+// the range bug are absolute code values + this readback's exactness, so a
+// full-range fill can never satisfy both.
+const decode = (code16) => (code16 / 256 - 16) / 219;
 
 t('unknown gamut refused', () => {
   assert.equal(context.meterMadvrPrimaries('rec-9999'), null);
@@ -96,6 +111,12 @@ t('name heuristics: solved names carry mode and gamut', () => {
   eq(context.meterMadvrParamsFromName('plain'), { gamut: 'bt709', hdr: false });
   // hdr without gamut defaults to bt2020 (solve-side rule)
   eq(context.meterMadvrParamsFromName('lut_hdr10'), { gamut: 'bt2020', hdr: true });
+  // ...and with the extension present, both real call sites pass file names:
+  // a trailing hdr token must not be defeated by '.cube'.
+  eq(context.meterMadvrParamsFromName('lut_hdr10.cube'), { gamut: 'bt2020', hdr: true });
+  eq(context.meterMadvrParamsFromName('foo_pq.CUBE'), { gamut: 'bt2020', hdr: true });
+  eq(context.meterMadvrParamsFromName('my_hdr10_bt2020_2.4.cube'), { gamut: 'bt2020', hdr: true });
+  eq(context.meterMadvrParamsFromName('sdr_p3d65.cube'), { gamut: 'p3d65', hdr: false });
 });
 
 t('file size and header layout', () => {
@@ -117,7 +138,7 @@ t('file size and header layout', () => {
 });
 
 t('SDR parameter block', () => {
-  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt709', hdr: false });
+  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt709', hdr: false, res: 17 });
   const size = new DataView(bytes.buffer).getInt32(76, true);
   const text = Buffer.from(bytes.subarray(512, 512 + size)).toString('latin1');
   assert.ok(text.endsWith('\0'), 'params NUL-terminated');
@@ -130,7 +151,7 @@ t('SDR parameter block', () => {
 });
 
 t('HDR parameter block adds PQ transfer lines', () => {
-  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt2020', hdr: true });
+  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt2020', hdr: true, res: 17 });
   const size = new DataView(bytes.buffer).getInt32(76, true);
   const text = Buffer.from(bytes.subarray(512, 512 + size)).toString('latin1');
   assert.match(text, /Input_Transfer_Function PQ/);
@@ -139,37 +160,79 @@ t('HDR parameter block adds PQ transfer lines', () => {
 });
 
 t('LUT node order and values (BGR uint16 LE, blue fastest)', () => {
-  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'p3d65', hdr: false });
-  const lut16 = new Uint16Array(bytes.buffer, 16384, 256 * 256 * 256 * 3);
-  const q = (v) => Math.round(v * 65535);
-  // Node (r=0,g=0,b=0): ramp -> all channels 0.25
-  assert.deepEqual([lut16[0], lut16[1], lut16[2]], [q(0.25), q(0.25), q(0.25)], 'first node B,G,R = 0.25');
-  // Walk is blue-fastest: node index 1 = (r=0,g=0,b=1) -> only B channel moves.
-  assert.deepEqual([lut16[3], lut16[4], lut16[5]],
-    [Math.round((0.25 + 0.5 / 255) * 65535), q(0.25), q(0.25)], 'B is the fast axis');
-  // Last node (r=g=b=255): ramp -> 0.75 on every channel.
-  const last = (256 * 256 * 256 - 1) * 3;
-  assert.deepEqual([lut16[last], lut16[last + 1], lut16[last + 2]], [q(0.75), q(0.75), q(0.75)], 'last node 0.75');
-  // A mid red-only node: index r=128,g=0,b=0 -> offset ((128*256)*256)*3
-  const mid = ((128 * 256 + 0) * 256 + 0) * 3;
-  assert.deepEqual([lut16[mid], lut16[mid + 1], lut16[mid + 2]],
-    [q(0.25), q(0.25), Math.round((0.25 + 0.5 * 128 / 255) * 65535)], 'red is the slow axis');
+  const R = 33;
+  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'p3d65', hdr: false, res: R });
+  const lut16 = new Uint16Array(bytes.buffer, 16384, R * R * R * 3);
+  const nodeAt = (r, g, b) => ((r * R + g) * R + b) * 3;
+  // Writer contract: node code i presents signal (i-16)/219, the ramp
+  // fixture maps signal -> 0.25 + 0.5*clamp(signal), and results are
+  // encoded (16 + 219*v) << 8. Every pin below is EXACT.
+  const sig = (code) => (code - 16) / 219;
+  const enc = (c) => Math.round((16 + 219 * (0.25 + 0.5 * Math.max(0, Math.min(1, sig(c))))) * 256);
+  // Node (0,0,0): all signals clamp to 0 -> ramp black code on every channel.
+  assert.deepEqual([lut16[0], lut16[1], lut16[2]], Array(3).fill(enc(16)), 'first node B,G,R = ramp(black)');
+  assert.equal(enc(16), Math.round((16 + 219 * 0.25) * 256), 'ramp black = 0.25 as a video code <<8');
+  // Walk is blue-fastest: (16,16,16) -> (16,16,17) moves only B (slot +0).
+  const a = nodeAt(16, 16, 16), b17 = nodeAt(16, 16, 17);
+  assert.deepEqual([lut16[b17], lut16[b17 + 1], lut16[b17 + 2]],
+    [enc(17), lut16[a + 1], lut16[a + 2]], 'B is the fast axis');
+  // Green is the middle axis: (16,16,16) -> (16,17,16) moves only G (slot +1).
+  const g17 = nodeAt(16, 17, 16);
+  assert.deepEqual([lut16[g17], lut16[g17 + 1], lut16[g17 + 2]],
+    [lut16[a], enc(17), lut16[a + 2]], 'G is the middle axis');
+  // Red is the slow axis: (16,16,16) -> (17,16,16) moves only R (slot +2).
+  const r17 = nodeAt(17, 16, 16);
+  assert.deepEqual([lut16[r17], lut16[r17 + 1], lut16[r17 + 2]],
+    [lut16[a], lut16[a + 1], enc(17)], 'red is the slow axis');
+  // Uniform signal -> uniform channels at the last node.
+  const last = nodeAt(R - 1, R - 1, R - 1);
+  assert.deepEqual([lut16[last], lut16[last + 1], lut16[last + 2]],
+    Array(3).fill(enc(R - 1)), 'uniform signal -> uniform channels');
 });
 
-t('domain mapping honours DOMAIN_MIN/MAX', () => {
-  const p = rampParsed(3);
-  p.domainMin = [0.2, 0.2, 0.2]; p.domainMax = [0.8, 0.8, 0.8];
-  // values ramp 0.25..0.75 across lattice 0..2
-  const bytes = context.meterCubeToMadvr(p, { gamut: 'bt709', hdr: false });
+t('video-range fill: non-identity black offset round-trips under declared range', () => {
+  // The reviewer-requested pin: a constant +0.01 offset (the class of
+  // correction that silently mis-registers if the fill ignores the header's
+  // 16 235 declaration). Real 256 lattice: the fix must hold at production
+  // size, and a full-range fill reads back below black here.
+  const off = 0.01;
+  const bytes = context.meterCubeToMadvr(offsetParsed(5, off), { gamut: 'bt709', hdr: false });
   const lut16 = new Uint16Array(bytes.buffer, 16384, 256 * 256 * 256 * 3);
-  // signal 0.5 sits mid-domain -> lattice coordinate 1.0 -> ramp value 0.5
-  const node = ((0 * 256 + 0) * 256 + 128) * 3; // r=0,g=0,b=128 -> signal 0.50196 ~ domain mid
-  const got = lut16[node];
-  assert.ok(Math.abs(got - Math.round(0.5 * 65535)) <= 65535 * 0.004, `domain-mid B sample ${got} ~ 0.5`);
+  const at = (r, g, b) => ((r * 256 + g) * 256 + b) * 3;
+  // Absolute code at the declared black (node 16, signal 0): (16+219*0.01)<<8.
+  assert.deepEqual([lut16[at(16, 16, 16)], lut16[at(16, 16, 16) + 1], lut16[at(16, 16, 16) + 2]],
+    Array(3).fill(Math.round((16 + 219 * off) * 256)), 'black node = video code for 0.01, <<8');
+  // Declared white (node 235) — exact up to 16-bit code quantization.
+  assert.ok(Math.abs(decode(lut16[at(235, 235, 235)]) - off) <= 1e-5, 'white node decodes to the offset');
+  // Readback under the DECLARED range must equal the intended 0.01 at every
+  // sampled node — a full-range fill collapses this to near-zero (below black).
+  for (const code of [0, 16, 64, 128, 200, 235, 255]) {
+    const got = decode(lut16[at(code, code, code)]);
+    assert.ok(Math.abs(got - off) <= 1 / 256 / 219 + 1e-9, `code ${code} decodes to ${off}, got ${got}`);
+  }
+});
+
+t('domain mapping honors DOMAIN_MIN/MAX', () => {
+  const R = 33;
+  const p = rampParsed(3);
+  // Domain sized to span the signal range the seam's node codes cover
+  // ((0-16)/219 .. (32-16)/219), so every probe lands mid-domain instead of
+  // clamping — the mapping, not the clamp, is what this pins.
+  p.domainMin = [-0.08, -0.08, -0.08]; p.domainMax = [0.08, 0.08, 0.08];
+  const bytes = context.meterCubeToMadvr(p, { gamut: 'bt709', hdr: false, res: R });
+  const lut16 = new Uint16Array(bytes.buffer, 16384, R * R * R * 3);
+  // Sample the B fast axis at fixed codes with r=g=16 (signal 0 on R/G).
+  for (const code of [0, 8, 16, 24, 32]) {
+    const s = (code - 16) / 219;
+    const pos = Math.max(0, Math.min(1, (s + 0.08) / 0.16));
+    const expect = 0.25 + 0.5 * pos; // ramp value at lattice pos*(S-1)
+    const got = decode(lut16[((16 * R + 16) * R + code) * 3]);
+    assert.ok(Math.abs(got - expect) <= 1e-4, `code ${code}: decode ${got} ~ ${expect}`);
+  }
 });
 
 t('cal1 trailer is a linear full-range ramp', () => {
-  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt709', hdr: false });
+  const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt709', hdr: false, res: 17 });
   const c = bytes.length - 1552;
   assert.equal(String.fromCharCode(bytes[c], bytes[c + 1], bytes[c + 2], bytes[c + 3]), 'cal1');
   const dv = new DataView(bytes.buffer);
