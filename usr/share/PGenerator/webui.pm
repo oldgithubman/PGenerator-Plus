@@ -10754,12 +10754,14 @@ sub webui_info_json (@) {
  if($wifi_cached) {
   $wifi_cached=decode_base64($wifi_cached);
   foreach my $wline (split(/\n/,$wifi_cached)) {
-   if($wline=~/^ssid\s*=\s*(.*)/) { $wifi_ssid=$1; }
+   if($wline=~/^ssid=(.*)/) { $wifi_ssid=$1; }
    if($wline=~/^freq\s*=\s*(\d+)/) { $wifi_freq=$1; }
    if($wline=~/^wpa_state\s*=\s*(.*)/) { $wifi_state=$1; }
   }
  }
- $wifi_ssid=~s/"/\\"/g;
+ my $wifi_ssid_real=&_webui_wpa_ssid_decode($wifi_ssid);
+ $wifi_ssid=$wifi_ssid_real if(defined $wifi_ssid_real);
+ $wifi_ssid=&_webui_json_escape($wifi_ssid);
  my $wifi_band="";
  if($wifi_freq=~/^\d+$/) {
   $wifi_band=($wifi_freq>=5000)?"5 GHz":"2.4 GHz";
@@ -11663,9 +11665,9 @@ sub webui_wifi_status_json (@) {
  my $status=&sudo("GET_WIFI_STATUS","wlan0");
  my %info;
  foreach my $line (split(/\n/,$status)) {
-  if($line=~/^(\w+)\s*=\s*(.*)/) { $info{$1}=$2; }
+  if($line=~/^(\w+)=(.*)/) { $info{$1}=$2; }
  }
- my $ssid=$info{ssid}||"";
+ my $ssid=defined($info{ssid}) ? $info{ssid} : "";
  my $ssid_real=&_webui_wpa_ssid_decode($ssid);
  $ssid=$ssid_real if(defined $ssid_real);
  $ssid=&_webui_json_escape($ssid);

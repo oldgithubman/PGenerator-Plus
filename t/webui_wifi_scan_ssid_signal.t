@@ -81,6 +81,36 @@ local *main::sudo = sub { $_[0] eq 'GET_WIFI_STATUS' ? "wpa_state=COMPLETED\nssi
 $st = decode_json(main::webui_wifi_status_json());
 is($st->{ssid}, 'latin\\xe9', 'status SSID that is not valid UTF-8 falls back to wpa_cli text');
 
+# SSIDs "0" and with a leading space must survive the status round-trip
+for my $case (['0','0'], [' lead',' lead']) {
+  my ($txt,$want)=@$case;
+  local *main::sudo = sub { $_[0] eq 'GET_WIFI_STATUS' ? "wpa_state=COMPLETED\nssid=$txt\nip_address=10.0.0.5\n" : '' };
+  my $s = decode_json(main::webui_wifi_status_json());
+  is($s->{ssid}, $want, "status keeps SSID '$txt' as is");
+}
+
+# /api/info reads the cached wpa_cli status text and must emit valid JSON
+use File::Temp qw(tempdir);
+use MIME::Base64 qw(encode_base64);
+my $tmp = tempdir(CLEANUP=>1);
+{
+  no warnings 'once';
+  local $main::info_dir = $tmp;
+  local *main::read_from_file = sub { return '' if !defined $_[0]; open(my $r,'<',$_[0]) or return ''; local $/; my $c=<$r>; defined $c ? $c : '' };
+  local *main::get_temperature = sub { '40' };
+  local *main::decode_base64 = \&MIME::Base64::decode_base64;
+  for my $case (['caf\xc3\xa9', "caf\x{e9}"], ['a\\"b', 'a"b'], ['a\\\\b', 'a\\b'], ['bad\x01ctl', 'bad\x01ctl'], ['0', '0']) {
+    my ($txt,$want)=@$case;
+    open(my $w, '>', "$tmp/GET_WIFI_STATUS.info") or die $!;
+    print $w encode_base64("wpa_state=COMPLETED\nssid=$txt\nfreq=5180\n", '');
+    close($w);
+    my $info;
+    ok(eval { $info = JSON::PP->new->utf8(1)->decode(main::webui_info_json()); 1 }, "info JSON parses for SSID '$txt'")
+      or diag($@);
+    is($info && $info->{wifi}{ssid}, $want, "info SSID decoded once for '$txt'");
+  }
+}
+
 # connect: what the picker shows must reach wpa_supplicant byte-for-byte
 my @sudo;
 local *main::sudo = sub { @sudo = @_; "OK\nip_address=10.0.0.9" };
