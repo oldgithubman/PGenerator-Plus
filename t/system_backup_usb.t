@@ -1,66 +1,102 @@
 #!/usr/bin/perl
 # Regression tests for the USB rescue paths of pgenerator_system_backup.py
 # (issue #47 follow-up): usb-restore picks the newest valid .pgbackup on a
-# USB-attached partition, usb-export writes only to a completely empty one,
-# and the scan skips the device holding root and non-USB disks.
+# USB-attached partition that carries the PGEN_USB_RESCUE sentinel (and
+# strips OTA trust keys from the restored conf), usb-export writes only to
+# a completely empty one (and writes the sentinel), and the scan skips the
+# device holding root and non-USB disks.
 #
 # Real mounting is faked: PG_USB_SCAN_ROOT points at a synthetic sysfs
-# tree, PG_MOUNT_BIN/PG_UMOUNT_BIN at a stub that "mounts" by copying the
-# fake stick contents. BACKUP_SPECS and ROLLBACK_DIR are monkeypatched in
-# a python driver so nothing ever touches live system paths.
+# tree that MIRRORS THE REAL KERNEL LAYOUT (whole disks at the scan root,
+# partition directories NESTED INSIDE the disk directory — the old fixture
+# symlinked block/sdb1 as a sibling, which real kernels never do and
+# which hid the scan failure on real devices). PG_MOUNT_BIN/PG_UMOUNT_BIN
+# are stubs that "mount" by copying the fake stick contents and "unmount"
+# by copying them back when WRITEBACK=1, so export writes are observable.
+# MOUNT_LOG records every mount/umount so the mount-leak and ro-first
+# behaviors are pinned. BACKUP_SPECS, CONF_DEST and ROLLBACK_DIR are
+# monkeypatched in a python driver so nothing ever touches live paths.
 use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 15;
+use Test::More tests => 36;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
 my $src = do { local(@ARGV,$/); open(my $fh,'<',$script) or die "$script: $!"; <$fh> };
 like($src, qr/def usb_restore/, 'helper defines usb_restore');
 like($src, qr/def usb_export/, 'helper defines usb_export');
-# Python 3.5 (device runtime) must stay parseable: no f-strings/walrus.
- unlike($src, qr/f["'][^"']*\{/, 'helper stays free of f-strings (Python 3.5)');
- unlike($src, qr/\bwalrus\b|:=/, 'helper stays free of walrus operators');
+# Python 3.5 (device runtime) must stay parseable: ask the interpreter,
+# not a grep — greps for f-strings/walrus miss every other 3.6+ syntax.
+SKIP: {
+ my $py = `command -v python3`;
+ chomp($py);
+ skip 'python3 not available', 1 unless $py;
+ my $r = `$py -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), feature_version=(3,5)); print("PY35OK")' '$script' 2>&1`;
+ like($r, qr/PY35OK/, 'helper parses under Python 3.5 (ast feature_version)');
+}
 
 my $tmp = tempdir(CLEANUP => 1);
+my $mount_log = "$tmp/mount.log";
+open(my $ml,'>',$mount_log) or die $!; close($ml);
 
-# Fake mount/umount: mount copies <stick>/<part> into the mountpoint,
-# umount deletes it. Arguments: mount [-o ro] [-t vfat] /dev/PART DEST.
+# Fake mount/umount (POSIX sh: the suite must pass on macOS bash 3.2 and
+# plain /bin/sh alike — no bash arrays, no ${args[-1]}). mount copies
+# <stick>/<part> into the mountpoint; umount copies back when WRITEBACK=1
+# (so export writes land on the fake stick) and deletes the copy. Both
+# append verb+args to $MOUNT_LOG so tests pin mount/umount pairing and
+# the ro-first order; "remount" is accepted and logged.
 my $mount_stub = "$tmp/mount";
 open(my $ms,'>',$mount_stub) or die $!;
 print $ms <<'STUB';
-#!/bin/bash
-args=("$@")
-dev=""; dest=""
-for a in "${args[@]}"; do
+#!/bin/sh
+printf 'MOUNT %s\n' "$*" >> "$MOUNT_LOG"
+case "$*" in
+ *"remount"*) exit 0;;
+esac
+dev=""
+for a in "$@"; do
  case "$a" in /dev/*) dev="${a#/dev/}";; esac
 done
-dest="${args[-1]}"
+# last argument is the mountpoint
+dest=""
+for a in "$@"; do dest="$a"; done
 stick="${STICK_ROOT:?}/${dev}"
 [ -d "$stick" ] || exit 32
-for opt in "${args[@]}"; do
- if [ "$prev" = "-o" ] && [[ "$opt" == ro* ]]; then :; fi
- prev="$opt"
-done
 cp -a "$stick/." "$dest/" 2>/dev/null
-if [ "${FAILO_RO:-0}" = 1 ] && printf '%s\n' "${args[@]}" | grep -qx -- '-o'; then
- rm -rf "${dest:?}"/* 2>/dev/null
- exit 32
-fi
 exit 0
 STUB
 close($ms);
 chmod 0755, $mount_stub;
 my $umount_stub = "$tmp/umount";
 open(my $us,'>',$umount_stub) or die $!;
-print $us "#!/bin/sh\nexit 0\n";
+print $us <<'STUB';
+#!/bin/sh
+printf 'UMOUNT %s\n' "$*" >> "$MOUNT_LOG"
+# recover the partition name from the mountpoint basename
+# (<base>-rw/PART or <base>/PART) for write-back
+base=$(basename "$1")
+stick="${STICK_ROOT:?}/${base}"
+if [ "${WRITEBACK:-0}" = 1 ] && [ -d "$stick" ]; then
+ cp -a "$1/." "$stick/" 2>/dev/null
+fi
+rm -rf "$1" 2>/dev/null
+exit 0
+STUB
 close($us);
 chmod 0755, $umount_stub;
 
+my $env_common = "MOUNT_LOG=$mount_log STICK_ROOT=$tmp/stick PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub PG_USB_MOUNT_BASE=$tmp/mnt-base";
+
+sub clear_mount_log { open(my $fh,'>',$mount_log) or die $!; close($fh); }
+sub mount_log { my $l=""; open(my $fh,'<',$mount_log) or return ""; while(<$fh>){$l.=$_} return $l; }
+
 sub build_tree {
- my (%o)=@_;
- # Fresh synthetic sysfs: block/sdb -> usb/sdb so realpath contains /usb.
+ # Fresh synthetic sysfs mirroring the REAL kernel layout: /sys/block
+ # holds whole disks only; the partition directory is NESTED under the
+ # disk directory (/sys/block/sdb/sdb1), never a sibling. A sibling
+ # decoy directory must NOT be honored.
  my $root = "$tmp/run";
  system("rm -rf '$root'");
  mkdir $root;
@@ -68,9 +104,8 @@ sub build_tree {
  mkdir "$root/usb/sdb";
  symlink "$root/usb/sdb", "$root/block/sdb" or die "symlink: $!";
  mkdir "$root/usb/sdb/sdb1";
- symlink "$root/usb/sdb/sdb1", "$root/block/sdb1" or die "symlink sdb1: $!";
+ mkdir "$root/block/sdbX";
  # Fake stick contents.
- $ENV{STICK_ROOT} = "$tmp/stick";
  mkdir "$tmp/stick" unless -d "$tmp/stick";
  mkdir "$tmp/stick/sdb1";
  # A second NON-USB disk (realpath without /usb) must be ignored.
@@ -79,49 +114,85 @@ sub build_tree {
  return $root;
 }
 
-# Build a valid .pgbackup archive into a file using the module itself.
-# Archive members are named data<destination>, and inspect_archive only
-# accepts members matching the BACKUP_SPECS loaded in the running process:
-# the build driver must patch the EXACT spec (same path) the restore
-# driver uses, or the archive is rejected as unsupported data. So callers
-# pass the restore destination directory itself, already seeded with the
-# content that the archive is expected to carry.
-sub make_archive {
- my ($out, $version, $specdir) = @_;
- my $driver = "$tmp/mk.py";
- open(my $dh,'>',$driver) or die $!;
+sub clear_stick {
+ my $d="$tmp/stick/sdb1";
+ opendir(my $dh,$d) or return;
+ for my $f (readdir $dh) {
+  next if $f=~/^\./;
+  my $p="$d/$f";
+  if(-d $p){ rmdir $p } else { unlink $p }
+ }
+ closedir $dh;
+}
+
+sub copy_file {
+ my ($from,$to)=@_;
+ open(my $in,'<:raw',$from) or die "$from: $!";
+ open(my $out,'>:raw',$to) or die "$to: $!";
+ local $/;
+ my $data = <$in>;
+ print {$out} $data;
+ close($in); close($out);
+}
+
+# Driver that runs usb_export with patched BACKUP_SPECS: on the test
+# host the real /etc/PGenerator paths do not exist, so create_archive
+# aborts with "no settings found" — the ORIGINAL test hid that behind a
+# regex matching every error JSON. Patched specs give the export real
+# content to archive without touching live paths.
+sub export_driver {
+ my $drv = "$tmp/export.py";
+ open(my $dh,'>',$drv) or die $!;
  print $dh <<PY;
 import sys, os, json
 import importlib.util
 spec = importlib.util.spec_from_file_location("psb", r"$script")
 psb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(psb)
-psb.BACKUP_SPECS = (("dir", r"$specdir", "fake settings"),)
-manifest = psb.create_archive(r"$out", "$version")
-print(json.dumps({"files": manifest["file_count"]}))
+spec_dir = r"$tmp/export-spec"
+os.makedirs(spec_dir, exist_ok=True)
+with open(os.path.join(spec_dir, "seed.txt"), "w") as h:
+    h.write("export seed\\n")
+psb.BACKUP_SPECS = (("dir", spec_dir, "fake settings"),)
+try:
+    result = psb.usb_export("2.13.0")
+    print(json.dumps(result))
+except psb.BackupError as e:
+    print(json.dumps({"status":"error","message":str(e)}))
 PY
  close($dh);
- my $r = `python3 "$driver" 2>&1`;
- return $r;
+ return $drv;
 }
 
-# Case 1: restore with no USB candidates at all.
+# The (fake) destination root shared by the archive-build and restore
+# drivers. Archive members are named data<destination>, and
+# inspect_archive only accepts members matching the BACKUP_SPECS loaded
+# in the running process: the build driver must patch the EXACT specs
+# (same paths) the restore driver uses, or the archive is rejected as
+# unsupported data. So both drivers patch the destination paths
+# themselves, already seeded with the content to be archived.
+my $dest_root = "$tmp/restore-target";
+my $conf_spec = "$dest_root/ota_conf.txt";
+my $built_arch = "$tmp/mk.pgbackup";
+
+# Case 1: restore with no archives at all.
 {
  my $root = build_tree();
- my $r = `PG_USB_SCAN_ROOT=$root/block PG_USB_MOUNT_BASE=$tmp/mnt-base PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub python3 "$script" usb-restore 2>&1`;
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-restore 2>&1`;
  # sdb1 exists but the stick copy source is empty -> mounted, no archive.
  like($r, qr/No \.pgbackup found on the USB drive/, 'empty stick reports no archive');
 }
 
-# Case 2: stick holds a valid archive -> usb_restore finds it and
-# restores into monkeypatched destinations.
-my $stick_arch = "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.13.0_20260920-000000.pgbackup";
+# Case 2: stick holds a sentinel + valid archive (dir spec + a conf FILE
+# spec carrying OTA trust keys) -> usb_restore restores the dir AND the
+# conf with the denied trust keys stripped, into patched destinations.
 {
  my $root = build_tree();
- # Seed the (fake) destination with the content that will be archived,
- # build the archive against that SAME spec path, then wipe the file so
- # the restore below has to bring it back from the stick.
- my $dest_root = "$tmp/restore-target";
+ clear_stick();
+ # Seed the (fake) destinations with the content that will be archived,
+ # build the archive against those SAME spec paths, then wipe the files
+ # so the restore below has to bring them back from the stick.
  mkdir $dest_root;
  mkdir "$dest_root/confdest";
  open(my $fh,'>',"$dest_root/confdest/factory.txt") or die $!;
@@ -130,12 +201,37 @@ my $stick_arch = "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.13.0_20260920
  open($fh,'>',"$dest_root/confdest/conf.txt") or die $!;
  print $fh "mode=20\n";
  close($fh);
- make_archive($stick_arch, "2.13.0", "$dest_root/confdest");
+ open($fh,'>',$conf_spec) or die $!;
+ print $fh "mode=21\nota_repo=evil/pwned\nota_repo_trusted=1\nota_target=wrong_board\nwifi_ssid=keepme\n";
+ close($fh);
+ my $driver = "$tmp/mk.py";
+ my $dh;
+ open($dh,'>',$driver) or die $!;
+ print $dh <<PY;
+import sys, os, json
+import importlib.util
+spec = importlib.util.spec_from_file_location("psb", r"$script")
+psb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(psb)
+psb.BACKUP_SPECS = (
+    ("dir", r"$dest_root/confdest", "fake settings"),
+    ("file", r"$conf_spec", "fake conf"),
+)
+manifest = psb.create_archive(r"$built_arch", "2.13.0")
+print(json.dumps({"files": manifest["file_count"]}))
+PY
+ close($dh);
+ `python3 "$driver" 2>&1`;
+ copy_file($built_arch, "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.13.0_20260920-000000.pgbackup");
  unlink "$dest_root/confdest/conf.txt" or die "wipe: $!";
+ unlink $conf_spec or die "wipe: $!";
  # factory.txt stays: like a real re-flash, the destination is not empty
  # when the restore's rollback snapshot is taken.
- my $driver = "$tmp/restore.py";
- open(my $dh,'>',$driver) or die $!;
+ open($fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!;
+ print $fh "pgenerator-usb-rescue\n";
+ close($fh);
+ $driver = "$tmp/restore.py";
+ open($dh,'>',$driver) or die $!;
  print $dh <<PY;
 import sys, os, json, io
 import importlib.util
@@ -143,8 +239,12 @@ spec = importlib.util.spec_from_file_location("psb", r"$script")
 psb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(psb)
 os.makedirs(r"$dest_root/confdest", exist_ok=True)
-psb.BACKUP_SPECS = (("dir", r"$dest_root/confdest", "fake settings"),)
+psb.BACKUP_SPECS = (
+    ("dir", r"$dest_root/confdest", "fake settings"),
+    ("file", r"$conf_spec", "fake conf"),
+)
 psb.ROLLBACK_DIR = r"$tmp/rollback"
+psb.CONF_DEST = r"$conf_spec"
 try:
     result = psb.usb_restore("2.13.0")
     print(json.dumps(result))
@@ -152,42 +252,102 @@ except psb.BackupError as e:
     print(json.dumps({"status":"error","message":str(e)}))
 PY
  close($dh);
- my $r = `PG_USB_SCAN_ROOT=$root/block PG_USB_MOUNT_BASE=$tmp/mnt-base PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub python3 "$driver" 2>&1`;
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$driver" 2>&1`;
  like($r, qr/"status": "ok"/, 'usb_restore restores the stick archive') or diag $r;
  like($r, qr/"usb_device": "sdb1"/, 'restore reports the device');
  ok(-f "$dest_root/confdest/conf.txt", 'restored file landed in the (patched) destination');
+ ok(-f $conf_spec, 'conf file restored');
+ my $conf = do { local(@ARGV,$/); open(my $f,'<',$conf_spec) or die $!; <$f> };
+ unlike($conf, qr/^ota_repo=/m, 'unattended restore strips ota_repo');
+ unlike($conf, qr/^ota_repo_trusted=/m, 'unattended restore strips ota_repo_trusted');
+ unlike($conf, qr/^ota_target=/m, 'unattended restore strips ota_target');
+ like($conf, qr/^wifi_ssid=keepme/m, 'unattended restore keeps non-gated keys');
+ unlike(mount_log(), qr/^MOUNT (?!-o ro)/m, 'restore never mounts read-write');
 }
 
-# Case 3: corrupt archive on the stick -> explicit invalid message, no crash.
+# Case 3: ONLY a corrupt archive on the stick (the valid archive from
+# case 2 is cleared first — before the fix this case passed vacuously on
+# the leftover valid archive failing spec-matching, never exercising the
+# corrupt file at all).
 {
  my $root = build_tree();
+ clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/broken.pgbackup") or die $!; print $fh "not a tar"; close($fh);
- my $r = `PG_USB_SCAN_ROOT=$root/block PG_USB_MOUNT_BASE=$tmp/mnt-base PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub python3 "$script" usb-restore 2>&1`;
- like($r, qr/No valid \.pgbackup found/, 'corrupt archive reported as no valid backup');
+ open($fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-restore 2>&1`;
+ like($r, qr/No valid \.pgbackup found/, 'corrupt archive alone reported as no valid backup');
 }
 
-# Case 4: usb-export writes to an empty stick only.
+# Case 3b: an archive WITHOUT the rescue sentinel is not a rescue
+# source: rescue is opt-in, a random stick cannot push settings onto an
+# unattended first boot.
 {
  my $root = build_tree();
- # Make the stick empty and writable-candidate (stub mount copies out then we
- # check a file was written into the stick source directory).
- rmdir_or_clear("$tmp/stick/sdb1");
- my $r = `PG_USB_SCAN_ROOT=$root/block PG_USB_MOUNT_BASE=$tmp/mnt-base PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub STICK_WRITEBACK=1 python3 "$script" usb-export --version 2.13.0 2>&1` ;
- # The stub mount copies INTO dest, not back; export writes into the copy,
- # so expect success from the tool's point of view when the stick was empty.
- like($r, qr/"status": "ok"|"message"/, 'usb-export runs against empty stick') or diag $r;
+ clear_stick();
+ copy_file($built_arch, "$tmp/stick/sdb1/unmarked.pgbackup");
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-restore 2>&1`;
+ like($r, qr/No \.pgbackup found/, 'archive without the rescue sentinel is ignored');
 }
 
-# Case 5: usb-export refuses a non-empty stick.
+# Case 4: usb-export writes to an empty stick only, ro-first, always
+# unmounts, and leaves the sentinel behind. WRITEBACK makes the umount
+# stub copy the mountpoint back so the written archive is observable
+# (the old stub never wrote back and its assertion regex matched every
+# error JSON, so export success was untested).
 {
  my $root = build_tree();
+ clear_stick();
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'usb-export succeeds against empty stick') or diag $r;
+ like($r, qr/"usb_device": "sdb1"/, 'usb-export reports the device');
+ my $log = mount_log();
+ my $mounts = () = $log =~ /^MOUNT (?!.*remount)/mg;
+ my $umounts = () = $log =~ /^UMOUNT/mg;
+ cmp_ok($mounts, '>=', 1, 'stick was mounted');
+ is($mounts, $umounts, 'every mount is matched by an unmount');
+ like($log, qr/^MOUNT -o ro /m, 'stick is first mounted read-only');
+ like($log, qr/remount,rw/, 'blank stick is remounted rw for the write');
+ ok(-f "$tmp/stick/sdb1/PGEN_USB_RESCUE", 'export writes the rescue sentinel');
+ ok(scalar(grep { /\.pgbackup$/ } `ls $tmp/stick/sdb1`), 'archive written back to stick');
+}
+
+# Case 5: usb-export refuses a non-empty stick but STILL unmounts it
+# (the mount-leak pin: before the fix the refusal skipped unmount and
+# left data sticks mounted read-write until reboot).
+{
+ my $root = build_tree();
+ clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/keepme.txt") or die $!; print $fh "user data"; close($fh);
- my $r = `PG_USB_SCAN_ROOT=$root/block PG_USB_MOUNT_BASE=$tmp/mnt-base PG_MOUNT_BIN=$mount_stub PG_UMOUNT_BIN=$umount_stub python3 "$script" usb-export --version 2.13.0 2>&1`;
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-export --version 2.13.0 2>&1`;
  like($r, qr/No writable empty USB drive/, 'usb-export refuses a non-empty stick');
  ok(-f "$tmp/stick/sdb1/keepme.txt", 'refusal leaves existing files in place');
+ my $log = mount_log();
+ my $mounts = () = $log =~ /^MOUNT/mg;
+ my $umounts = () = $log =~ /^UMOUNT/mg;
+ is($mounts, $umounts, 'refused stick is still unmounted');
+ unlike($log, qr/^MOUNT (?!-o ro)/m, 'stick with data is never mounted read-write');
 }
 
-# Case 6: non-USB disk (mmcblk0, no /usb in realpath) is never a candidate.
+# Case 5b: OS junk (System Volume Information etc.) and a stranded
+# .pgbackup.tmp do NOT make a stick non-empty.
+{
+ my $root = build_tree();
+ clear_stick();
+ mkdir "$tmp/stick/sdb1/System Volume Information";
+ open(my $fh,'>',"$tmp/stick/sdb1/System Volume Information/desktop.ini") or die $!; print $fh "x"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/old.pgbackup.tmp") or die $!; print $fh "partial"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'OS junk and a stranded temp still count as blank') or diag $r;
+}
+
+# Case 6: non-USB disk (mmcblk0, no /usb in realpath) is never a
+# candidate; sibling decoy dirs are never honored either.
 {
  my $root = build_tree();
  my $probe = "$tmp/probe.py";
@@ -202,13 +362,24 @@ PY
  close($dh);
  my $r = `PG_USB_SCAN_ROOT=$root/block python3 "$probe" 2>&1`;
  chomp $r;
- like($r, qr/sdb1/, 'fake USB partition is a candidate');
+ like($r, qr/\bsdb1\b/, 'nested partition dir is a candidate (real sysfs layout)');
  unlike($r, qr/mmcblk0/, 'non-USB block device is not a candidate');
+ unlike($r, qr/sdbX/, 'sibling decoy dir under the scan root is not a candidate');
 }
 
-sub rmdir_or_clear {
- my ($d)=@_;
- opendir(my $dh,$d) or return;
- for my $f (readdir $dh) { next if $f=~/^\./; unlink "$d/$f"; }
- closedir $dh;
+# Case 7: the Perl route must assign _webui_system_backup_run in LIST
+# context — a scalar assignment keeps only $ok and the route answers
+# 400 with body "1" even when the export succeeded (structure guard:
+# no Perl harness for this route exists in the repo).
+{
+ my $pm = "$Bin/../usr/share/PGenerator/webui.pm";
+ ok(-f $pm, 'webui.pm is present');
+ my $psrc = do { local(@ARGV,$/); open(my $fh,'<',$pm) or die "$pm: $!"; <$fh> };
+ # Scope the regex to the usb-export route block.
+ my ($block) = $psrc =~ /(elsif\(\$path eq "\/api\/system-backup\/usb-export".*?\n   \}\n)/s;
+ ok($block, 'usb-export route block found');
+ like($block, qr/my \(\$result,\$ok\)=&_webui_system_backup_run\("usb-export"/,
+  'usb-export route assigns helper result in list context');
+ unlike($block, qr/my \$result=&_webui_system_backup_run/,
+  'usb-export route has no scalar-context result assignment');
 }

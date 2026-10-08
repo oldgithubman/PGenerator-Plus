@@ -1824,9 +1824,19 @@ sub webui_handle_request (@) {
     # helper only writes to a USB partition that is completely empty;
     # a stick with any files is left untouched. sudoers already gates
     # the helper through the PGENERATOR_BACKUP alias.
-    my $result=&_webui_system_backup_run("usb-export","--version",$version||"unknown");
-    my $code=($result=~/\"status\":\"ok\"/) ? 200 : 400;
+    if(&_webui_system_backup_busy()) {
+     my $r='{"status":"error","message":"Stop the active calibration, meter read, or profile build before writing to USB"}';
+     print $client "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: ".length($r)."\r\n$cors\r\n$r";
+    } else {
+    my $safe_version=$version||"unknown";
+    $safe_version=~s/[^A-Za-z0-9._-]+/_/g;
+    # List context: _webui_system_backup_run returns (output,ok); a
+    # scalar assignment would keep only $ok, never match the JSON, and
+    # the route would answer 400 with body "1" even on success.
+    my ($result,$ok)=&_webui_system_backup_run("usb-export","--version",$safe_version);
+    my $code=($ok && $result=~/"status":"ok"/) ? 200 : 400;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+    }
    }
    elsif($path eq "/api/reboot") {
     my $r='{"status":"ok","message":"Rebooting..."}';

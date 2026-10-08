@@ -4049,7 +4049,10 @@ async function usbExportSystemSettings(){
  if(btn){btn.disabled=true;btn.textContent='Writing USB...';}
  systemBackupSetStatus('Writing backup to the empty USB drive...',false);
  try{
-  const response=await fetchJSON('/api/system-backup/usb-export',{method:'POST'});
+  // Mounting plus archiving ~100 MB can exceed fetchJSON's 8 s default;
+  // a client-side abort while the server keeps writing would show a
+  // false failure and leave the stick non-empty for the retry.
+  const response=await fetchJSON('/api/system-backup/usb-export',{method:'POST',_timeoutMs:120000});
   if(!response||response.status!=='ok')throw new Error(response&&response.message?response.message:'USB backup failed');
   systemBackupSetStatus('Backup written to USB ('+response.usb_archive+'). Keep this drive: a re-flashed device restores it automatically on first boot.',false);
   toast('Backup written to USB drive');

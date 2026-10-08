@@ -48,10 +48,16 @@ if [ ! -f "$BACKUP_HELPER" ] || [ -z "$PYTHON_BIN" ]; then
 fi
 
 # Give the stick a moment after power-on; USB storage can enumerate
-# well after rcS reaches this point, especially behind a hub.
+# well after rcS reaches this point, especially behind a hub. Wait for
+# a PARTITION node (/dev/sd[a-z][0-9]) rather than a whole disk: the
+# rescue candidates are partitions, and a disk node can appear before
+# its partition table is scanned (sdX, then sdX1 a beat later). The
+# unpartitioned-superfloppy case (bare sdX, no numbered node) is also
+# a valid candidate, so accept it once a few extra seconds pass with
+# no partition node showing up.
 i=0
 while [ "$i" -lt 10 ]; do
- if ls /dev/sd[a-z] >/dev/null 2>&1; then
+ if ls /dev/sd[a-z][0-9] >/dev/null 2>&1; then
   break
  fi
  sleep 1
@@ -60,6 +66,18 @@ done
 if ! ls /dev/sd[a-z] >/dev/null 2>&1; then
  log "no USB storage after 10s; skipping rescue"
  exit 0
+fi
+if ! ls /dev/sd[a-z][0-9] >/dev/null 2>&1; then
+ # Disk present but no partition node yet: give the partition scan a
+ # short grace period before accepting the bare-disk case.
+ j=0
+ while [ "$j" -lt 5 ]; do
+  if ls /dev/sd[a-z][0-9] >/dev/null 2>&1; then
+   break
+  fi
+  sleep 1
+  j=$((j + 1))
+ done
 fi
 
 log "first boot with USB storage present; attempting restore"
