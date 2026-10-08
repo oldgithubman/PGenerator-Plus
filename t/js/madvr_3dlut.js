@@ -27,7 +27,11 @@ function extractBlock(name, decl) {
   const m = source.match(re);
   assert.ok(m, `${decl} ${name} found in webui-workspace.js`);
   assert.equal(source.slice(0, m.index).match(re), null, `${name} anchor unique`);
-  let i = source.indexOf('{', m.index);
+  // Find the BODY brace, not the first brace: async callers open with an
+  // object-literal argument ({title:...}) before the body's '{', and
+  // brace-matching from that object truncates the extraction at its '}'.
+  const sigEnd = source.indexOf(')', source.indexOf('(', m.index));
+  let i = source.indexOf('{', sigEnd);
   if (decl === 'const') {
     // const initializers in this file are single-line statements
     const end = source.indexOf('\n', m.index);
@@ -55,14 +59,23 @@ const names = [
   ['METER_MADVR_RANGE_MIN', 'const'], ['METER_MADVR_RANGE_SPAN', 'const'],
   ['meterMadvrPrimaries', 'function'], ['meterMadvrParamsFromName', 'function'],
   ['meterMadvrLatticePos', 'function'], ['meterMadvrTrilinear', 'function'],
-  ['meterCubeToMadvr', 'function'],
+  ['meterMadvrAlloc', 'function'], ['meterMadvrFillRowplane', 'function'],
+  ['meterMadvrFinish', 'function'], ['meterCubeToMadvr', 'function'],
+  ['meterCubeToMadvrAsync', 'async function'], ['METER_MADVR_YIELD_PLANES', 'const'],
 ];
-const context = {};
+const context = { Promise, setTimeout, console };
 vm.createContext(context);
 for (const [n, d] of names) vm.runInContext(extractBlock(n, d), context);
 
 const results = [];
-const t = (label, fn) => { try { fn(); results.push([label, true, '']); } catch (e) { results.push([label, false, String(e && e.message || e)]); } };
+const pending = [];
+const t = (label, fn) => { pending.push([label, fn]); };
+async function runAll() {
+  for (const [label, fn] of pending) {
+    try { await fn(); results.push([label, true, '']); }
+    catch (e) { results.push([label, false, String(e && e.message || e)]); }
+  }
+}
 // Cross-realm (vm) values have foreign prototypes; compare via JSON.
 const eq = (a, b, msg) => assert.equal(JSON.stringify(a), JSON.stringify(b), msg);
 
@@ -253,10 +266,60 @@ t('bad input refused', () => {
   assert.equal(context.meterCubeToMadvr({ ok: true, size: 2, values: 'nope' }, {}), null);
 });
 
-let failed = 0;
-for (const [label, ok, err] of results) {
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok' : 'FAIL'} ${label}${ok ? '' : ' — ' + err}`);
-}
-console.log(JSON.stringify({ pass: results.length - failed, fail: failed }));
-process.exit(failed ? 1 : 0);
+
+t('async fill: identical bytes to sync path, progress reaches 1', async () => {
+  const p = rampParsed(3);
+  const sync = context.meterCubeToMadvr(p, { gamut: 'bt709', hdr: false, res: 17 });
+  const seen = [];
+  const asyncBytes = await context.meterCubeToMadvrAsync(p, { gamut: 'bt709', hdr: false, res: 17 },
+    (f) => { seen.push(f); });
+  assert.deepEqual(Array.from(asyncBytes), Array.from(sync), 'async output byte-identical to sync');
+  assert.ok(seen.length > 0, 'progress callback fired');
+  assert.equal(seen[seen.length - 1], 1, 'final progress is 1');
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i] > seen[i - 1], 'progress is strictly increasing');
+});
+
+t('async fill yields control back to the event loop', async () => {
+  // The freeze fix only exists if the fill awaits a macrotask: a timer armed
+  // before the conversion must fire DURING it, not after. A sync loop that
+  // merely looks async (no await) would block the loop and fail here.
+  const p = rampParsed(3);
+  let fired = 0;
+  const id = setTimeout(() => { fired++; }, 0);
+  await context.meterCubeToMadvrAsync(p, { gamut: 'bt709', hdr: false, res: 33 });
+  clearTimeout(id);
+  assert.ok(fired > 0, 'event loop ran timers during the async fill');
+});
+
+t('solved-path HDR export is refused at the call site', () => {
+  // Gate is structural: meterDownloadSolvedLutAs3dlut must bail on an
+  // hdr-params name BEFORE the confirm modal / fetch, with a toast naming
+  // the gamma-2.2 domain reason. Regex over the shipped source because the
+  // caller needs fetch/toast/DOM (no vm sandbox for those).
+  const fnSrc = extractBlock('meterDownloadSolvedLutAs3dlut', 'async function');
+  const gate = fnSrc.search(/params\.hdr[\s\S]{0,400}?toast\([^)]*gamma-2\.2[\s\S]*?return;/);
+  assert.ok(gate >= 0, 'hdr guard toasts the gamma-domain reason and returns');
+  const modalAt = fnSrc.indexOf('meterShowChoiceModal');
+  assert.ok(gate < modalAt, 'guard sits before the confirm modal (no HDR file can be produced)');
+});
+
+t('preview-path HDR confirm dialog carries the PQ-domain warning', () => {
+  const fnSrc = extractBlock('meterDownloadPreviewedCubeAs3dlut', 'async function');
+  assert.ok(/hdr[\s\S]{0,200}?PQ[\s\S]{0,300}?gamma-2\.2/.test(fnSrc), 'warn text keyed on hdr mentions PQ and gamma-2.2');
+  assert.ok(fnSrc.indexOf('warn') < fnSrc.indexOf('meterShowChoiceModal'), 'warning is composed into the modal body');
+});
+
+t('solved download name strips .CUBE extension case-insensitively', () => {
+  const fnSrc = extractBlock('meterDownloadSolvedLutAs3dlut', 'async function');
+  assert.ok(fnSrc.indexOf('replace(/' + String.fromCharCode(92) + '.cube$/i') >= 0, 'extension strip uses /i like the sibling paths');
+});
+
+runAll().then(() => {
+  let failed = 0;
+  for (const [label, ok, err] of results) {
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok' : 'FAIL'} ${label}${ok ? '' : ' — ' + err}`);
+  }
+  console.log(JSON.stringify({ pass: results.length - failed, fail: failed }));
+  process.exit(failed ? 1 : 0);
+});

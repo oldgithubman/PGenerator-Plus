@@ -423,15 +423,18 @@ function meterMadvrParamsFromName(name){
  return {gamut:gamut,hdr:hdr};
 }
 
-// Convert a parsed .cube to madVR .3dlut bytes (Uint8Array) or null. The
-// source LUT is resampled to madVR's fixed 256^3 lattice with trilinear
-// interpolation over its DOMAIN, then written as video-range BGR nodes:
-// node code i presents signal (i-16)/219 to the source LUT and results are
+// Allocate a madVR .3dlut buffer with header + parameter block written,
+// ready to fill. The source LUT is later resampled with trilinear
+// interpolation over its DOMAIN and written as video-range BGR nodes: node
+// code i presents signal (i-16)/219 to the source LUT and results are
 // encoded back as video codes scaled to 16-bit, matching the 16 235 range
-// the header always declares (see METER_MADVR_RANGE_MIN above).
+// the header always declares (see METER_MADVR_RANGE_MIN above). Signals
+// outside the domain clamp to its edges (fail-safe: madVR never sees
+// extrapolated lattice corners). Returns {buf,dv,lut16,res,lutBytes} or
+// null on bad input / unknown gamut.
 // opts.res is a test seam for the fill walk only — madVR accepts nothing
 // but the fixed 256 lattice, and no production caller sets it.
-function meterCubeToMadvr(parsed,opts){
+function meterMadvrAlloc(parsed,opts){
  if(!parsed||!parsed.ok||!Array.isArray(parsed.values)) return null;
  const o=opts||{};
  const primaries=meterMadvrPrimaries(o.gamut===undefined?'bt709':o.gamut);
@@ -474,28 +477,75 @@ function meterCubeToMadvr(parsed,opts){
  // DOMAIN_MIN..DOMAIN_MAX; results are encoded back as video codes and
  // scaled to 16-bit (code << 8, as Argyll's TV-encoded writer emits).
  // Walk red-slowest/blue-fastest, write B,G,R.
- const S=parsed.size, vals=parsed.values;
- const dmin=parsed.domainMin, dmax=parsed.domainMax;
  const lut16=new Uint16Array(buf.buffer,METER_MADVR_LUT_OFFSET,lutNodes*3);
- let u=0;
- for(let r=0;r<res;r++){
-  const xr=meterMadvrLatticePos(dmin[0],dmax[0],(r-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
-  for(let g=0;g<res;g++){
-   const xg=meterMadvrLatticePos(dmin[1],dmax[1],(g-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
-   for(let b=0;b<res;b++){
-    const xb=meterMadvrLatticePos(dmin[2],dmax[2],(b-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
-    meterMadvrTrilinear(vals,S,xr,xg,xb,meterMadvrScratch);
-    lut16[u++]=meterMadvrScratch[2]; lut16[u++]=meterMadvrScratch[1]; lut16[u++]=meterMadvrScratch[0];
-   }
-  }
+ return {buf:buf,dv:dv,lut16:lut16,res:res,lutBytes:lutBytes};
+}
+
+// Fill one (r,g) row-plane of the madVR lattice (all blue codes for a fixed
+// red/green index), starting at unit u of ctx.lut16; returns the new u.
+// Splitting the fill at row-plane granularity is what lets the async variant
+// yield to the browser between planes.
+function meterMadvrFillRowplane(ctx,parsed,r,g,u){
+ const S=parsed.size, vals=parsed.values;
+ const dmin=parsed.domainMin, dmax=parsed.domainMax, res=ctx.res;
+ const xr=meterMadvrLatticePos(dmin[0],dmax[0],(r-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+ const xg=meterMadvrLatticePos(dmin[1],dmax[1],(g-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+ for(let b=0;b<res;b++){
+  const xb=meterMadvrLatticePos(dmin[2],dmax[2],(b-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+  meterMadvrTrilinear(vals,S,xr,xg,xb,meterMadvrScratch);
+  ctx.lut16[u++]=meterMadvrScratch[2]; ctx.lut16[u++]=meterMadvrScratch[1]; ctx.lut16[u++]=meterMadvrScratch[0];
  }
- // cal1 trailer: linear full-range ramps (madVR leaves GPU LUTs alone).
- let c=METER_MADVR_LUT_OFFSET+lutBytes;
+ return u;
+}
+
+// Append the linear cal1 trailer (madVR leaves GPU ramps alone) and return
+// the finished file bytes.
+function meterMadvrFinish(ctx){
+ const buf=ctx.buf, dv=ctx.dv;
+ let c=METER_MADVR_LUT_OFFSET+ctx.lutBytes;
  buf[c]=0x63; buf[c+1]=0x61; buf[c+2]=0x6c; buf[c+3]=0x31; // 'cal1'
  dv.setInt32(c+4,1,true); dv.setInt32(c+8,256,true); dv.setInt32(c+12,2,true);
  const cal16=new Uint16Array(buf.buffer,c+16,768);
  for(let ch=0;ch<3;ch++) for(let j=0;j<256;j++) cal16[ch*256+j]=j*257;
  return buf;
+}
+
+// Synchronous full conversion (tests, small lattices). Production callers
+// use meterCubeToMadvrAsync: at the fixed 256^3 lattice the fill blocks the
+// main thread for tens of seconds, which the browser treats as a hang.
+function meterCubeToMadvr(parsed,opts){
+ const ctx=meterMadvrAlloc(parsed,opts);
+ if(!ctx) return null;
+ let u=0;
+ for(let r=0;r<ctx.res;r++) for(let g=0;g<ctx.res;g++) u=meterMadvrFillRowplane(ctx,parsed,r,g,u);
+ return meterMadvrFinish(ctx);
+}
+
+// Async full conversion: fills the lattice in row-plane chunks, awaiting a
+// macrotask yield every METER_MADVR_YIELD_PLANES planes (~10 ms per chunk for
+// a 33^3 source) so the page stays responsive during the ~30 s build.
+// onProgress(fraction) is called before each yield; fraction hits 1 on the
+// final chunk. Returns the same bytes as the sync path.
+const METER_MADVR_YIELD_PLANES=24;
+async function meterCubeToMadvrAsync(parsed,opts,onProgress){
+ const ctx=meterMadvrAlloc(parsed,opts);
+ if(!ctx) return null;
+ const total=ctx.res*ctx.res;
+ const yieldFn=(typeof setTimeout==='function')
+  ?function(){ return new Promise(function(res){ setTimeout(res,0); }); }
+  :function(){ return Promise.resolve(); };
+ let done=0,u=0;
+ for(let r=0;r<ctx.res;r++){
+  for(let g=0;g<ctx.res;g++){
+   u=meterMadvrFillRowplane(ctx,parsed,r,g,u);
+   done++;
+   if(done%METER_MADVR_YIELD_PLANES===0||done===total){
+    if(typeof onProgress==='function'){ try{ onProgress(done/total); }catch(e){} }
+    await yieldFn();
+   }
+  }
+ }
+ return meterMadvrFinish(ctx);
 }
 
 const meterMadvrScratch=[0,0,0];
@@ -580,15 +630,21 @@ async function meterDownloadPreviewedCubeAs3dlut(){
  const hdrBox=document.getElementById('meterMadvrHdr');
  const gamut=gamutSel?gamutSel.value:'bt709';
  const hdr=!!(hdrBox&&hdrBox.checked);
- const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(preview.filename||'imported .cube')+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel({gamut:gamut,hdr:hdr})+'.',acceptLabel:'Convert & download',cancelLabel:'Cancel'});
+ const warn=hdr?'\n\n\u26a0 PQ transfer declared, but there is no guarantee the imported cube is PQ-domain. If it came from this unit\u0027s HDR auto-cal it solved in the DPG gamma-2.2 domain and is NOT PQ-correct (madVR would apply it to PQ-coded pixels; worst error near black).':'';
+ const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(preview.filename||'imported .cube')+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel({gamut:gamut,hdr:hdr})+'.'+warn,acceptLabel:'Convert & download',cancelLabel:'Cancel'});
  if(!ok) return;
  try{
-  const bytes=meterCubeToMadvr(preview.parsed,{gamut:gamut,hdr:hdr});
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)');
+  const bytes=await meterCubeToMadvrAsync(preview.parsed,{gamut:gamut,hdr:hdr},function(frac){
+   meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
+  });
+  meterLutSolveProgressHide();
   if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
   meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut');
  }catch(e){
   // The ~96 MB lattice allocation can throw (RangeError) on a squeezed
   // browser; without this the async failure would be a silent rejection.
+  try{ meterLutSolveProgressHide(); }catch(e2){}
   toast('.3dlut conversion failed',true);
  }
  }
@@ -708,17 +764,34 @@ async function meterDownloadSolvedLutAs3dl(name){
 // signal mode and target gamut); the file is ~96 MB — madVR's fixed 256^3
 // lattice is uncompressed — so the button warns before starting.
 async function meterDownloadSolvedLutAs3dlut(name){
- const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(name)+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel(meterMadvrParamsFromName(name))+'.',acceptLabel:'Convert & download',cancelLabel:'Cancel'});
+ const params=meterMadvrParamsFromName(name);
+ // HDR guard: the LG auto-cal HDR solve lives in the DPG's gamma-2.2 domain
+ // ON PURPOSE (usr/bin/meter_lg_3d_autocal.pl, dpg_calibration_gamma: PQ
+ // encoding of the per-channel correction inflates the cross-channel drive
+ // ~25x near black). A gamma-domain correction must not be declared under a
+ // PQ-in/PQ-out header — madVR would apply it to PQ-coded pixels. Until a
+ // real gamma-2.2 -> PQ re-encode exists, refuse rather than ship a file
+ // whose header lies about its domain.
+ if(params.hdr){
+  toast('HDR solved LUTs solve in the DPG gamma-2.2 domain and are not PQ-correct — .3dlut export disabled for them',true);
+  return;
+ }
+ const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(name)+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel(params)+'.',acceptLabel:'Convert & download',cancelLabel:'Cancel'});
  if(!ok) return;
  try{
   const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
   if(!resp.ok){ toast('LUT download failed',true); return; }
   const parsed=meterCubeLutParse(await resp.text());
   if(!parsed.ok){ toast('.cube could not be parsed for conversion',true); return; }
-  const bytes=meterCubeToMadvr(parsed,meterMadvrParamsFromName(name));
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)');
+  const bytes=await meterCubeToMadvrAsync(parsed,params,function(frac){
+   meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
+  });
+  meterLutSolveProgressHide();
   if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
-  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(name).replace(/\.cube$/,'')+'.3dlut');
+  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(name).replace(/\.cube$/i,'')+'.3dlut');
  }catch(e){
+  try{ meterLutSolveProgressHide(); }catch(e2){}
   toast('.3dlut conversion failed',true);
  }
 }
