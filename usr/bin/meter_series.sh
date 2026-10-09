@@ -2520,6 +2520,9 @@ EOJSON
    # A second trigger on the same child could adopt the late first result,
    # so retire that child first; the fresh one cannot deliver it. Re-read
    # this patch once with a doubled budget. Stop only if that also fails.
+   if [[ "$REQUIRE_DEVICE_READY" == "1" || -z "$SR_CMD_BASE" ]]; then
+    series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   fi
    if ! restart_spotread_session; then
     series_meter_read_failure_exit "Meter read did not complete for $NAME and the meter could not be restarted; series stopped before a late result could contaminate another patch"
    fi
