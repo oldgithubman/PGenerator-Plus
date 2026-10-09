@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 36;
+use Test::More tests => 45;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -245,6 +245,18 @@ psb.BACKUP_SPECS = (
 )
 psb.ROLLBACK_DIR = r"$tmp/rollback"
 psb.CONF_DEST = r"$conf_spec"
+# Capture what the conf looks like AT COPY TIME: the OTA trust keys must
+# already be stripped from the STAGED copy before it is atomically
+# installed, so the live conf never holds them even momentarily.
+_atomic = psb.copy_file_atomic
+def _watched(source, destination):
+    with open(source, "r") as h:
+        text = h.read()
+    with open(r"$tmp/staging_watch.txt", "a") as h:
+        h.write("OTA_IN_SOURCE" if "ota_repo" in text else "CLEAN")
+        h.write(chr(10))
+    return _atomic(source, destination)
+psb.copy_file_atomic = _watched
 try:
     result = psb.usb_restore("2.13.0")
     print(json.dumps(result))
@@ -264,6 +276,14 @@ PY
  unlike($conf, qr/^ota_target=/m, 'unattended restore strips ota_target');
  like($conf, qr/^wifi_ssid=keepme/m, 'unattended restore keeps non-gated keys');
  unlike(mount_log(), qr/^MOUNT (?!-o ro)/m, 'restore never mounts read-write');
+ # Staged-copy strip: the file handed to copy_file_atomic must already
+ # be free of the trust keys (a post-copy strip leaves the live conf
+ # momentarily holding ota_repo_trusted=1).
+ {
+  my $watch = do { local(@ARGV,$/); open(my $f,'<',"$tmp/staging_watch.txt") or die "staging_watch: $!"; <$f> };
+  unlike($watch, qr/OTA_IN_SOURCE/, 'conf handed to copy_file_atomic is already stripped (staged strip, not post-copy)');
+  like($watch, qr/CLEAN/, 'staging watch observed the conf copy');
+ }
 }
 
 # Case 3: ONLY a corrupt archive on the stick (the valid archive from
@@ -365,6 +385,103 @@ PY
  like($r, qr/\bsdb1\b/, 'nested partition dir is a candidate (real sysfs layout)');
  unlike($r, qr/mmcblk0/, 'non-USB block device is not a candidate');
  unlike($r, qr/sdbX/, 'sibling decoy dir under the scan root is not a candidate');
+}
+
+# Case 6b: superfloppy stick (unpartitioned whole-disk filesystem):
+# block/sdb with NO nested partition directory must STILL be a
+# candidate. The nested-partition check applied to the disk itself
+# (/sys/block/sdb/sdb never exists) silently dropped every real
+# unpartitioned stick.
+{
+ my $sf = "$tmp/sfroot";
+ system("rm -rf '$sf'");
+ mkdir $sf;
+ mkdir "$sf/usb"; mkdir "$sf/block";
+ mkdir "$sf/usb/sdb";
+ symlink "$sf/usb/sdb", "$sf/block/sdb" or die "symlink: $!";
+ my $probe = "$tmp/sfprobe.py";
+ open(my $dh,'>',$probe) or die $!;
+ print $dh <<PY;
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("psb", r"$script")
+psb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(psb)
+print(" ".join(psb.list_usb_backup_candidates()))
+PY
+ close($dh);
+ my $r = `PG_USB_SCAN_ROOT=$sf/block python3 "$probe" 2>&1`;
+ chomp $r;
+ like($r, qr/\bsdb\b/, 'unpartitioned superfloppy disk is a candidate (no sysfs partition node)');
+}
+
+# Case 6c: full rescue FROM a superfloppy stick: sentinel + valid
+# archive on the whole-disk filesystem restore end-to-end (the scan
+# alone could pass while mounting/restore never ran on this shape).
+{
+ my $sf = "$tmp/sfroot2";
+ system("rm -rf '$sf'");
+ mkdir $sf;
+ mkdir "$sf/usb"; mkdir "$sf/block";
+ mkdir "$sf/usb/sdb";
+ symlink "$sf/usb/sdb", "$sf/block/sdb" or die "symlink: $!";
+ # Stick contents keyed by candidate name ("sdb" here).
+ mkdir "$tmp/stick/sdb" unless -d "$tmp/stick/sdb";
+ opendir(my $dh,"$tmp/stick/sdb") or die $!;
+ for my $f (readdir $dh) { next if $f=~/^\./; unlink "$tmp/stick/sdb/$f" }
+ closedir $dh;
+ copy_file($built_arch, "$tmp/stick/sdb/PGenerator_plus_system_backup_v2.13.0_20260921-000000.pgbackup");
+ open(my $fh,'>',"$tmp/stick/sdb/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ # Wipe the destinations so the restore must bring the files back.
+ unlink "$dest_root/confdest/conf.txt" if -f "$dest_root/confdest/conf.txt";
+ unlink $conf_spec if -f $conf_spec;
+ clear_mount_log();
+ my $driver = "$tmp/sfrestore.py";
+ open($dh,'>',$driver) or die $!;
+ print $dh <<PY;
+import sys, os, json
+import importlib.util
+spec = importlib.util.spec_from_file_location("psb", r"$script")
+psb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(psb)
+os.makedirs(r"$dest_root/confdest", exist_ok=True)
+psb.BACKUP_SPECS = (
+    ("dir", r"$dest_root/confdest", "fake settings"),
+    ("file", r"$conf_spec", "fake conf"),
+)
+psb.ROLLBACK_DIR = r"$tmp/rollback"
+psb.CONF_DEST = r"$conf_spec"
+try:
+    result = psb.usb_restore("2.13.0")
+    print(json.dumps(result))
+except psb.BackupError as e:
+    print(json.dumps({"status":"error","message":str(e)}))
+PY
+ close($dh);
+ my $r = `PG_USB_SCAN_ROOT=$sf/block $env_common python3 "$driver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'superfloppy stick restores end-to-end') or diag $r;
+ like($r, qr/"usb_device": "sdb"/, 'restore reports the whole-disk device');
+ ok(-f $conf_spec, 'superfloppy restore landed the conf');
+ unlike($conf_spec ? do { local(@ARGV,$/); open(my $f,'<',$conf_spec); <$f> } : '', qr/^ota_repo=/m,
+  'superfloppy restore also strips OTA trust keys');
+}
+
+# Case 6d: a stick that ALREADY holds a rescue backup (sentinel +
+# *.pgbackup from a previous export) is refreshable: exporting again
+# must succeed without a manual wipe. Third-party data still refuses.
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
+ print $fh "previous rescue export\n"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'rescue stick with a previous backup is refreshable without a wipe') or diag $r;
+ # But the same stick PLUS someone's file is still off-limits.
+ open($fh,'>',"$tmp/stick/sdb1/taxes.txt") or die $!; print $fh "data"; close($fh);
+ $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/No writable empty USB drive/, 'rescue files plus third-party data still refuses export');
 }
 
 # Case 7: the Perl route must assign _webui_system_backup_run in LIST

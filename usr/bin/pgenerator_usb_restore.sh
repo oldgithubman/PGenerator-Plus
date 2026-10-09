@@ -5,10 +5,14 @@
 # First-boot settings rescue. A re-flashed image carries
 # /etc/BiasiLinux/BiasiLinux.FirstBoot until rcPGenerator consumes it,
 # so this is the one moment we know the device is factory-fresh. If a
-# USB stick holding a .pgbackup (exported from the WebUI, or written by
-# 'usb-export') is plugged in, restore it before the daemon's first
-# start: the user flashes the card, plugs the stick, powers on, and the
-# box comes back with their settings, profiles and calibration history.
+# USB stick written by the WebUI's "Backup to USB" button (which puts a
+# .pgbackup AND a PGEN_USB_RESCUE sentinel on a blank stick) is plugged
+# in, restore it before the daemon's first start: the user flashes the
+# card, plugs the stick, powers on, and the box comes back with their
+# settings, profiles and calibration history. Rescue is opt-in: a
+# browser-downloaded .pgbackup copied onto a stick by hand carries no
+# sentinel and is deliberately IGNORED here — an arbitrary stick must
+# never push settings onto an unattended first boot.
 #
 # Safe by construction:
 #  - no first-boot marker  -> exit (normal boot, never touch settings)

@@ -451,9 +451,14 @@ def restore_archive(archive_path, software_version, unattended=False):
             if kind == "file":
                 if not os.path.isfile(source):
                     continue
-                copy_file_atomic(source, destination)
                 if unattended and destination == CONF_DEST:
-                    strip_denied_conf_keys(destination)
+                    # Strip OTA trust keys from the STAGED copy first: the
+                    # live conf must never hold them, even momentarily —
+                    # strip-then-rename means the atomic install either
+                    # shows the old conf or the clean one, never the raw
+                    # restored one.
+                    strip_denied_conf_keys(source)
+                copy_file_atomic(source, destination)
                 restored_files += 1
             else:
                 if not os.path.isdir(source):
@@ -543,11 +548,16 @@ def list_usb_backup_candidates():
         for part in parts:
             if part in root_nodes:
                 continue
-            # Real kernels nest partitions INSIDE the disk directory
-            # (/sys/block/sdb/sdb1), never as siblings — checking
-            # /sys/block/sdb1 drops every partitioned stick.
-            if not os.path.isdir(os.path.join(USB_SCAN_ROOT, dev, part)):
-                continue
+            if part != dev:
+                # Real kernels nest partitions INSIDE the disk directory
+                # (/sys/block/sdb/sdb1), never as siblings — checking
+                # /sys/block/sdb1 drops every partitioned stick.
+                if not os.path.isdir(os.path.join(USB_SCAN_ROOT, dev, part)):
+                    continue
+            # Superfloppy case (part == dev): the whole disk is a single
+            # filesystem with NO sysfs subdirectory beneath it, so the
+            # nested check must not apply or every unpartitioned stick
+            # is silently dropped.
             candidates.append(part)
     return candidates
 
@@ -651,11 +661,18 @@ def stick_is_blank(dest):
     # A freshly formatted or Windows/macOS-touched stick counts as blank:
     # only entries outside USB_SKIP_DIRS are somebody's data. A stranded
     # write temp from an interrupted export also does not count, or the
-    # retry could never proceed.
+    # retry could never proceed. A rescue stick THIS button already wrote
+    # (sentinel + *.pgbackup) counts as blank too, so the backup can be
+    # refreshed without a manual wipe; restore ranks by created_utc, so
+    # the newest archive wins and older ones are simply superseded.
     for entry in os.listdir(dest):
         if entry.lower() in USB_SKIP_DIRS:
             continue
         if entry.endswith(".pgbackup.tmp"):
+            continue
+        if entry == RESCUE_SENTINEL:
+            continue
+        if entry.lower().endswith(".pgbackup"):
             continue
         return False
     return True
