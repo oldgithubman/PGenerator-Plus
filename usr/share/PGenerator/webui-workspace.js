@@ -407,6 +407,19 @@ function meterMadvrPrimaries(gamut){
  return rgb.concat(METER_MADVR_D65_WP);
 }
 
+// ICC-converted cubes are named icc_<stem>_<mode>_<unixtime>.cube by
+// webui_icc_profile_to_cube (PGICCProfile.pm). The trailing mode token is
+// authoritative for the signal domain — the stem is a user-controlled
+// profile filename whose tokens the general heuristic would misread — but
+// only when the full icc_ + _<mode>_<digits> shape matches. Returns
+// 'sdr'/'hdr10'/null.
+function meterMadvrIccMode(name){
+ const s=String(name||'').toLowerCase().replace(/\.[a-z0-9]+$/,'');
+ if(!s.startsWith('icc_')) return null;
+ const m=s.match(/_(sdr|hdr10)_\d+$/);
+ return m?m[1]:null;
+}
+
 // Guess the madVR header options from a solved-LUT or imported filename.
 // Solved names carry the signal mode and target gamut (…_sdr_method_mode_gamut_gamma.cube).
 // Defaults: SDR + Rec. 709; HDR10/DV defaults to Rec. 2020 (per solve rules).
@@ -414,7 +427,11 @@ function meterMadvrParamsFromName(name){
  // Strip any extension FIRST: the hdr token anchors on underscore/end, and
  // '.cube' after a trailing token (lut_hdr10.cube) would defeat both.
  const s=String(name||'').toLowerCase().replace(/\.[a-z0-9]+$/,'');
- const hdr=/(?:^|_)(hdr10|dv|pq)(?:_|$)/.test(s);
+ // ICC names carry an authoritative trailing mode token; it outranks the
+ // general heuristic so an SDR profile stem containing dv/pq/hdr10 cannot
+ // masquerade as HDR.
+ const iccMode=meterMadvrIccMode(name);
+ const hdr=iccMode?(iccMode==='hdr10'):(/(?:^|_)(hdr10|dv|pq)(?:_|$)/.test(s));
  let gamut='bt709';
  if(/bt2020/.test(s)) gamut='bt2020';
  else if(/p3d65/.test(s)) gamut='p3d65';
@@ -527,13 +544,23 @@ function meterCubeToMadvr(parsed,opts){
 // onProgress(fraction) is called before each yield; fraction hits 1 on the
 // final chunk. Returns the same bytes as the sync path.
 const METER_MADVR_YIELD_PLANES=24;
+// Yield via MessageChannel, NOT setTimeout(0): browsers clamp nested timers
+// (4 ms floor, and ~1/s in a background tab — 2731 yields would stretch a
+// ~54 s build past 45 minutes the moment the operator switches tabs).
+// postMessage callbacks are not timer-clamped, so the export keeps pace
+// hidden or visible.
+function meterMadvrYield(){
+ if(typeof MessageChannel==='function'){
+  return new Promise(function(res){ const ch=new MessageChannel(); ch.port1.onmessage=function(){ res(); }; ch.port2.postMessage(0); });
+ }
+ if(typeof setTimeout==='function') return new Promise(function(res){ setTimeout(res,0); });
+ return Promise.resolve();
+}
 async function meterCubeToMadvrAsync(parsed,opts,onProgress){
  const ctx=meterMadvrAlloc(parsed,opts);
  if(!ctx) return null;
  const total=ctx.res*ctx.res;
- const yieldFn=(typeof setTimeout==='function')
-  ?function(){ return new Promise(function(res){ setTimeout(res,0); }); }
-  :function(){ return Promise.resolve(); };
+ const yieldFn=meterMadvrYield;
  let done=0,u=0;
  for(let r=0;r<ctx.res;r++){
   for(let g=0;g<ctx.res;g++){
@@ -771,8 +798,10 @@ async function meterDownloadSolvedLutAs3dlut(name){
  // ~25x near black). A gamma-domain correction must not be declared under a
  // PQ-in/PQ-out header — madVR would apply it to PQ-coded pixels. Until a
  // real gamma-2.2 -> PQ re-encode exists, refuse rather than ship a file
- // whose header lies about its domain.
- if(params.hdr){
+ // whose header lies about its domain. ICC-converted cubes (icc_* names)
+ // are exempt: icc_companion_lut.py feeds their input through pq_linear()
+ // for hdr10, so they genuinely ARE PQ-domain and the header is correct.
+ if(params.hdr&&!meterMadvrIccMode(name)){
   toast('HDR solved LUTs solve in the DPG gamma-2.2 domain and are not PQ-correct — .3dlut export disabled for them',true);
   return;
  }

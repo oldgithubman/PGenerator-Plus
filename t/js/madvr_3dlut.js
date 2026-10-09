@@ -58,12 +58,17 @@ const names = [
   ['METER_MADVR_D65_WP', 'const'], ['meterMadvrScratch', 'const'],
   ['METER_MADVR_RANGE_MIN', 'const'], ['METER_MADVR_RANGE_SPAN', 'const'],
   ['meterMadvrPrimaries', 'function'], ['meterMadvrParamsFromName', 'function'],
+  ['meterMadvrIccMode', 'function'],
   ['meterMadvrLatticePos', 'function'], ['meterMadvrTrilinear', 'function'],
   ['meterMadvrAlloc', 'function'], ['meterMadvrFillRowplane', 'function'],
   ['meterMadvrFinish', 'function'], ['meterCubeToMadvr', 'function'],
+  ['meterMadvrYield', 'function'],
   ['meterCubeToMadvrAsync', 'async function'], ['METER_MADVR_YIELD_PLANES', 'const'],
 ];
-const context = { Promise, setTimeout, console };
+// MessageChannel comes from Node's web-compat globals (real async port
+// delivery); fall back to setTimeout if a future runtime lacks it.
+const context = { Promise, setTimeout, console,
+  MessageChannel: (typeof MessageChannel === 'function') ? MessageChannel : undefined };
 vm.createContext(context);
 for (const [n, d] of names) vm.runInContext(extractBlock(n, d), context);
 
@@ -301,6 +306,32 @@ t('solved-path HDR export is refused at the call site', () => {
   assert.ok(gate >= 0, 'hdr guard toasts the gamma-domain reason and returns');
   const modalAt = fnSrc.indexOf('meterShowChoiceModal');
   assert.ok(gate < modalAt, 'guard sits before the confirm modal (no HDR file can be produced)');
+  // Exemption: icc_* cubes are PQ-domain by construction (icc_companion_lut
+  // pq_linear), so the gamma-2.2 refusal must not gate on them.
+  assert.ok(/params\.hdr\s*&&\s*!\s*meterMadvrIccMode\(\s*name\s*\)/.test(fnSrc), 'gate exempts ICC-converted HDR cubes');
+});
+
+t('ICC trailing mode token outranks the filename heuristic', () => {
+  // An SDR ICC profile whose (user-controlled) stem carries dv/pq tokens
+  // must NOT be treated as HDR; the trailing _<mode>_<unixtime> is the
+  // authoritative token webui_icc_profile_to_cube writes.
+  assert.equal(context.meterMadvrIccMode('icc_my_dv_profile_sdr_1760000000.cube'), 'sdr');
+  assert.equal(context.meterMadvrIccMode('icc_p_hdr10_1760000000.CUBE'), 'hdr10', 'extension strip is case-insensitive');
+  assert.equal(context.meterMadvrIccMode('solved_hdr10_method_gamut.cube'), null, 'non-ICC names get no ICC mode');
+  assert.equal(context.meterMadvrIccMode('icc_no_mode_token.cube'), null, 'ICC name without the mode token falls back to the heuristic');
+  assert.equal(context.meterMadvrParamsFromName('icc_my_dv_profile_sdr_1760000000.cube').hdr, false, 'dv in an SDR ICC stem no longer means HDR');
+  assert.equal(context.meterMadvrParamsFromName('icc_p_HDR10_1760000000.CUBE').hdr, true, 'ICC hdr10 stays HDR');
+  assert.equal(context.meterMadvrParamsFromName('lut_hdr10.cube').hdr, true, 'non-ICC heuristic unchanged');
+});
+
+t('yield uses MessageChannel, not a timer (background-tab clamp free)', async () => {
+  // Browsers clamp nested setTimeout (~4 ms, ~1/s in a background tab):
+  // 2731 timer yields would stretch the export past 45 minutes once the
+  // operator switches tabs. Behavior pin: with setTimeout sabotaged in the
+  // sandbox the yield must still resolve — MessageChannel carries it.
+  const realSetTimeout = context.setTimeout;
+  context.setTimeout = function () { throw new Error('yield used a timer despite MessageChannel being available'); };
+  try { await context.meterMadvrYield(); } finally { context.setTimeout = realSetTimeout; }
 });
 
 t('preview-path HDR confirm dialog carries the PQ-domain warning', () => {
