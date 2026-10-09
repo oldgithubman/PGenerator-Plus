@@ -11515,9 +11515,15 @@ sub webui_wifi_scan_json (@) {
   my $ssid=$f[4];
   # Skip hidden networks (SSIDs with \x00 or empty/whitespace-only)
   next if($ssid=~/\\x00/ || $ssid=~/^\s*$/);
-  $ssid=~s/"/\\"/g;
-  # Sanitize: remove any remaining non-printable characters
+  # SSIDs are attacker-controlled over the air. Escape backslash BEFORE the
+  # quote (both live in _webui_json_escape): escaping '"' alone let an SSID
+  # ending in '\' consume the closing quote and emit invalid JSON, blanking
+  # the whole scan list for every client (issue #50 follow-up).
+  # Sanitize: remove non-printable characters before escaping (so a
+  # control-chars-only SSID still drops out below rather than shipping as
+  # \uXXXX escapes), then JSON-escape what remains.
   $ssid=~s/[^\x20-\x7e]//g;
+  $ssid=&_webui_json_escape($ssid);
   next if($ssid eq "");
   my $signal=$f[2];
   my $security=$f[3]=~/WPA/ ? "WPA" : ($f[3]=~/WEP/ ? "WEP" : "Open");
