@@ -2524,7 +2524,7 @@ EOJSON
     series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
    fi
    if ! restart_spotread_session; then
-    series_meter_read_failure_exit "Meter read did not complete for $NAME and the meter could not be restarted; series stopped before a late result could contaminate another patch"
+    series_meter_read_failure_exit "Meter read did not complete for $NAME and the meter could not be restarted (${SPOTREAD_RESTART_ERROR:-no detail}); series stopped before a late result could contaminate another patch"
    fi
    echo "[$(date '+%H:%M:%S.%3N')] incomplete read recovery: step=$STEP_NUM name=$NAME; spotread child replaced, re-reading once" >> /tmp/meter_series_debug.log
    READ_INCOMPLETE=0
