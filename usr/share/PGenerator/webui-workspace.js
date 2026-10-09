@@ -661,14 +661,17 @@ async function meterDownloadPreviewedCubeAs3dlut(){
  const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(preview.filename||'imported .cube')+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel({gamut:gamut,hdr:hdr})+'.'+warn,acceptLabel:'Convert & download',cancelLabel:'Cancel'});
  if(!ok) return;
  try{
-  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)');
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)','Writing madVR .3dlut');
   const bytes=await meterCubeToMadvrAsync(preview.parsed,{gamut:gamut,hdr:hdr},function(frac){
    meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
   });
   meterLutSolveProgressHide();
   if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
-  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut');
- }catch(e){
+  // Keep the download outside the conversion catch: a blob/save failure
+  // must not be reported as a conversion failure.
+  try{ meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut'); }
+  catch(e2){ toast('.3dlut download failed',true); }
+}catch(e){
   // The ~96 MB lattice allocation can throw (RangeError) on a squeezed
   // browser; without this the async failure would be a silent rejection.
   try{ meterLutSolveProgressHide(); }catch(e2){}
@@ -718,12 +721,17 @@ async function meterLoadSolvedLutList(){
    const name=String(l.name||'');
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
    const selected=!!(meterLutCubeState&&meterLutCubeState.name===name);
+   // Mirror the meterDownloadSolvedLutAs3dlut refuse gate so the button
+   // states the refusal up front instead of toasting only after the click.
+   const madvrBlocked=meterMadvrParamsFromName(name).hdr&&!meterMadvrIccMode(name);
    return '<div class="meter-solved-lut-row">'
     +'<button type="button" class="meter-solved-lut-name'+(selected?' is-selected':'')+'" data-lut-name="'+esc(name)+'" aria-current="'+(selected?'true':'false')+'" title="Load '+esc(name)+' in the 3D cube viewer" onclick="meterViewSolvedLutIn3d(\''+escJs(name)+'\')">'
     +'<span class="meter-solved-lut-name-main">'+esc(name)+'</span><span class="meter-solved-lut-name-date">'+esc(when)+'</span></button>'
     +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+escJs(name)+'\')">.cube</button>'
     +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+escJs(name)+'\')">.3dl</button>'
-    +'<button class="btn btn-sm btn-secondary" title="Convert and download as a madVR .3dlut (~96 MB, generated in your browser)" onclick="meterDownloadSolvedLutAs3dlut(\''+escJs(name)+'\')">.3dlut</button>'
+    +(madvrBlocked
+      ?'<button class="btn btn-sm btn-secondary" disabled title="Not available: HDR auto-cal LUTs solve in the gamma-2.2 domain and are not PQ-correct" aria-disabled="true">.3dlut</button>'
+      :'<button class="btn btn-sm btn-secondary" title="Convert and download as a madVR .3dlut (~96 MB, generated in your browser)" onclick="meterDownloadSolvedLutAs3dlut(\''+escJs(name)+'\')">.3dlut</button>')
     +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+escJs(name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
@@ -812,13 +820,16 @@ async function meterDownloadSolvedLutAs3dlut(name){
   if(!resp.ok){ toast('LUT download failed',true); return; }
   const parsed=meterCubeLutParse(await resp.text());
   if(!parsed.ok){ toast('.cube could not be parsed for conversion',true); return; }
-  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)');
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)','Writing madVR .3dlut');
   const bytes=await meterCubeToMadvrAsync(parsed,params,function(frac){
    meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
   });
   meterLutSolveProgressHide();
   if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
-  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(name).replace(/\.cube$/i,'')+'.3dlut');
+  // Keep the download outside the conversion catch: a blob/save failure
+  // must not be reported as a conversion failure.
+  try{ meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(name).replace(/\.cube$/i,'')+'.3dlut'); }
+  catch(e2){ toast('.3dlut download failed',true); }
  }catch(e){
   try{ meterLutSolveProgressHide(); }catch(e2){}
   toast('.3dlut conversion failed',true);
@@ -1251,14 +1262,17 @@ async function meterLutSolveStart(series,readings,opts){
  return true;
 }
 
-function meterLutSolveProgressShow(msg,detail){
+function meterLutSolveProgressShow(msg,detail,title){
  const modal=meterEnsureModalOnBody(document.getElementById('lutSolveProgressModal'));
  if(!modal) return;
- const title=document.getElementById('lutSolveProgressTitle');
+ const titleEl=document.getElementById('lutSolveProgressTitle');
  const m=document.getElementById('lutSolveProgressMsg');
  const d=document.getElementById('lutSolveProgressDetail');
  const fill=document.getElementById('lutSolveProgressFill');
- if(title) title.textContent='Building 3D LUT';
+ // Title is caller-overridable: the madVR .3dlut export reuses this modal
+ // but is not a solve — the default must stay 'Building 3D LUT' for the
+ // solve worker's polling calls.
+ if(titleEl) titleEl.textContent=String(title||'Building 3D LUT');
  if(m) m.textContent=String(msg||'Starting solve…');
  if(d) d.textContent=String(detail||'');
  if(fill){ fill.style.width='12%'; fill.classList.add('active'); }

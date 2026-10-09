@@ -345,6 +345,27 @@ t('solved download name strips .CUBE extension case-insensitively', () => {
   assert.ok(fnSrc.indexOf('replace(/' + String.fromCharCode(92) + '.cube$/i') >= 0, 'extension strip uses /i like the sibling paths');
 });
 
+t('solved list disables .3dlut on refused rows', () => {
+  // Nit: the refuse gate must be mirrored at render time — a blocked row
+  // shows a disabled button naming the reason, not a live button that
+  // toasts only after the click.
+  const fnSrc = extractBlock('meterLoadSolvedLutList', 'async function');
+  assert.ok(/madvrBlocked\s*=\s*meterMadvrParamsFromName\(name\)\.hdr\s*&&\s*!\s*meterMadvrIccMode\(name\)/.test(fnSrc), 'render mirrors the gate predicate exactly');
+  assert.ok(/disabled[^]*?Not available: HDR auto-cal LUTs[^]*?\.3dlut<\/button>/.test(fnSrc), 'blocked row renders a disabled button with the reason in title');
+});
+
+t('madVR export retitles the progress modal and separates download errors', () => {
+  // Nit: "Building 3D LUT" is wrong while writing a .3dlut, and a
+  // meterDownloadBlob failure must not read as "conversion failed".
+  const showSrc = extractBlock('meterLutSolveProgressShow', 'function');
+  assert.ok(/String\(title\|\|'Building 3D LUT'\)/.test(showSrc), 'title param defaults to the solve wording');
+  for (const fn of ['meterDownloadSolvedLutAs3dlut', 'meterDownloadPreviewedCubeAs3dlut']) {
+    const fnSrc = extractBlock(fn, 'async function');
+    assert.ok(fnSrc.indexOf("'Writing madVR .3dlut')") > 0, fn + ' passes the export title');
+    assert.ok(/meterDownloadBlob[\s\S]{0,200}?catch[\s\S]{0,80}?download failed/.test(fnSrc), fn + ' reports download failure separately');
+  }
+});
+
 runAll().then(() => {
   let failed = 0;
   for (const [label, ok, err] of results) {
