@@ -433,10 +433,18 @@ function meterMadvrParamsFromName(name){
  const iccMode=meterMadvrIccMode(name);
  const hdr=iccMode?(iccMode==='hdr10'):(/(?:^|_)(hdr10|dv|pq)(?:_|$)/.test(s));
  let gamut='bt709';
- if(/bt2020/.test(s)) gamut='bt2020';
- else if(/p3d65/.test(s)) gamut='p3d65';
- else if(/p3dci/.test(s)) gamut='p3dci';
- else if(hdr) gamut='bt2020';
+ if(iccMode){
+  // An ICC-converted cube is built by icc_companion_lut.py from a FIXED
+  // source space — hdr10 samples BT.2020/PQ, sdr samples sRGB/Rec.709
+  // (source_xyz). The user-controlled profile stem has no say over the
+  // input primaries, so its gamut tokens must not reach the header.
+  gamut=(iccMode==='hdr10')?'bt2020':'bt709';
+ } else {
+  if(/bt2020/.test(s)) gamut='bt2020';
+  else if(/p3d65/.test(s)) gamut='p3d65';
+  else if(/p3dci/.test(s)) gamut='p3dci';
+  else if(hdr) gamut='bt2020';
+ }
  return {gamut:gamut,hdr:hdr};
 }
 
@@ -551,7 +559,10 @@ const METER_MADVR_YIELD_PLANES=24;
 // hidden or visible.
 function meterMadvrYield(){
  if(typeof MessageChannel==='function'){
-  return new Promise(function(res){ const ch=new MessageChannel(); ch.port1.onmessage=function(){ res(); }; ch.port2.postMessage(0); });
+  // Close both ports once the tick lands: an export makes ~2731 channels,
+  // and leaving each pair open pins the channel until the page unloads
+  // (Node keeps the event loop alive on open ports; close defensively).
+  return new Promise(function(res){ const ch=new MessageChannel(); ch.port1.onmessage=function(){ ch.port1.close(); ch.port2.close(); res(); }; ch.port2.postMessage(0); });
  }
  if(typeof setTimeout==='function') return new Promise(function(res){ setTimeout(res,0); });
  return Promise.resolve();

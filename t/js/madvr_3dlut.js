@@ -324,6 +324,26 @@ t('ICC trailing mode token outranks the filename heuristic', () => {
   assert.equal(context.meterMadvrParamsFromName('lut_hdr10.cube').hdr, true, 'non-ICC heuristic unchanged');
 });
 
+t('ICC cubes get header gamut from the mode token, not the stem', () => {
+  // icc_companion_lut.py source_xyz fixes the input space: hdr10 samples
+  // BT.2020/PQ, sdr samples sRGB/Rec.709. A user-controlled profile stem
+  // naming another gamut must not leak into the .3dlut header.
+  // Every case runs (collect, not fail-fast): an earlier assertion throwing
+  // must not mask the SDR-rung case — mutation-verified ordering trap.
+  const bad = [];
+  const check = (name, want) => {
+    try {
+      assert.equal(context.meterMadvrParamsFromName(name).gamut, want, `${name} -> ${want}`);
+    } catch (e) { bad.push(e.message); }
+  };
+  check('icc_foo_p3d65_hdr10_1760000000.cube', 'bt2020');   // p3d65 stem cannot override BT.2020
+  check('icc_foo_bt2020_sdr_1760000000.cube', 'bt709');     // bt2020 stem cannot override Rec.709
+  check('icc_foo_p3dci_sdr_1760000000.cube', 'bt709');      // p3dci leak on the SDR rung
+  check('icc_no_token_p3d65.cube', 'p3d65');                // no mode token: heuristic intact
+  check('lut_p3d65_sdr.cube', 'p3d65');                     // non-ICC heuristic unchanged
+  assert.deepEqual(bad, [], 'ICC gamut derivation matrix: ' + bad.join(' | '));
+});
+
 t('yield uses MessageChannel, not a timer (background-tab clamp free)', async () => {
   // Browsers clamp nested setTimeout (~4 ms, ~1/s in a background tab):
   // 2731 timer yields would stretch the export past 45 minutes once the
@@ -332,6 +352,27 @@ t('yield uses MessageChannel, not a timer (background-tab clamp free)', async ()
   const realSetTimeout = context.setTimeout;
   context.setTimeout = function () { throw new Error('yield used a timer despite MessageChannel being available'); };
   try { await context.meterMadvrYield(); } finally { context.setTimeout = realSetTimeout; }
+});
+
+t('yield closes both MessageChannel ports after the tick', async () => {
+  // Nit: an export creates ~2731 channels; ports left open pin the channel
+  // (Node refuses to exit with open ports). Behavior pin via a tracking
+  // wrapper: after the yield resolves, port1.close AND port2.close must
+  // each have run.
+  const real = context.MessageChannel;
+  const closed = [];
+  function TrackedChannel() {
+    const ch = new real();
+    for (const p of ['port1', 'port2']) {
+      const orig = ch[p].close.bind(ch[p]);
+      ch[p].close = () => { closed.push(p); orig(); };
+    }
+    return ch;
+  }
+  context.MessageChannel = TrackedChannel;
+  try { await context.meterMadvrYield(); } finally { context.MessageChannel = real; }
+  closed.sort();
+  assert.deepEqual(closed, ['port1', 'port2'], 'both ports closed in the onmessage handler');
 });
 
 t('preview-path HDR confirm dialog carries the PQ-domain warning', () => {
