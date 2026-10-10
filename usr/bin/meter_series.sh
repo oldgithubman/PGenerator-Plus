@@ -1496,6 +1496,10 @@ fi
 # respawn spotread, avoiding the long per-patch stalls of the old policy.
 NO_READING_RETRIES=1
 ZERO_READ_RETRIES=2
+# Issue #59: an incomplete read retires the child and re-reads once, but a
+# dying meter must not stretch a series forever with endless restarts. The
+# Nth incomplete read beyond this cap stops the series instead of recovering.
+INCOMPLETE_RECOVERY_MAX=5
 
 daemon_elapsed_sec() {
  local pid
@@ -1575,7 +1579,14 @@ restart_spotread_session() {
  series_stop_requested && series_cancel_exit
  sleep 1.5
  local restart_label
- restart_label=$(json_escape "Preparing meter integration for ${NAME:-patch} (attempt $attempt/2)")
+ # The issue #59 stall-recovery caller sets SPOTREAD_RESTART_REASON so the
+ # operator sees what the wait is for; integration-mode switches keep the
+ # original label.
+ if [[ -n "${SPOTREAD_RESTART_REASON:-}" ]]; then
+  restart_label=$(json_escape "$SPOTREAD_RESTART_REASON (attempt $attempt/2)")
+ else
+  restart_label=$(json_escape "Preparing meter integration for ${NAME:-patch} (attempt $attempt/2)")
+ fi
  write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$restart_label","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
@@ -2309,6 +2320,8 @@ if [[ "$WHITE_READING" != "null" ]]; then
 fi
 
 READINGS=""
+# Per-series counter for issue #59 incomplete-read recoveries (cap below).
+INCOMPLETE_RECOVERIES=0
 READING_COUNT=0
 START_INDEX=0
 DV_ABSOLUTE_TARGETS_APPLIED=0
@@ -2521,12 +2534,25 @@ EOJSON
    # so retire that child first; the fresh one cannot deliver it. Re-read
    # this patch once with a doubled budget. Stop only if that also fails.
    if [[ "$REQUIRE_DEVICE_READY" == "1" || -z "$SR_CMD_BASE" ]]; then
+    # For this meter type no restart is attempted, so the message must not
+    # claim a failed restart attempt.
     series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
    fi
+   # Cap recoveries per series (INCOMPLETE_RECOVERY_MAX): a dying meter
+   # that stalls on every patch must end the run, not restart forever.
+   INCOMPLETE_RECOVERIES=$((INCOMPLETE_RECOVERIES + 1))
+   if (( INCOMPLETE_RECOVERIES > INCOMPLETE_RECOVERY_MAX )); then
+    series_meter_read_failure_exit "Meter read did not complete for $NAME after $INCOMPLETE_RECOVERY_MAX recoveries this series; series stopped"
+   fi
+   # Stall recovery wants a progress label that names the stall, not the
+   # integration-mode wording meant for low-light switches.
+   SPOTREAD_RESTART_REASON="Recovering stalled meter read for ${NAME:-patch}"
    if ! restart_spotread_session; then
+    SPOTREAD_RESTART_REASON=""
     series_meter_read_failure_exit "Meter read did not complete for $NAME and the meter could not be restarted (${SPOTREAD_RESTART_ERROR:-no detail}); series stopped before a late result could contaminate another patch"
    fi
-   echo "[$(date '+%H:%M:%S.%3N')] incomplete read recovery: step=$STEP_NUM name=$NAME; spotread child replaced, re-reading once" >> /tmp/meter_series_debug.log
+   SPOTREAD_RESTART_REASON=""
+   echo "[$(date '+%H:%M:%S.%3N')] incomplete read recovery: step=$STEP_NUM name=$NAME recovery=$INCOMPLETE_RECOVERIES/$INCOMPLETE_RECOVERY_MAX; spotread child replaced, re-reading once" >> /tmp/meter_series_debug.log
    READ_INCOMPLETE=0
    COMM_RETRY_SEEN=1
    RETRY_TIMEOUT_SCALE=2
@@ -2552,7 +2578,10 @@ EOJSON
    printf " " >&3
    READ_START=$SECONDS
    RETRY_TIMEOUT=$(read_timeout_seconds "$(step_timeout_stimulus "$R" "$G" "$B" "$INPUT_MAX" "$IRE")")
+   # The doubled budget (issue #59) is for the one recovery read on the
+   # fresh child; later ordinary retries go back to the base timeout.
    RETRY_TIMEOUT=$((RETRY_TIMEOUT * RETRY_TIMEOUT_SCALE))
+   RETRY_TIMEOUT_SCALE=1
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
