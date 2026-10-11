@@ -33,6 +33,10 @@ unsigned long long ofGetSystemTimeMicros() { return now_us; }
 int ofGetWindowWidth() { return 100; }
 int ofGetWindowHeight() { return 100; }
 bool usesDolbyVisionTransport() { return false; }
+// ofLogWarning(tag) << msg sink used by checked_field; output is not asserted.
+struct NullLog { template<typename T> NullLog &operator<<(const T &) { return *this; } };
+NullLog ofLogWarning(const string &) { return NullLog(); }
+// CHECKED_FIELD_HELPER
 
 struct ofxRPI4Window {
     static int bit_depth, colorspace_on, shader_init, isDoVi, is_std_DoVi;
