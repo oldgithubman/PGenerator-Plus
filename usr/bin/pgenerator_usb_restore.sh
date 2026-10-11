@@ -85,20 +85,37 @@ if ! ls /dev/sd[a-z][0-9] >/dev/null 2>&1; then
 fi
 
 log "first boot with USB storage present; attempting restore"
+# Bound the whole helper: it runs before the daemon starts, and a flaky
+# stick that wedges mount must not wedge the boot. timeout kills the
+# helper; run_cmd inside has its own per-command bounds as a second
+# layer. If timeout is absent from the image, run unbounded (the old
+# behavior) rather than skipping the rescue entirely.
+HELPER_TIMEOUT=""
+command -v timeout >/dev/null 2>&1 && HELPER_TIMEOUT="timeout 300"
 # Current software version straight from version.pm (same parse as
 # pgenerator-update); "unknown" keeps the rollback snapshot label honest.
 VERSION="$(grep '^\$version=' /usr/share/PGenerator/version.pm 2>/dev/null | sed 's/.*="\([^"]*\)".*/\1/')"
 [ -n "$VERSION" ] || VERSION="unknown"
-"$PYTHON_BIN" "$BACKUP_HELPER" usb-restore --version "$VERSION" >> "$LOG" 2>&1
+$HELPER_TIMEOUT "$PYTHON_BIN" "$BACKUP_HELPER" usb-restore --version "$VERSION" >> "$LOG" 2>&1
 rc=$?
 # Mark the attempt on both success and failure: a corrupt stick must not
-# make every future boot stall here. To retry the rescue deliberately,
-# remove /etc/BiasiLinux/usb-restore.attempted and reboot.
+# make every future boot stall here. NOTE: rcPGenerator deletes
+# BiasiLinux.FirstBoot right after this script returns, so removing the
+# attempt marker and rebooting does NOT re-run the rescue (the script
+# exits at its FirstBoot check), and recreating FirstBoot would also
+# re-run the disk resize — never do that. To retry a rescue after this
+# boot, run the helper directly as root:
+#   /usr/bin/python3 /usr/bin/pgenerator_system_backup.py usb-restore
+# or restore the archive from the WebUI (Import System Settings).
 echo "rc=$rc" > "$ATTEMPT_MARKER" 2>/dev/null
 if [ "$rc" -eq 0 ]; then
  log "restore completed; the box boots with the backup's settings"
  sync
 else
- log "restore did not apply (rc=$rc); booting factory defaults"
+ # A failure AFTER the rollback snapshot may leave some components
+ # restored and others not (e.g. ENOSPC mid-apply): do not claim a
+ # clean factory boot. The pre-import snapshot under
+ # /var/lib/PGenerator/system-backups is the recovery point.
+ log "restore did not complete (rc=$rc); settings may be a partial mix; booting anyway"
 fi
 exit 0

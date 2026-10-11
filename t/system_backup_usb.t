@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 45;
+use Test::More tests => 59;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -53,12 +53,20 @@ print $ms <<'STUB';
 #!/bin/sh
 printf 'MOUNT %s\n' "$*" >> "$MOUNT_LOG"
 case "$*" in
- *"remount"*) exit 0;;
+ *"remount"*)
+   if [ "${FAILRW:-0}" = 1 ]; then exit 32; fi
+   exit 0;;
 esac
 dev=""
 for a in "$@"; do
  case "$a" in /dev/*) dev="${a#/dev/}";; esac
 done
+# Any rw attempt (remount or plain mount) fails when FAILRW=1, so the
+# export's rw-gate failure path is exercised end-to-end.
+case "$*" in
+ *"-o ro"*) :;;
+ *) if [ "${FAILRW:-0}" = 1 ]; then exit 32; fi;;
+esac
 # last argument is the mountpoint
 dest=""
 for a in "$@"; do dest="$a"; done
@@ -79,6 +87,11 @@ printf 'UMOUNT %s\n' "$*" >> "$MOUNT_LOG"
 base=$(basename "$1")
 stick="${STICK_ROOT:?}/${base}"
 if [ "${WRITEBACK:-0}" = 1 ] && [ -d "$stick" ]; then
+ # REPLACE the stick with the mountpoint contents: a plain cp -a over
+ # the top cannot express files the export PRUNED (superseded rescue
+ # archives), so deletions during the mounted phase must survive too.
+ rm -rf "$stick" 2>/dev/null
+ mkdir -p "$stick"
  cp -a "$1/." "$stick/" 2>/dev/null
 fi
 rm -rf "$1" 2>/dev/null
@@ -116,13 +129,13 @@ sub build_tree {
 
 sub clear_stick {
  my $d="$tmp/stick/sdb1";
- opendir(my $dh,$d) or return;
- for my $f (readdir $dh) {
-  next if $f=~/^\./;
-  my $p="$d/$f";
-  if(-d $p){ rmdir $p } else { unlink $p }
- }
- closedir $dh;
+ # The writeback umount stub may have replaced the stick dir; recreate.
+ mkdir "$tmp/stick" unless -d "$tmp/stick";
+ mkdir $d unless -d $d;
+ # Recursive: cases may nest (deep/nested fixtures); a leftover top
+ # level directory would make the next case's stick read as non-blank.
+ system("rm", "-rf", "--", $d);
+ mkdir $d;
 }
 
 sub copy_file {
@@ -343,7 +356,7 @@ PY
  open(my $fh,'>',"$tmp/stick/sdb1/keepme.txt") or die $!; print $fh "user data"; close($fh);
  clear_mount_log();
  my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-export --version 2.13.0 2>&1`;
- like($r, qr/No writable empty USB drive/, 'usb-export refuses a non-empty stick');
+ like($r, qr/USB drive is not empty/, 'usb-export refuses a non-empty stick') or diag $r;
  ok(-f "$tmp/stick/sdb1/keepme.txt", 'refusal leaves existing files in place');
  my $log = mount_log();
  my $mounts = () = $log =~ /^MOUNT/mg;
@@ -481,7 +494,113 @@ PY
  # But the same stick PLUS someone's file is still off-limits.
  open($fh,'>',"$tmp/stick/sdb1/taxes.txt") or die $!; print $fh "data"; close($fh);
  $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
- like($r, qr/No writable empty USB drive/, 'rescue files plus third-party data still refuses export');
+ like($r, qr/USB drive is not empty/, 'rescue files plus third-party data still refuses export') or diag $r;
+}
+
+# Case 8: a stick whose ONLY content is a hand-copied *.pgbackup (no
+# sentinel) is somebody's data stick: export must REFUSE it, so the
+# button can never turn a user drive into a rescue source. Provenance
+# is the sentinel, not the file extension.
+{
+ my $root = build_tree();
+ clear_stick();
+ copy_file($built_arch, "$tmp/stick/sdb1/my_family_photos_backup.pgbackup");
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/USB drive is not empty/, 'stick with only a hand-copied backup (no sentinel) is refused by export') or diag $r;
+ ok(-f "$tmp/stick/sdb1/my_family_photos_backup.pgbackup", 'the hand-copied archive stays untouched');
+ ok(!-f "$tmp/stick/sdb1/PGEN_USB_RESCUE", 'refused stick gets no rescue sentinel');
+}
+
+# Case 9: refreshing a rescue stick prunes superseded rescue archives
+# (they would each be re-validated on every first boot and push the
+# stick toward ENOSPC); the newest old one is kept as a fallback and
+# the fresh write lands next to it.
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.11.0_20250101-000000.pgbackup") or die $!;
+ print $fh "oldest\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
+ print $fh "newer\n"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh export succeeds on a rescue stick with old archives') or diag $r;
+ my @arch = sort grep { /^PGenerator_plus_system_backup_.*\.pgbackup$/ } `ls $tmp/stick/sdb1`;
+ is(scalar(@arch), 2, 'superseded rescue archives pruned; newest-old fallback kept beside the fresh write') or diag join " ", @arch;
+ ok(-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup", 'the fallback kept is the NEWEST old archive');
+ ok(!-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.11.0_20250101-000000.pgbackup", 'the older archive is gone');
+}
+
+# Case 10: rescue lookup is TOP-LEVEL only — a sentinel buried in a
+# subdirectory of a data stick does not arm rescue (usb-export always
+# writes both files at the stick root, and a huge data stick is never
+# walked).
+{
+ my $root = build_tree();
+ clear_stick();
+ mkdir "$tmp/stick/sdb1/deep";
+ mkdir "$tmp/stick/sdb1/deep/nested";
+ copy_file($built_arch, "$tmp/stick/sdb1/deep/nested/some.pgbackup");
+ open(my $fh,'>',"$tmp/stick/sdb1/deep/nested/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$script" usb-restore 2>&1`;
+ like($r, qr/No \.pgbackup found/, 'sentinel in a subdirectory does not arm rescue (top-level only)') or diag $r;
+}
+
+# Case 11: a stick whose rw mount fails reports the MOUNT failure, not
+# the misleading "not empty" (nit: swallowed write errors).
+{
+ my $root = build_tree();
+ clear_stick();
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common FAILRW=1 python3 "$script" usb-export --version 2.13.0 2>&1`;
+ like($r, qr/could not be mounted read-write/, 'rw-mount failure reported as such, not as a contents problem') or diag $r;
+ my $log = mount_log();
+ # The rw fallback path unmounts once before the fresh-rw retry and once
+ # in the finally: the pin is that a UMOUNT followed the rw attempts.
+ like($log, qr/^UMOUNT/m, 'stick with failed rw remount is still unmounted');
+}
+
+# Case 12: mount_ro that fails BOTH attempts leaves no empty mount dir
+# behind (nit: litter per unreadable partition).
+{
+ my $root = build_tree();
+ my $probe = "$tmp/mrprobe.py";
+ open(my $dh,'>',$probe) or die $!;
+ print $dh <<PY;
+import sys, os, importlib.util
+spec = importlib.util.spec_from_file_location("psb", r"$script")
+psb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(psb)
+# sdbZ has no stick content: the stub mount exits 32 (mount failure).
+print("MROK" if psb.mount_ro("sdbZ") is None else "MRFAIL")
+print("NODIR" if not os.path.isdir(os.path.join(psb.USB_MOUNT_BASE, "sdbZ")) else "LITTER")
+PY
+ close($dh);
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$probe" 2>&1`;
+ like($r, qr/MROK/, 'failed mount_ro returns None');
+ like($r, qr/NODIR/, 'failed mount_ro removes the empty mount dir it created');
+}
+
+# Case 13: a mount that HANGS must not wedge the helper (first-boot
+# path blocks the daemon). PG_USB_CMD_TIMEOUT=1 with a sleeping stub
+# mount: the run_cmd timeout kills it and restore completes.
+{
+ my $root = build_tree();
+ clear_stick();
+ my $hang = "$tmp/mount-hang";
+ open(my $hs,'>',$hang) or die $!;
+ print $hs "#!/bin/sh\nsleep 30\n";
+ close($hs);
+ chmod 0755, $hang;
+ my $start = time();
+ my $r = `PG_USB_SCAN_ROOT=$root/block MOUNT_LOG=$mount_log STICK_ROOT=$tmp/stick PG_MOUNT_BIN=$hang PG_UMOUNT_BIN=$umount_stub PG_USB_MOUNT_BASE=$tmp/mnt-base PG_USB_CMD_TIMEOUT=1 timeout 20 python3 "$script" usb-restore 2>&1`;
+ my $elapsed = time() - $start;
+ like($r, qr/No \.pgbackup found|No USB drive found/, 'hanging mount is timed out; restore completes with an error') or diag $r;
+ cmp_ok($elapsed, '<', 15, 'helper returns on the 1 s bound, not the stub 30 s hang') or diag "elapsed=$elapsed";
 }
 
 # Case 7: the Perl route must assign _webui_system_backup_run in LIST

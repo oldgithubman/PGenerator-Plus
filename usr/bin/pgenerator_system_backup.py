@@ -19,6 +19,7 @@ import pwd
 import grp
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -39,6 +40,9 @@ USB_SCAN_ROOT = os.environ.get("PG_USB_SCAN_ROOT", "/sys/block")
 USB_MOUNT_BASE = os.environ.get("PG_USB_MOUNT_BASE", "/var/lib/PGenerator/usb-mnt")
 MOUNT_BIN = os.environ.get("PG_MOUNT_BIN", "/bin/mount")
 UMOUNT_BIN = os.environ.get("PG_UMOUNT_BIN", "/bin/umount")
+# Per-mount/umount bound in seconds (first-boot path must never wedge).
+# The seam lets tests exercise the timeout path with a hanging stub.
+USB_CMD_TIMEOUT = int(os.environ.get("PG_USB_CMD_TIMEOUT", "60"))
 # Directories on the stick that never hold a user backup, and never make
 # a stick "non-empty" for the export guard either: Windows, macOS and
 # ext4 all leave these on a factory-formatted or freshly-touched drive.
@@ -50,6 +54,11 @@ USB_SKIP_DIRS = set(["system volume information", ".trash", ".trash-info",
 # first-boot rescue only restores from a partition that carries it, so a
 # random stick (or a compromised one) planted in an unattended device
 # cannot push settings — rescue requires a stick this WebUI prepared.
+# Scope note: the sentinel is a plain name, not a signature; an attacker
+# with physical access can plant it alongside an archive. It stops
+# accidents and casual media, not a deliberate plant — what still holds
+# against a plant is archive validation (format, manifest, per-file
+# sha256) and the OTA trust-key strip below.
 RESCUE_SENTINEL = "PGEN_USB_RESCUE"
 # Conf keys the unattended USB rescue must never apply. The browser
 # import is a deliberate user action and may restore them; first-boot
@@ -481,14 +490,35 @@ def restore_archive(archive_path, software_version, unattended=False):
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-def run_cmd(argv):
+def run_cmd(argv, timeout=None):
+    # Every mount/umount/sync is bounded: this runs on the first-boot
+    # path BEFORE the daemon starts, and a flaky stick that hangs mount
+    # must not wedge the boot. A timed-out child is killed and reported
+    # as failure (rc 124) so the caller skips the stick.
+    if timeout is None:
+        timeout = USB_CMD_TIMEOUT
+    # Own session so a timeout can kill the WHOLE process group: mount
+    # runs as /bin/sh wrappers and helpers, and killing only the direct
+    # child leaves a grandchild holding the stdout pipe open, which
+    # blocks communicate() on EOF and wedges the caller anyway.
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE,
+                            preexec_fn=os.setsid)
     try:
-        out, err = proc.communicate()
+        out, err = proc.communicate(timeout=(timeout if timeout > 0 else None))
     except Exception:
-        proc.kill()
-        return (1, b"", b"")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.communicate()
+        except Exception:
+            pass
+        return (124, b"", b"")
     return (proc.returncode, out or b"", err or b"")
 
 
@@ -564,14 +594,23 @@ def list_usb_backup_candidates():
 
 def mount_ro(part):
     dest = os.path.join(USB_MOUNT_BASE, part)
+    created = False
     if not os.path.isdir(dest):
         os.makedirs(dest)
+        created = True
     rc, _out, _err = run_cmd([MOUNT_BIN, "-o", "ro", "/dev/" + part, dest])
     if rc == 0:
         return dest
     rc, _out, _err = run_cmd([MOUNT_BIN, "-o", "ro", "-t", "vfat", "/dev/" + part, dest])
     if rc == 0:
         return dest
+    # Both attempts failed: do not leave an empty mount dir behind for
+    # every unreadable partition we probed.
+    if created:
+        try:
+            os.rmdir(dest)
+        except OSError:
+            pass
     return None
 
 
@@ -589,22 +628,56 @@ def find_archives_on(part):
     # counts as a rescue source if it carries the PGEN_USB_RESCUE
     # sentinel written by usb-export: rescue is opt-in, so an arbitrary
     # stick cannot push settings onto an unattended first boot.
+    # Top-level only: usb-export always writes the sentinel and the
+    # archive at the stick root, so a deep directory of unrelated files
+    # is never walked (or matched into) a rescue decision.
     dest = mount_ro(part)
     found = []
     if dest is None:
         return (found, None)
-    sentinel = None
-    for root, dirs, files in os.walk(dest):
-        dirs[:] = [d for d in dirs if d.lower() not in USB_SKIP_DIRS]
-        if RESCUE_SENTINEL in files:
-            sentinel = os.path.join(root, RESCUE_SENTINEL)
-        for name in files:
-            if name.lower().endswith(".pgbackup"):
-                full = os.path.join(root, name)
-                found.append((part, os.path.relpath(full, dest), full))
-    if sentinel is None:
-        found = []
+    try:
+        names = os.listdir(dest)
+    except OSError:
+        return (found, dest)
+    if RESCUE_SENTINEL not in names:
+        return (found, dest)
+    for name in names:
+        if name.lower().endswith(".pgbackup"):
+            full = os.path.join(dest, name)
+            if os.path.isfile(full):
+                found.append((part, name, full))
     return (found, dest)
+
+
+def validate_candidate(full):
+    # One gzip pass per candidate: structure + manifest check, every
+    # manifest-listed member streamed through sha256, and created_utc
+    # lifted from the manifest the inspection already opened. The first
+    # boot re-validates each archive on every boot, so the old shape
+    # (inspect + verify + inspect-for-sort, then inspect + extract for
+    # the winner) multiplied a ~100 MB archive's gunzip cost on the
+    # daemon-blocking boot path. Returns created_utc; raises BackupError
+    # on any invalidity so the caller falls through to older archives.
+    archive, members, manifest, expected = inspect_archive(full)
+    try:
+        by_name = {}
+        for member in members:
+            name = normalized_member_name(member.name)
+            if member.isfile() and name in expected:
+                by_name[name] = member
+        for name, member in by_name.items():
+            digest = hashlib.sha256()
+            source = archive.extractfile(member)
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            if digest.hexdigest() != str(expected[name].get("sha256", "")):
+                raise BackupError("Backup integrity check failed for %s" % name)
+    finally:
+        archive.close()
+    return str(manifest.get("created_utc", ""))
 
 
 def usb_restore(software_version):
@@ -621,33 +694,20 @@ def usb_restore(software_version):
             archives.extend(found)
         if not archives:
             raise BackupError("No .pgbackup found on the USB drive")
+        # Validate every candidate in ONE pass each, ranking by the
+        # created_utc that pass already read; a corrupt archive falls
+        # through to an older valid one instead of aborting the rescue.
         usable = []
         for part, rel, full in archives:
             try:
-                inspect_archive(full)
-                # Per-file sha256 for EVERY candidate, streamed from the
-                # archive (no staging writes): an archive that fails
-                # integrity must fall through to an older valid one, not
-                # abort the rescue after ranking it newest.
-                verify_archive_hashes(full)
-                usable.append((part, rel, full))
+                created = validate_candidate(full)
             except BackupError:
                 continue
+            usable.append((created, os.path.getmtime(full), part, rel, full))
         if not usable:
             raise BackupError("No valid .pgbackup found on the USB drive")
-        # Newest first by embedded created_utc (fallback: file mtime).
-        def sort_key(entry):
-            full = entry[2]
-            created = ""
-            try:
-                arch, _m, manifest, _e = inspect_archive(full)
-                arch.close()
-                created = str(manifest.get("created_utc", ""))
-            except BackupError:
-                pass
-            return (created, os.path.getmtime(full))
-        usable.sort(key=sort_key, reverse=True)
-        part, rel, full = usable[0]
+        usable.sort(reverse=True)
+        unused_created, unused_mtime, part, rel, full = usable[0]
         result = restore_archive(full, software_version, unattended=True)
         result["usb_device"] = part
         result["usb_archive"] = rel
@@ -662,17 +722,23 @@ def stick_is_blank(dest):
     # only entries outside USB_SKIP_DIRS are somebody's data. A stranded
     # write temp from an interrupted export also does not count, or the
     # retry could never proceed. A rescue stick THIS button already wrote
-    # (sentinel + *.pgbackup) counts as blank too, so the backup can be
-    # refreshed without a manual wipe; restore ranks by created_utc, so
-    # the newest archive wins and older ones are simply superseded.
-    for entry in os.listdir(dest):
+    # counts as blank too — provenance is the SENTINEL, not the file
+    # extension: *.pgbackup is tolerated only when the sentinel sits next
+    # to it. A user stick whose only content is a hand-copied backup has
+    # no sentinel and is somebody's data stick: export refuses it, so the
+    # button can never turn a data drive into a rescue source. Restore
+    # ranks candidates by the name stamp (newest first), so a refreshed
+    # stick resolves to the latest export and older ones are superseded.
+    entries = os.listdir(dest)
+    has_sentinel = RESCUE_SENTINEL in entries
+    for entry in entries:
         if entry.lower() in USB_SKIP_DIRS:
             continue
         if entry.endswith(".pgbackup.tmp"):
             continue
         if entry == RESCUE_SENTINEL:
             continue
-        if entry.lower().endswith(".pgbackup"):
+        if has_sentinel and entry.lower().endswith(".pgbackup"):
             continue
         return False
     return True
@@ -682,13 +748,19 @@ def usb_export(software_version):
     parts = list_usb_backup_candidates()
     if not parts:
         raise BackupError("No USB drive found")
+    # Remember WHY each stick was passed over: the generic "no empty
+    # drive" message told a user with a FULL stick to go buy a blank
+    # one, and hid genuine write failures (ENOSPC, read-only) behind it.
+    saw_data_stick = False
+    write_failure = None
     for part in parts:
         # Write only to an empty stick: a drive that already holds files
-        # is somebody's data stick, not a rescue target. Check emptiness
-        # READ-ONLY first — mounting rw would set the vfat dirty bit
-        # before we even know the stick is blank — and remount rw only
-        # for the winning stick. The finally below unmounts EVERY stick
-        # we mounted, empty or not, so nothing stays mounted rw.
+        # is somebody's data stick, not a rescue target (a rescue stick
+        # THIS button wrote — sentinel + its archives — is refreshable).
+        # Check emptiness READ-ONLY first — mounting rw would set the
+        # vfat dirty bit before we even know the stick is blank — and
+        # remount rw only for the winning stick. The finally below
+        # unmounts EVERY stick we mounted, empty or not.
         dest = os.path.join(USB_MOUNT_BASE + "-rw", part)
         if not os.path.isdir(dest):
             os.makedirs(dest)
@@ -700,6 +772,7 @@ def usb_export(software_version):
         try:
             try:
                 if not stick_is_blank(dest):
+                    saw_data_stick = True
                     continue
             except OSError:
                 continue
@@ -711,6 +784,7 @@ def usb_export(software_version):
                 if rc != 0:
                     rc, _out, _err = run_cmd([MOUNT_BIN, "-t", "vfat", "/dev/" + part, dest])
             if rc != 0:
+                write_failure = "USB drive %s could not be mounted read-write" % part
                 continue
             try:
                 # A failed create_archive can leave <name>.pgbackup.tmp;
@@ -722,6 +796,22 @@ def usb_export(software_version):
                             os.unlink(os.path.join(dest, stale))
                         except OSError:
                             pass
+                # Superseded rescue archives retire BEFORE the write:
+                # keeping every refresh means first-boot validation
+                # re-reads each one and ENOSPC gets likelier with each
+                # export. Prune first (keep the newest old one as a
+                # fallback against a corrupt fresh write), then write —
+                # the stick then holds at most new + one fallback.
+                rescue_archives = sorted(
+                    [name for name in os.listdir(dest)
+                     if name.startswith("PGenerator_plus_system_backup_")
+                     and name.lower().endswith(".pgbackup")],
+                    reverse=True)
+                for stale in rescue_archives[1:]:
+                    try:
+                        os.unlink(os.path.join(dest, stale))
+                    except OSError:
+                        pass
                 stamp = utc_stamp()
                 out_path = os.path.join(dest, "PGenerator_plus_system_backup_v%s_%s.pgbackup" % (
                     (software_version or "unknown"), stamp))
@@ -743,7 +833,10 @@ def usb_export(software_version):
                     "file_count": manifest["file_count"],
                     "uncompressed_bytes": manifest["uncompressed_bytes"],
                 }
-            except (BackupError, OSError, IOError):
+            except (BackupError, OSError, IOError) as error:
+                # ENOSPC, read-only media, removed stick: keep the real
+                # reason instead of blaming stick contents.
+                write_failure = "USB drive %s: %s" % (part, error)
                 continue
         finally:
             run_cmd([UMOUNT_BIN, dest])
@@ -751,6 +844,10 @@ def usb_export(software_version):
                 os.rmdir(dest)
             except OSError:
                 pass
+    if write_failure is not None:
+        raise BackupError(write_failure)
+    if saw_data_stick:
+        raise BackupError("USB drive is not empty; use a blank drive (or one this button previously wrote)")
     raise BackupError("No writable empty USB drive found")
 
 
