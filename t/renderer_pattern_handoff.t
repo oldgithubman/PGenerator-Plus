@@ -56,7 +56,10 @@ SKIP: {
     my $header = read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.h");
     my ($predicate) = $header =~ /(static bool usesColourShader\(\) \{.*?^    \})/ms;
     die 'Missing shader-selection predicate' unless defined $predicate;
+    my ($checked) = $source =~ /(static const size_t MAX_PATTERN_FIELD_LEN.*?^\})/ms;
+    die 'Missing pattern-field length guard' unless defined $checked;
     $harness =~ s{// COLOUR_SHADER_PREDICATE}{$predicate};
+    $harness =~ s{// CHECKED_FIELD_HELPER}{$checked};
     $harness =~ s{// REAL_RENDERER_METHODS}{join("\n", @methods)}e;
     open my $cpp, '>', "$tmp/handoff.cpp" or die "$!";
     print {$cpp} $harness;
