@@ -3115,6 +3115,83 @@ sub webui_meter_session_fifo_ready () {
  return 0;
 }
 
+# Detached privileged launch, shell-free (issue #53). The meter session,
+# meter series and CCSS-create workers are all launched the same way:
+# backgrounded, detached from the daemon's session, stdio discarded, under
+# sudo. The old form interpolated request-derived values into one
+# `setsid sudo ... '...' &` string and handed it to system(): the ONLY
+# barrier between a quote character in a request body and a root command
+# line was every upstream producer remembering to sanitise, individually,
+# forever. These helpers remove the quoting surface entirely: values travel
+# as exec() argv elements, never as shell text.
+#
+# An argument is rejected if it holds an ASCII control character. Printables
+# (' $ ( ) backtick) are inert in argv and pass through byte-identically.
+# Control characters are refused for two independent reasons: no current
+# producer emits them, and sudo's sudoers glob matching joins argv on
+# whitespace, so a newline inside an argument can break the match the
+# NOPASSWD rule depends on either way.
+sub webui_root_argv_arg_ok (@) {
+ my ($v)=@_;
+ $v="" if(!defined($v));
+ return 0 if($v=~/[\x00-\x1f\x7f]/);
+ return 1;
+}
+
+# Launch @argv detached as root. Returns 1 when the worker was spawned, 0
+# when any argument was rejected or the spawn failed. Mirrors the old
+# `setsid cmd </dev/null >/dev/null 2>&1 &` exactly: new session, fds to
+# /dev/null, no waiting. Double-forked like the renderer-restart worker
+# (see the /api/config POST handler) so the worker reparents to init: the
+# daemon must never install a $SIG{CHLD} reaper (it would steal exit
+# statuses from the system()/backtick checks all over command.pm), and the
+# synchronous waitpid below is only for the intermediate child, which
+# exits at once. Keep the sudoers rule shape in mind: the NOPASSWD entries
+# glob "/bin/bash /usr/bin/meter_series.sh *" etc., so argv[0..2] must
+# arrive at sudo unmodified and with no env prefix.
+sub webui_launch_detached_root (@) {
+ my @argv=map { defined($_) ? "$_" : "" } @_;
+ return 0 if(!@argv);
+ for(my $i=0;$i<@argv;$i++) {
+  if(!&webui_root_argv_arg_ok($argv[$i])) {
+   &log("WebUI: detached launch refused: argument $i contains a control character");
+   return 0;
+  }
+ }
+ my $pid=fork();
+ if(!defined($pid)) {
+  &log("WebUI: detached launch fork failed: $!");
+  return 0;
+ }
+ if($pid==0) {
+  # Intermediate child: fork the worker into a new session, then leave
+  # without destructors (forks of a threaded interpreter deadlock in
+  # global destruction if another thread held a mutex; see 1719).
+  my $worker=fork();
+  if(!defined($worker)) {
+   # Do NOT fall back to exec here: that would make the parent's
+   # waitpid block for the worker's whole runtime (minutes-hours).
+   &log("WebUI: detached launch worker fork failed: $!");
+   POSIX::_exit(127);
+  }
+  if($worker==0) {
+   POSIX::setsid();
+   if(open(STDIN,"<","/dev/null") && open(STDOUT,">","/dev/null") && open(STDERR,">","/dev/null")) {
+    exec {$argv[0]} @argv;
+   }
+   POSIX::_exit(127);
+  }
+  POSIX::_exit(0);
+ }
+ waitpid($pid,0);
+ my $rc=$?;
+ if($rc!=0) {
+  &log("WebUI: detached launch of '$argv[0]' failed (exit status ".($rc>>8).")");
+  return 0;
+ }
+ return 1;
+}
+
 sub webui_meter_session_start_ready () {
  return 0 unless(-f $_meter_session_start_ready_file);
  return 0 unless(&webui_meter_session_alive());
@@ -3511,10 +3588,13 @@ sub webui_meter_session_start (@) {
   unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
   &webui_meter_read_state_write('{"status":"starting"}');
   &log("WebUI: meter session startup retry attempt $attempt/$max_attempts") if($attempt > 1);
-  # Launch detached as root. The daemon writes its own PID/config files once it
-  # grabs the lock; wait for an actionable startup state before reporting success.
+  # Launch detached as root via the shell-free helper (issue #53): the
+  # values travel as exec() argv, so no quoting producer can regress into
+  # a command-injection surface. The daemon writes its own PID/config
+  # files once it grabs the lock; wait for an actionable startup state
+  # before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' '$observer' '$pattern_provider' </dev/null >/dev/null 2>&1 &");
+  return 0 if(!&webui_launch_detached_root("sudo","/bin/bash",$_meter_session,$display_type,$ccss_file,$refresh_rate,$aio_flag,$signal_mode,$max_luma,$meter_port,"900",$require_device_ready,$averaging,$meter_usb_id,$observer,$pattern_provider));
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -6171,8 +6251,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # any env-prefixed form (e.g. an "env KEY=VAL" prefix on the bash
  # command) makes the sudo invocation match no rule, so sudo demands a
  # password and the launch silently fails ("Process died unexpectedly").
- # Trailing args keep the authorized command intact.
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' '$low_light_requested_sample_count' </dev/null >/dev/null 2>&1 &";
+ # Trailing args keep the authorized command intact. The shell-free
+ # launcher (issue #53) keeps that guarantee structurally: argv[0..2] are
+ # the literal sudoers prefix and no shell ever re-splits the arguments,
+ # so request-derived values cannot reassemble into command syntax.
+ my @series_argv=("sudo","/bin/bash","/usr/bin/meter_series.sh",$series_id,$display_type,$delay_ms,$patch_size,$steps_file,$_meter_series_file,$ccss_file,$patch_insert,$refresh_rate,$disable_aio,$signal_mode,$max_luma,$dv_map_mode,$measurement_meter_port,$ready_file,$require_device_ready,$pattern_signal_range,$transport_signal_range,$pattern_delay_ms,$patch_insert_patch_enabled,$patch_insert_patch_every,$patch_insert_patch_duration_ms,$patch_insert_patch_level,$patch_insert_time_enabled,$patch_insert_time_frequency_ms,$patch_insert_time_duration_ms,$patch_insert_time_level,$low_light_mode,"${insert_patch_code}:${insert_patch_input_max}","${insert_time_code}:${insert_time_input_max}",$series_color_format,$measurement_meter_usb_id,$observer,$pattern_provider,$min_luma,$max_cll,$max_fall,$low_light_trigger,$low_light_requested_sample_count);
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -6182,9 +6265,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	  my $autocal_ref_white=(ref($series_target_white_reference) eq "HASH" && defined($series_target_white_reference->{"white_y"})) ? ($series_target_white_reference->{"white_y"}+0) : "";
 	  print $debug_log "[".scalar(localtime())."] LG26 series target context: signal_mode=$signal_mode target_gamma=$target_gamma target_gamut=".($target_gamut||"auto")." target_white_x=0.3127 target_white_y=0.329 explicit_series_target_white_y=$series_target_white_y_provided series_target_white_y_num=$series_target_white_y_num stamp_series_target_white_y=$stamp_series_target_white_y autocal_ref_source=$autocal_ref_source autocal_ref_field=$autocal_ref_field autocal_ref_run_id=$autocal_ref_run autocal_ref_white_y=$autocal_ref_white\n";
 	 }
-	 print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
+	 print $debug_log "[".scalar(localtime())."] Command argv (".scalar(@series_argv)." args): ".join(" | ",@series_argv)."\n";
 	 close($debug_log);
- system($cmd);
+ if(!&webui_launch_detached_root(@series_argv)) {
+  &webui_meter_series_ready_cleanup();
+  &webui_meter_series_stop_cleanup();
+  unlink($ready_file) if($ready_file ne "");
+  unlink($steps_file);
+  &PGAutomation::write_atomic($_meter_series_file,'{"status":"error","message":"Meter series launch refused"}',0666);
+  return '{"status":"error","message":"Meter series launch refused"}';
+ }
 
 	 return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,$series_meta_json,\"steps\":[".join(",",@steps)."]}";
 }
@@ -9383,21 +9473,37 @@ sub webui_ccss_create_start (@) {
  my $format_upper=uc($format);
  &_webui_ccss_create_write_state("{\"status\":\"starting\",\"message\":\"Preparing $format_upper creation...\",\"filename\":\"$escaped_name\",\"format\":\"$format\",\"target_port\":\"$target_port\"}");
 
- my $profile_label=$name;
- $profile_label=~s/'/'"'"'/g;
- my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --format '$format' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
- $cmd.=" --high-resolution" if($high_resolution);
- $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
- $cmd.=" --comport '$chosen_port'" if($chosen_port ne "");
+ # The runner is launched via the shell-free detached helper (issue #53):
+ # display names and labels used to be interpolated into a shell string
+ # with a hand-rolled '"'"' escape, which is exactly the fragility that
+ # issue argues against. As exec() argv the values need no escaping at
+ # all, so the escape is gone rather than merely trusted.
+ my @ccss_create_argv=($python_runner,$_ccss_create_runner,
+  "--state-file","$_ccss_create_state_file",
+  "--pid-file","$_ccss_create_pid_file",
+  "--log-file","$_ccss_create_log_file",
+  "--patch-cmd","$_ccss_create_patch_cmd",
+  "--output-path","$out_path",
+  "--format",$format,
+  "--disptech",$disptech,
+  "--display-name",$name,
+  "--signal-mode",$signal_mode,
+  "--max-luma",$max_luma,
+  "--patch-size",$patch_size,
+  "--ccxxmake-bin","$_ccss_create_ccxxmake_bin");
+ push @ccss_create_argv,"--high-resolution" if($high_resolution);
+ push @ccss_create_argv,("--refresh-rate",$refresh_rate) if($refresh_rate ne "");
+ push @ccss_create_argv,("--comport",$chosen_port) if($chosen_port ne "");
  if($format eq "ccmx") {
   my $target_label=$target->{name}||"target colorimeter";
-  $target_label=~s/'/'"'"'/g;
   my $target_yflag=&_webui_ccmx_base_yflag($display_type_key);
-  $cmd.=" --target-comport '$target_port' --target-label '$target_label' --target-display-type '$target_yflag'";
+  push @ccss_create_argv,("--target-comport",$target_port,"--target-label",$target_label,"--target-display-type",$target_yflag);
  }
- $cmd.=" --continue-file '$_ccss_create_continue_file'";
- $cmd.=" </dev/null >/dev/null 2>&1 &";
- system($cmd);
+ push @ccss_create_argv,("--continue-file","$_ccss_create_continue_file");
+ if(!&webui_launch_detached_root("sudo",@ccss_create_argv)) {
+  &_webui_ccss_create_write_state('{"status":"error","message":"Profile creation launch refused"}');
+  return '{"status":"error","message":"Profile creation launch refused"}';
+ }
 
  my $waited=0;
  my $saw_helper=0;
