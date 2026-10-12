@@ -11559,12 +11559,15 @@ sub _webui_json_is_string (@) {
  return (B::svref_2object(\$v)->FLAGS & B::SVp_POK()) ? 1 : 0;
 }
 
+# Optional extra args override the key names to extract, so the AP-config
+# path (ssid/password) decodes through the same helper as connect (ssid/psk).
 sub _webui_wifi_connect_fields (@) {
  my $body=shift;
+ my @keys=@_?@_:("ssid","psk");
  my $req=eval { JSON::PP->new->utf8(1)->decode($body) };
  return ("","") if(ref($req) ne "HASH");
  my @out;
- foreach my $key ("ssid","psk") {
+ foreach my $key (@keys) {
   my $v=$req->{$key};
   if(!defined $v) { $v=""; }
   elsif(!&_webui_json_is_string($v)) { return (undef,undef); }
@@ -11609,19 +11612,31 @@ sub webui_wifi_ap_json (@) {
   }
   close($fh);
  }
- my $ssid=$ap{ssid}||"";
- my $pass=$ap{wpa_passphrase}||"";
- $ssid=~s/"/\\"/g;
- $pass=~s/"/\\"/g;
+ # Escape through the shared escaper: it handles backslash first, so SSIDs
+ # and passphrases containing \ round-trip (issue #66 — quote-only escaping
+ # turned \b in an SSID into a backspace on the browser side).
+ my $ssid=&_webui_json_escape($ap{ssid}||"");
+ my $pass=&_webui_json_escape($ap{wpa_passphrase}||"");
  return "{\"status\":\"ok\",\"ssid\":\"$ssid\",\"password\":\"$pass\"}";
 }
 
 sub webui_wifi_ap_apply (@) {
  my $body=shift;
- my ($ssid)=$body=~/"ssid"\s*:\s*"([^"]*)"/;
- my ($pass)=$body=~/"password"\s*:\s*"([^"]*)"/;
- if(!$ssid || length($ssid)<1) {
+ # Decode through the same JSON helper as connect (issue #66): the old
+ # quote-terminated regex truncated any value containing an escaped quote.
+ # $ssid eq "" (not !$ssid) so an SSID that is literally "0" still applies.
+ my ($ssid,$pass)=&_webui_wifi_connect_fields($body,"ssid","password");
+ if(!defined $ssid) {
+  return '{"status":"error","message":"SSID and password must be strings"}';
+ }
+ if($ssid eq "") {
   return '{"status":"error","message":"SSID required"}';
+ }
+ # Guards mirrored from webui_wifi_connect(): control bytes cannot reach the
+ # hostapd conf, a leading dash cannot be read as an option by the sudo
+ # transport, and hostapd itself caps ssid at 32 and wpa_passphrase at 63 bytes.
+ if(length($ssid)>32 || length($pass)>63 || $ssid=~/[\x00-\x1f\x7f]/ || $pass=~/[\x00-\x1f\x7f]/ || $ssid=~/^-/ || $pass=~/^-/) {
+  return '{"status":"error","message":"Invalid SSID or password"}';
  }
  if(length($pass)<8) {
   return '{"status":"error","message":"Password must be at least 8 characters"}';
