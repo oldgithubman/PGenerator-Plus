@@ -135,6 +135,10 @@ t('name heuristics: solved names carry mode and gamut', () => {
   eq(context.meterMadvrParamsFromName('foo_pq.CUBE'), { gamut: 'bt2020', hdr: true });
   eq(context.meterMadvrParamsFromName('my_hdr10_bt2020_2.4.cube'), { gamut: 'bt2020', hdr: true });
   eq(context.meterMadvrParamsFromName('sdr_p3d65.cube'), { gamut: 'p3d65', hdr: false });
+  // Gamut tokens are anchored like the hdr tokens: embedded inside a longer
+  // token they must NOT set the target.
+  eq(context.meterMadvrParamsFromName('notbt2020_tv'), { gamut: 'bt709', hdr: false });
+  eq(context.meterMadvrParamsFromName('myx_p3d65z_y'), { gamut: 'bt709', hdr: false });
 });
 
 t('file size and header layout', () => {
@@ -168,13 +172,19 @@ t('SDR parameter block', () => {
   ]);
 });
 
-t('HDR parameter block adds PQ transfer lines', () => {
+t('HDR parameter block puts PQ transfer lines first (madvr.py order)', () => {
   const bytes = context.meterCubeToMadvr(parsed, { gamut: 'bt2020', hdr: true, res: 17 });
   const size = new DataView(bytes.buffer).getInt32(76, true);
   const text = Buffer.from(bytes.subarray(512, 512 + size)).toString('latin1');
-  assert.match(text, /Input_Transfer_Function PQ/);
-  assert.match(text, /Output_Transfer_Function PQ/);
-  assert.match(text, /Input_Primaries 0\.70800/);
+  // Exact line list AND order: madvr.py's OrderedDict inserts the PQ lines
+  // before Input_Primaries, so the serialized block must match byte-for-byte.
+  assert.deepEqual(text.replace(/\0$/, '').split('\r\n'), [
+    'Input_Transfer_Function PQ',
+    'Output_Transfer_Function PQ',
+    'Input_Primaries 0.70800 0.29200 0.17000 0.79700 0.13100 0.04600 0.31273 0.32902',
+    'Input_Range 16 235',
+    'Output_Range 16 235',
+  ]);
 });
 
 t('LUT node order and values (BGR uint16 LE, blue fastest)', () => {

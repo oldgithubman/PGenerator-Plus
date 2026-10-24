@@ -440,9 +440,11 @@ function meterMadvrParamsFromName(name){
   // input primaries, so its gamut tokens must not reach the header.
   gamut=(iccMode==='hdr10')?'bt2020':'bt709';
  } else {
-  if(/bt2020/.test(s)) gamut='bt2020';
-  else if(/p3d65/.test(s)) gamut='p3d65';
-  else if(/p3dci/.test(s)) gamut='p3dci';
+  // Gamut tokens anchor on underscore/boundaries like the hdr tokens, so a
+  // gamut name embedded inside a longer token cannot set the target.
+  if(/(?:^|_)bt2020(?:_|$)/.test(s)) gamut='bt2020';
+  else if(/(?:^|_)p3d65(?:_|$)/.test(s)) gamut='p3d65';
+  else if(/(?:^|_)p3dci(?:_|$)/.test(s)) gamut='p3dci';
   else if(hdr) gamut='bt2020';
  }
  return {gamut:gamut,hdr:hdr};
@@ -465,12 +467,15 @@ function meterMadvrAlloc(parsed,opts){
  const primaries=meterMadvrPrimaries(o.gamut===undefined?'bt709':o.gamut);
  if(!primaries) return null;
  const hdr=!!o.hdr;
- const plines=[
+ // Line order mirrors madvr.py's parameter OrderedDict insertion: for HDR
+ // the PQ transfer lines are inserted BEFORE Input_Primaries.
+ const plines=[];
+ if(hdr){ plines.push('Input_Transfer_Function PQ'); plines.push('Output_Transfer_Function PQ'); }
+ plines.push(
   'Input_Primaries '+primaries.map(function(v){return v.toFixed(5);}).join(' '),
   'Input_Range 16 235',
   'Output_Range 16 235'
- ];
- if(hdr){ plines.push('Input_Transfer_Function PQ'); plines.push('Output_Transfer_Function PQ'); }
+ );
  const paramsText=plines.join('\r\n')+'\0';
  const paramsBytes=[];
  for(let i=0;i<paramsText.length;i++) paramsBytes.push(paramsText.charCodeAt(i)&0xff);
@@ -682,13 +687,13 @@ async function meterDownloadPreviewedCubeAs3dlut(){
   // must not be reported as a conversion failure.
   try{ meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut'); }
   catch(e2){ toast('.3dlut download failed',true); }
-}catch(e){
+ }catch(e){
   // The ~96 MB lattice allocation can throw (RangeError) on a squeezed
   // browser; without this the async failure would be a silent rejection.
   try{ meterLutSolveProgressHide(); }catch(e2){}
   toast('.3dlut conversion failed',true);
  }
- }
+}
 
 function meterImportCubeFile(evt){
  const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
