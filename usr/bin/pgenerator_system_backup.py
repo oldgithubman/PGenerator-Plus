@@ -727,8 +727,9 @@ def stick_is_blank(dest):
     # to it. A user stick whose only content is a hand-copied backup has
     # no sentinel and is somebody's data stick: export refuses it, so the
     # button can never turn a data drive into a rescue source. Restore
-    # ranks candidates by the name stamp (newest first), so a refreshed
-    # stick resolves to the latest export and older ones are superseded.
+    # validates candidates and ranks them by the manifest created_utc
+    # (newest first), so a refreshed stick resolves to the latest export
+    # and usb-export retires the older rescue archives as superseded.
     entries = os.listdir(dest)
     has_sentinel = RESCUE_SENTINEL in entries
     for entry in entries:
@@ -762,12 +763,22 @@ def usb_export(software_version):
         # remount rw only for the winning stick. The finally below
         # unmounts EVERY stick we mounted, empty or not.
         dest = os.path.join(USB_MOUNT_BASE + "-rw", part)
+        created = False
         if not os.path.isdir(dest):
             os.makedirs(dest)
+            created = True
         rc, _out, _err = run_cmd([MOUNT_BIN, "-o", "ro", "/dev/" + part, dest])
         if rc != 0:
             rc, _out, _err = run_cmd([MOUNT_BIN, "-o", "ro", "-t", "vfat", "/dev/" + part, dest])
         if rc != 0:
+            # Both ro attempts failed: do not leave an empty mount dir
+            # for every unreadable partition probed (the mount_ro twin
+            # already does this). Only rmdir when WE created it.
+            if created:
+                try:
+                    os.rmdir(dest)
+                except OSError:
+                    pass
             continue
         try:
             try:
@@ -799,15 +810,27 @@ def usb_export(software_version):
                 # Superseded rescue archives retire BEFORE the write:
                 # keeping every refresh means first-boot validation
                 # re-reads each one and ENOSPC gets likelier with each
-                # export. Prune first (keep the newest old one as a
-                # fallback against a corrupt fresh write), then write —
-                # the stick then holds at most new + one fallback.
-                rescue_archives = sorted(
+                # export. Prune first (keep the newest canonical one as
+                # a fallback against a corrupt fresh write), then write —
+                # the stick then holds at most new + one fallback. The
+                # sweep covers EVERY top-level *.pgbackup, not just
+                # canonical names: rescue ranks all of them by manifest
+                # created_utc, so a hand-copied browser archive left on a
+                # rescue stick could out-rank the intended export. Only
+                # sentinel-verified rescue sticks reach this code (a data
+                # stick fails stick_is_blank first), so no user data on a
+                # foreign drive is ever deleted here.
+                canonical_archives = sorted(
                     [name for name in os.listdir(dest)
                      if name.startswith("PGenerator_plus_system_backup_")
                      and name.lower().endswith(".pgbackup")],
                     reverse=True)
-                for stale in rescue_archives[1:]:
+                keep_fallback = canonical_archives[0] if canonical_archives else None
+                for stale in list(os.listdir(dest)):
+                    if not stale.lower().endswith(".pgbackup"):
+                        continue
+                    if stale == keep_fallback:
+                        continue
                     try:
                         os.unlink(os.path.join(dest, stale))
                     except OSError:
@@ -839,9 +862,13 @@ def usb_export(software_version):
                 write_failure = "USB drive %s: %s" % (part, error)
                 continue
         finally:
-            run_cmd([UMOUNT_BIN, dest])
+            umount_rc, _uo, _ue = run_cmd([UMOUNT_BIN, dest])
             try:
-                os.rmdir(dest)
+                # Only remove a mount dir this probe created; never
+                # rmdir when the unmount failed (the mountpoint is
+                # still a live mount).
+                if created and umount_rc == 0:
+                    os.rmdir(dest)
             except OSError:
                 pass
     if write_failure is not None:

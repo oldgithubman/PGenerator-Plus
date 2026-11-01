@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 59;
+use Test::More tests => 64;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -64,7 +64,7 @@ done
 # Any rw attempt (remount or plain mount) fails when FAILRW=1, so the
 # export's rw-gate failure path is exercised end-to-end.
 case "$*" in
- *"-o ro"*) :;;
+ *"-o ro"*) if [ "${FAILRO:-0}" = 1 ]; then exit 32; fi;;
  *) if [ "${FAILRW:-0}" = 1 ]; then exit 32; fi;;
 esac
 # last argument is the mountpoint
@@ -583,6 +583,39 @@ PY
  my $r = `PG_USB_SCAN_ROOT=$root/block $env_common python3 "$probe" 2>&1`;
  like($r, qr/MROK/, 'failed mount_ro returns None');
  like($r, qr/NODIR/, 'failed mount_ro removes the empty mount dir it created');
+}
+
+# Case 12b: the EXPORT-side twin — a stick whose ro probe fails BOTH
+# attempts must not leave an empty <base>-rw/<part> dir behind (nit:
+# export-side litter; mount_ro already had this pin).
+{
+ my $root = build_tree();
+ clear_stick();
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common FAILRO=1 python3 "$script" usb-export --version 2.13.0 2>&1`;
+ like($r, qr/No writable empty USB drive found/, 'stick with failed ro probe reports no writable drive') or diag $r;
+ ok(!-d "$tmp/mnt-base-rw/sdb1", 'failed ro probe removes the export mount dir it created');
+}
+
+# Case 12c: refresh pruning sweeps EVERY top-level *.pgbackup, not just
+# canonical names: rescue ranks all archives by manifest created_utc, so
+# a hand-copied browser archive left on a rescue stick must retire with
+# the refresh instead of out-ranking the fresh export. The newest
+# canonical archive stays as the corrupt-write fallback.
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
+ print $fh "newer\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/my_browser_export.pgbackup") or die $!;
+ print $fh "hand-copied\n"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh export succeeds on a rescue stick holding a hand-copied archive') or diag $r;
+ ok(!-f "$tmp/stick/sdb1/my_browser_export.pgbackup", 'hand-copied archive on a rescue stick retires on refresh');
+ ok(-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup", 'canonical newest-old fallback still kept beside the fresh write');
 }
 
 # Case 13: a mount that HANGS must not wedge the helper (first-boot
