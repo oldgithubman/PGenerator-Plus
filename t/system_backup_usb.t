@@ -826,17 +826,19 @@ build_built_arch();
   'usb-export route assigns helper result in list context');
  unlike($block, qr/my \$result=&_webui_system_backup_run/,
   'usb-export route has no scalar-context result assignment');
- # The client-side fetch bound must cover the helper's worst case: the
- # rescue path is bounded at 300 s (timeout 300 in pgenerator_usb_restore.sh),
- # so a client abort below that shows a false failure while the export
- # is still writing.
+ # The client-side fetch bound is a generous empirical bound, not a
+ # matched worst case: the export path itself has NO outer wall-clock
+ # bound (`timeout 300` in pgenerator_usb_restore.sh wraps the
+ # first-boot rescue call only). The pin keeps the client abort at or
+ # above the 300 s bound that does exist on the helper surface, so a
+ # slow-but-succeeding export is not falsely failed mid-write.
  my $js = "$Bin/../usr/share/PGenerator/webui-app.js";
  ok(-f $js, 'webui-app.js is present');
  my $jsrc = do { local(@ARGV,$/); open(my $fh,'<',$js) or die "$js: $!"; <$fh> };
  like($jsrc, qr{system-backup/usb-export.*_timeoutMs:\s*(3[1-9]\d{4}|[4-9]\d{5,})}s,
-  'usb-export client timeout is at least the 300 s helper bound');
+  'usb-export client timeout is at least the 300 s rescue-path bound (export itself is unbounded)');
  my ($usb_fetch) = $jsrc =~ m{(fetchJSON\('/api/system-backup/usb-export'[^\r\n]*)};
  my ($usb_timeout) = ($usb_fetch // '') =~ /_timeoutMs:\s*(\d+)/;
  ok(defined($usb_timeout) && $usb_timeout >= 300000,
-  'usb-export client timeout does not undercut the 300 s helper bound');
+  'usb-export client timeout does not undercut the 300 s rescue-path bound');
 }

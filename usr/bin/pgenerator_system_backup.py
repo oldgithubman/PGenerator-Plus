@@ -851,6 +851,14 @@ def usb_export(software_version):
                 # detached stick).
                 entries = os.listdir(dest)
                 rescue_stick = RESCUE_SENTINEL in entries
+                # The sentinel-or-canonical filter is defense in depth
+                # for a state change between the blankness check and
+                # this sweep: blankness already refuses a foreign
+                # *.pgbackup on a sentinel-less stick, so in the normal
+                # flow the filter is a no-op. It only bites if a
+                # foreign archive lands in that window, and then it
+                # keeps the foreign file out of the FALLBACK seat (the
+                # delete loop below still treats it as superseded).
                 ranked_archives = sorted(
                     [name for name in entries
                      if name.lower().endswith(".pgbackup")
