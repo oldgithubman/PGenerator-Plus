@@ -717,6 +717,16 @@ def usb_restore(software_version):
             umount_path(dest)
 
 
+def archive_name_stamp(name):
+    # Export names embed a UTC stamp: ..._YYYYMMDD-HHMMSS.pgbackup.
+    # Fallback selection must rank by that stamp, NOT by whole-name
+    # sort: the name also carries the version, and lexical order
+    # disagrees with time across version strings (v2.9 > v2.10).
+    # Names without a stamp rank oldest.
+    match = re.search(r"_(\d{8}-\d{6})\.pgbackup$", name, re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
 def stick_is_blank(dest):
     # A freshly formatted or Windows/macOS-touched stick counts as blank:
     # only entries outside USB_SKIP_DIRS are somebody's data. A stranded
@@ -819,11 +829,16 @@ def usb_export(software_version):
                 # rescue stick could out-rank the intended export. Only
                 # sentinel-verified rescue sticks reach this code (a data
                 # stick fails stick_is_blank first), so no user data on a
-                # foreign drive is ever deleted here.
+                # foreign drive is ever deleted here. Ranking is by the
+                # embedded UTC stamp, not the whole name: a version bump
+                # like v2.9 -> v2.10 makes lexical name order disagree
+                # with chronology, and the kept fallback must be the
+                # genuinely newest archive.
                 canonical_archives = sorted(
                     [name for name in os.listdir(dest)
                      if name.startswith("PGenerator_plus_system_backup_")
                      and name.lower().endswith(".pgbackup")],
+                    key=lambda name: (archive_name_stamp(name), name),
                     reverse=True)
                 keep_fallback = canonical_archives[0] if canonical_archives else None
                 for stale in list(os.listdir(dest)):
@@ -862,12 +877,17 @@ def usb_export(software_version):
                 write_failure = "USB drive %s: %s" % (part, error)
                 continue
         finally:
-            umount_rc, _uo, _ue = run_cmd([UMOUNT_BIN, dest])
+            run_cmd([UMOUNT_BIN, dest])
             try:
-                # Only remove a mount dir this probe created; never
-                # rmdir when the unmount failed (the mountpoint is
-                # still a live mount).
-                if created and umount_rc == 0:
+                # Only remove a mount dir this probe created, and never
+                # while it is still a live mountpoint. The ismount check
+                # (not the umount exit code) is what makes this safe in
+                # both directions: a failed unmount leaves a real mount
+                # that must survive, while the rw-fallback path already
+                # unmounted the stick mid-body — there the cleanup
+                # umount "fails" only because the device is already
+                # detached, and the dir we created is now removable.
+                if created and not os.path.ismount(dest):
                     os.rmdir(dest)
             except OSError:
                 pass

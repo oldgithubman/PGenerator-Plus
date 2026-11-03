@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 64;
+use Test::More tests => 69;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -82,6 +82,10 @@ open(my $us,'>',$umount_stub) or die $!;
 print $us <<'STUB';
 #!/bin/sh
 printf 'UMOUNT %s\n' "$*" >> "$MOUNT_LOG"
+# Failed-unmount seam: umount fails and the mountpoint dir survives
+# (exercises the ismount-based cleanup; the export must still not litter
+# a dir it created when the device was already unmounted mid-body).
+if [ "${FAILUMOUNT:-0}" = 1 ]; then exit 32; fi
 # recover the partition name from the mountpoint basename
 # (<base>-rw/PART or <base>/PART) for write-back
 base=$(basename "$1")
@@ -535,6 +539,26 @@ PY
  ok(!-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.11.0_20250101-000000.pgbackup", 'the older archive is gone');
 }
 
+# Case 9b: fallback ranking is by the embedded UTC STAMP, not the whole
+# name: a version bump like v2.9 -> v2.10 sorts wrong lexically
+# ("v2.9" > "v2.10"), and the kept corrupt-write fallback must be the
+# genuinely newest archive, not the lexically-largest name.
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.10.0_20260101-000000.pgbackup") or die $!;
+ print $fh "newest (stamp), lexically small\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20250101-000000.pgbackup") or die $!;
+ print $fh "older (stamp), lexically large\n"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh export ranks old archives by stamp, not name') or diag $r;
+ ok(-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.10.0_20260101-000000.pgbackup", 'the fallback kept is the stamp-newest across a v2.9 > v2.10 lexical inversion');
+ ok(!-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20250101-000000.pgbackup", 'the lexically-largest but older archive is pruned');
+}
+
 # Case 10: rescue lookup is TOP-LEVEL only — a sentinel buried in a
 # subdirectory of a data stick does not arm rescue (usb-export always
 # writes both files at the stick root, and a huge data stick is never
@@ -562,6 +586,21 @@ PY
  # The rw fallback path unmounts once before the fresh-rw retry and once
  # in the finally: the pin is that a UMOUNT followed the rw attempts.
  like($log, qr/^UMOUNT/m, 'stick with failed rw remount is still unmounted');
+}
+
+# Case 11b: with the rw failure AND a failing umount, the export-side
+# cleanup still must not leave the <base>-rw/<part> dir it created: the
+# rw-fallback path already detached the device mid-body, so the dir is
+# no longer a mountpoint (ismount, not the umount exit code, is the
+# correct guard — the cleanup umount only "fails" because there is
+# nothing left to detach).
+{
+ my $root = build_tree();
+ clear_stick();
+ clear_mount_log();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common FAILRW=1 FAILUMOUNT=1 python3 "$script" usb-export --version 2.13.0 2>&1`;
+ like($r, qr/could not be mounted read-write/, 'failed rw + failed umount still reports the mount failure') or diag $r;
+ ok(!-d "$tmp/mnt-base-rw/sdb1", 'detach-and-failed-umount path removes the export mount dir it created');
 }
 
 # Case 12: mount_ro that fails BOTH attempts leaves no empty mount dir

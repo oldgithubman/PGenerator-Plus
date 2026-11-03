@@ -53,15 +53,21 @@ fi
 
 # Give the stick a moment after power-on; USB storage can enumerate
 # well after rcS reaches this point, especially behind a hub. Wait for
-# a PARTITION node (/dev/sd[a-z][0-9]) rather than a whole disk: the
-# rescue candidates are partitions, and a disk node can appear before
-# its partition table is scanned (sdX, then sdX1 a beat later). The
-# unpartitioned-superfloppy case (bare sdX, no numbered node) is also
-# a valid candidate, so accept it once a few extra seconds pass with
-# no partition node showing up.
+# a DISK node (/dev/sd[a-z]) or a PARTITION node (/dev/sd[a-z][0-9]),
+# whichever lands first: a partition node can appear a beat after its
+# disk (sdX, then sdX1), and an unpartitioned-superfloppy stick never
+# produces a numbered node at all — breaking on either means a bare-disk
+# stick does not pay the full partition wait before its grace period.
+# A no-stick boot still spends the whole 10 s window: a stick that has
+# not enumerated yet is indistinguishable from no stick, and trimming
+# the window would silently miss slow-enumerating rescue sticks. The
+# wait is once per flashed image, before the daemon starts.
 i=0
 while [ "$i" -lt 10 ]; do
  if ls /dev/sd[a-z][0-9] >/dev/null 2>&1; then
+  break
+ fi
+ if ls /dev/sd[a-z] >/dev/null 2>&1; then
   break
  fi
  sleep 1
