@@ -10774,12 +10774,14 @@ sub webui_info_json (@) {
  if($wifi_cached) {
   $wifi_cached=decode_base64($wifi_cached);
   foreach my $wline (split(/\n/,$wifi_cached)) {
-   if($wline=~/^ssid\s*=\s*(.*)/) { $wifi_ssid=$1; }
+   if($wline=~/^ssid=(.*)/) { $wifi_ssid=$1; }
    if($wline=~/^freq\s*=\s*(\d+)/) { $wifi_freq=$1; }
    if($wline=~/^wpa_state\s*=\s*(.*)/) { $wifi_state=$1; }
   }
  }
- $wifi_ssid=~s/"/\\"/g;
+ my $wifi_ssid_real=&_webui_wpa_ssid_decode($wifi_ssid);
+ $wifi_ssid=$wifi_ssid_real if(defined $wifi_ssid_real);
+ $wifi_ssid=&_webui_json_escape($wifi_ssid);
  my $wifi_band="";
  if($wifi_freq=~/^\d+$/) {
   $wifi_band=($wifi_freq>=5000)?"5 GHz":"2.4 GHz";
@@ -11525,6 +11527,23 @@ sub webui_capabilities_json (@) {
 	  .",\"vic_420\":[".join(",",@v420)."]}";
 }
 
+# wpa_cli prints SSIDs through printf_encode(): \\ \" \e \n \r \t, and \xNN for
+# every byte outside 0x20-0x7e. Undo that to get the SSID's real bytes (what
+# wpa_supplicant must be given to associate). Returns undef when the result
+# cannot be shown or sent as JSON text: control bytes (this includes hidden
+# networks advertised as \x00 runs) or bytes that are not valid UTF-8.
+sub _webui_wpa_ssid_decode (@) {
+ my $txt=shift;
+ return undef if(!defined $txt);
+ my %esc=("n"=>"\n","r"=>"\r","t"=>"\t","e"=>"\e");
+ (my $raw=$txt)=~s/\\(?:x([0-9a-fA-F]{2})|([\\"nrte]))/defined($1) ? chr(hex($1)) : (exists($esc{$2}) ? $esc{$2} : $2)/ge;
+ return undef if($raw=~/[\x00-\x1f\x7f]/);
+ my $probe=$raw;
+ require Encode;
+ return undef if(!eval { Encode::decode("UTF-8",$probe,Encode::FB_CROAK()|Encode::LEAVE_SRC()); 1 });
+ return $raw;
+}
+
 sub webui_wifi_scan_json (@) {
  my @networks;
  my $scan=&sudo("WIFI_SCAN","wlan0");
@@ -11532,27 +11551,60 @@ sub webui_wifi_scan_json (@) {
   next if($line=~/^bssid|^Selected|^OK/i);
   my @f=split(/\t/,$line);
   next if(scalar @f < 5 || $f[4] eq "");
-  my $ssid=$f[4];
-  # Skip hidden networks (SSIDs with \x00 or empty/whitespace-only)
-  next if($ssid=~/\\x00/ || $ssid=~/^\s*$/);
-  $ssid=~s/"/\\"/g;
-  # Sanitize: remove any remaining non-printable characters
-  $ssid=~s/[^\x20-\x7e]//g;
-  next if($ssid eq "");
+  # SSIDs are attacker-controlled over the air: decode wpa_cli's escaping to
+  # the real name first, then JSON-escape exactly once. Skipped rows are
+  # hidden networks, empty/blank names, and names the picker could not show
+  # or send back faithfully.
+  my $ssid=&_webui_wpa_ssid_decode($f[4]);
+  next if(!defined $ssid || $ssid=~/^ *$/);
+  # Signal goes into JSON unquoted, so it must be a plain integer (dBm).
   my $signal=$f[2];
+  next if($signal!~/^-?\d{1,4}$/);
+  $signal+=0;
+  $ssid=&_webui_json_escape($ssid);
   my $security=$f[3]=~/WPA/ ? "WPA" : ($f[3]=~/WEP/ ? "WEP" : "Open");
   push @networks, "{\"ssid\":\"$ssid\",\"signal\":$signal,\"security\":\"$security\"}";
  }
  return "[".join(",",@networks)."]";
 }
 
+# Pull the string fields the Wi-Fi picker posts. A real JSON decode, so SSIDs
+# and passphrases containing quotes or backslashes survive the round trip.
+# A missing psk means an open network; a psk of any non-string type is an
+# error (returned as undef) rather than silently becoming an open connect.
+sub _webui_json_is_string (@) {
+ my $v=shift;
+ return 0 if(!defined $v || ref($v));
+ require B;
+ return (B::svref_2object(\$v)->FLAGS & B::SVp_POK()) ? 1 : 0;
+}
+
+sub _webui_wifi_connect_fields (@) {
+ my $body=shift;
+ my $req=eval { JSON::PP->new->utf8(1)->decode($body) };
+ return ("","") if(ref($req) ne "HASH");
+ my @out;
+ foreach my $key ("ssid","psk") {
+  my $v=$req->{$key};
+  if(!defined $v) { $v=""; }
+  elsif(!&_webui_json_is_string($v)) { return (undef,undef); }
+  utf8::encode($v);
+  push @out,$v;
+ }
+ return @out;
+}
+
 sub webui_wifi_connect (@) {
  my $body=shift;
- my ($ssid,$psk);
- ($ssid)=$body=~/"ssid"\s*:\s*"([^"]*)"/;
- ($psk)=$body=~/"psk"\s*:\s*"([^"]*)"/;
- if(!$ssid) {
+ my ($ssid,$psk)=&_webui_wifi_connect_fields($body);
+ if(!defined $ssid) {
+  return '{"status":"error","message":"SSID and password must be strings"}';
+ }
+ if($ssid eq "") {
   return '{"status":"error","message":"Missing SSID"}';
+ }
+ if(length($ssid)>32 || $ssid=~/[\x00-\x1f\x7f]/ || $psk=~/[\x00-\x1f\x7f]/ || $ssid=~/^-/) {
+  return '{"status":"error","message":"Invalid SSID or password"}';
  }
  my $raw=&sudo("WIFI_APPLYCONF","wlan0",$ssid,$psk||"");
  chomp($raw);
@@ -11646,9 +11698,11 @@ sub webui_wifi_status_json (@) {
  my $status=&sudo("GET_WIFI_STATUS","wlan0");
  my %info;
  foreach my $line (split(/\n/,$status)) {
-  if($line=~/^(\w+)\s*=\s*(.*)/) { $info{$1}=$2; }
+  if($line=~/^(\w+)=(.*)/) { $info{$1}=$2; }
  }
- my $ssid=$info{ssid}||"";
+ my $ssid=defined($info{ssid}) ? $info{ssid} : "";
+ my $ssid_real=&_webui_wpa_ssid_decode($ssid);
+ $ssid=$ssid_real if(defined $ssid_real);
  $ssid=&_webui_json_escape($ssid);
  my $state=$info{wpa_state}||"UNKNOWN";
  my $freq=$info{freq}||"";
