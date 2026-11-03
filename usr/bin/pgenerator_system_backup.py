@@ -218,33 +218,15 @@ def allowed_archive_path(name):
     return False
 
 
-def verify_archive_hashes(archive_path):
-    # Stream every manifest-listed member through sha256 without writing
-    # anything: usb rescue uses this to rank/validate candidates before
-    # choosing one, so a corrupt newest archive falls back to an older
-    # valid one instead of failing the whole restore.
-    archive, members, manifest, expected = inspect_archive(archive_path)
-    try:
-        by_name = {}
-        for member in members:
-            name = normalized_member_name(member.name)
-            if member.isfile() and name in expected:
-                by_name[name] = member
-        for name, member in by_name.items():
-            digest = hashlib.sha256()
-            source = archive.extractfile(member)
-            while True:
-                chunk = source.read(1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-            if digest.hexdigest() != str(expected[name].get("sha256", "")):
-                raise BackupError("Backup integrity check failed for %s" % name)
-    finally:
-        archive.close()
-
-
-def inspect_archive(archive_path):
+def inspect_archive(archive_path, check_specs=True):
+    # check_specs=False relaxes the BACKUP_SPECS allowlist (unsafe-path,
+    # duplicate, special-file, size and manifest self-consistency checks
+    # all still apply). The export sweep uses it when choosing which old
+    # archive to keep as a fallback: a valid archive written before a
+    # spec change lists paths the CURRENT build no longer recognises,
+    # and enforcing the allowlist there would delete every fallback the
+    # moment the spec moved. Rescue still enforces it (default True) —
+    # it is the one that restores from the file.
     if not os.path.isfile(archive_path):
         raise BackupError("Backup upload is missing")
     if os.path.getsize(archive_path) > MAX_ARCHIVE_BYTES:
@@ -266,7 +248,7 @@ def inspect_archive(archive_path):
             archive.close()
             raise BackupError("Backup contains duplicate paths")
         seen.add(name)
-        if not allowed_archive_path(name):
+        if check_specs and not allowed_archive_path(name):
             archive.close()
             raise BackupError("Backup contains unsupported data: %s" % name)
         if not (member.isfile() or member.isdir()):
@@ -301,7 +283,7 @@ def inspect_archive(archive_path):
             archive.close()
             raise BackupError("Backup file manifest is invalid")
         name = normalized_member_name(item.get("path", ""))
-        if name == "manifest.json" or not allowed_archive_path(name) or name in expected:
+        if name == "manifest.json" or (check_specs and not allowed_archive_path(name)) or name in expected:
             archive.close()
             raise BackupError("Backup file manifest contains an invalid path")
         expected[name] = item
@@ -649,7 +631,7 @@ def find_archives_on(part):
     return (found, dest)
 
 
-def validate_candidate(full):
+def validate_candidate(full, check_specs=True):
     # One gzip pass per candidate: structure + manifest check, every
     # manifest-listed member streamed through sha256, and created_utc
     # lifted from the manifest the inspection already opened. The first
@@ -658,7 +640,9 @@ def validate_candidate(full):
     # the winner) multiplied a ~100 MB archive's gunzip cost on the
     # daemon-blocking boot path. Returns created_utc; raises BackupError
     # on any invalidity so the caller falls through to older archives.
-    archive, members, manifest, expected = inspect_archive(full)
+    # check_specs=False (export sweep) skips only the BACKUP_SPECS
+    # allowlist so a pre-spec-change archive is not misjudged corrupt.
+    archive, members, manifest, expected = inspect_archive(full, check_specs=check_specs)
     try:
         by_name = {}
         for member in members:
@@ -745,7 +729,7 @@ def stick_is_blank(dest):
     for entry in entries:
         if entry.lower() in USB_SKIP_DIRS:
             continue
-        if entry.endswith(".pgbackup.tmp"):
+        if entry.lower().endswith(".pgbackup.tmp"):
             continue
         if entry == RESCUE_SENTINEL:
             continue
@@ -812,7 +796,7 @@ def usb_export(software_version):
                 # clear one before writing so the stick is never poisoned
                 # for the next attempt (stick_is_blank tolerates it too).
                 for stale in os.listdir(dest):
-                    if stale.endswith(".pgbackup.tmp"):
+                    if stale.lower().endswith(".pgbackup.tmp"):
                         try:
                             os.unlink(os.path.join(dest, stale))
                         except OSError:
@@ -820,27 +804,41 @@ def usb_export(software_version):
                 # Superseded rescue archives retire BEFORE the write:
                 # keeping every refresh means first-boot validation
                 # re-reads each one and ENOSPC gets likelier with each
-                # export. Prune first (keep the newest canonical one as
-                # a fallback against a corrupt fresh write), then write —
-                # the stick then holds at most new + one fallback. The
-                # sweep covers EVERY top-level *.pgbackup, not just
-                # canonical names: rescue ranks all of them by manifest
-                # created_utc, so a hand-copied browser archive left on a
-                # rescue stick could out-rank the intended export. Only
-                # sentinel-verified rescue sticks reach this code (a data
-                # stick fails stick_is_blank first), so no user data on a
-                # foreign drive is ever deleted here. Ranking is by the
-                # embedded UTC stamp, not the whole name: a version bump
-                # like v2.9 -> v2.10 makes lexical name order disagree
-                # with chronology, and the kept fallback must be the
-                # genuinely newest archive.
-                canonical_archives = sorted(
+                # export. Prune first (keep the newest VALID canonical
+                # one as a fallback against a corrupt fresh write), then
+                # write — the stick then holds at most new + one
+                # fallback. The sweep covers EVERY top-level
+                # *.pgbackup, not just canonical names: rescue ranks
+                # all of them by manifest created_utc, so a hand-copied
+                # browser archive left on a rescue stick could out-rank
+                # the intended export. Only sentinel-verified rescue
+                # sticks reach this code (a data stick fails
+                # stick_is_blank first), so no user data on a foreign
+                # drive is ever deleted here. Ranking is by the embedded
+                # UTC stamp, not the whole name: a version bump like
+                # v2.9 -> v2.10 makes lexical name order disagree with
+                # chronology. The kept fallback is VALIDATED (full
+                # manifest + per-file sha256 pass): stamp order alone
+                # could keep a corrupt newest archive and delete the
+                # older VALID one, leaving nothing restorable if the
+                # fresh write then fails (ENOSPC, detached stick).
+                ranked_archives = sorted(
                     [name for name in os.listdir(dest)
-                     if name.startswith("PGenerator_plus_system_backup_")
-                     and name.lower().endswith(".pgbackup")],
+                     if name.lower().endswith(".pgbackup")],
                     key=lambda name: (archive_name_stamp(name), name),
                     reverse=True)
-                keep_fallback = canonical_archives[0] if canonical_archives else None
+                keep_fallback = None
+                for name in ranked_archives:
+                    try:
+                        # check_specs=False: keep any structurally valid
+                        # archive; a pre-spec-change fallback is still
+                        # the better rescue candidate than none, and
+                        # rescue itself applies the allowlist.
+                        validate_candidate(os.path.join(dest, name), check_specs=False)
+                    except BackupError:
+                        continue
+                    keep_fallback = name
+                    break
                 for stale in list(os.listdir(dest)):
                     if not stale.lower().endswith(".pgbackup"):
                         continue

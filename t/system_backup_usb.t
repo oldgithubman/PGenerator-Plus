@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 69;
+use Test::More tests => 77;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -191,6 +191,36 @@ PY
 my $dest_root = "$tmp/restore-target";
 my $conf_spec = "$dest_root/ota_conf.txt";
 my $built_arch = "$tmp/mk.pgbackup";
+
+sub build_built_arch {
+ # (Re)build the shared valid archive against the case-2 spec paths.
+ # Case 6c WIPES it (that is the point of that case), so any later case
+ # that seeds a stick with a VALID archive must rebuild it first — the
+ # prune sweep now validates candidates, so a missing/stale file there
+ # silently changes which fallback is kept.
+ mkdir $dest_root;
+ mkdir "$dest_root/confdest";
+ open(my $fh,'>',"$conf_spec") or die $!;
+ print $fh "mode=21\nwifi_ssid=keepme\n";
+ close($fh);
+ my $driver = "$tmp/mk.py";
+ open(my $dh,'>',$driver) or die $!;
+ print $dh <<PY;
+import sys, os, json
+import importlib.util
+spec = importlib.util.spec_from_file_location("psb", r"$script")
+psb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(psb)
+psb.BACKUP_SPECS = (
+    ("dir", r"$dest_root/confdest", "fake settings"),
+    ("file", r"$conf_spec", "fake conf"),
+)
+manifest = psb.create_archive(r"$built_arch", "2.13.0")
+print(json.dumps({"files": manifest["file_count"]}))
+PY
+ close($dh);
+ `python3 "$driver" 2>&1`;
+}
 
 # Case 1: restore with no archives at all.
 {
@@ -434,6 +464,7 @@ PY
 # Case 6c: full rescue FROM a superfloppy stick: sentinel + valid
 # archive on the whole-disk filesystem restore end-to-end (the scan
 # alone could pass while mounting/restore never ran on this shape).
+build_built_arch();
 {
  my $sf = "$tmp/sfroot2";
  system("rm -rf '$sf'");
@@ -485,12 +516,12 @@ PY
 # Case 6d: a stick that ALREADY holds a rescue backup (sentinel +
 # *.pgbackup from a previous export) is refreshable: exporting again
 # must succeed without a manual wipe. Third-party data still refuses.
+build_built_arch();
 {
  my $root = build_tree();
  clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
- print $fh "previous rescue export\n"; close($fh);
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup");
  clear_mount_log();
  my $edriver = export_driver();
  my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
@@ -521,14 +552,13 @@ PY
 # (they would each be re-validated on every first boot and push the
 # stick toward ENOSPC); the newest old one is kept as a fallback and
 # the fresh write lands next to it.
+build_built_arch();
 {
  my $root = build_tree();
  clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.11.0_20250101-000000.pgbackup") or die $!;
- print $fh "oldest\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
- print $fh "newer\n"; close($fh);
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.11.0_20250101-000000.pgbackup");
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup");
  clear_mount_log();
  my $edriver = export_driver();
  my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
@@ -543,14 +573,13 @@ PY
 # name: a version bump like v2.9 -> v2.10 sorts wrong lexically
 # ("v2.9" > "v2.10"), and the kept corrupt-write fallback must be the
 # genuinely newest archive, not the lexically-largest name.
+build_built_arch();
 {
  my $root = build_tree();
  clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.10.0_20260101-000000.pgbackup") or die $!;
- print $fh "newest (stamp), lexically small\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20250101-000000.pgbackup") or die $!;
- print $fh "older (stamp), lexically large\n"; close($fh);
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.10.0_20260101-000000.pgbackup");
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20250101-000000.pgbackup");
  clear_mount_log();
  my $edriver = export_driver();
  my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
@@ -641,12 +670,12 @@ PY
 # a hand-copied browser archive left on a rescue stick must retire with
 # the refresh instead of out-ranking the fresh export. The newest
 # canonical archive stays as the corrupt-write fallback.
+build_built_arch();
 {
  my $root = build_tree();
  clear_stick();
  open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
- open($fh,'>',"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup") or die $!;
- print $fh "newer\n"; close($fh);
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup");
  open($fh,'>',"$tmp/stick/sdb1/my_browser_export.pgbackup") or die $!;
  print $fh "hand-copied\n"; close($fh);
  clear_mount_log();
@@ -674,6 +703,73 @@ PY
  like($r, qr/No \.pgbackup found|No USB drive found/, 'hanging mount is timed out; restore completes with an error') or diag $r;
  cmp_ok($elapsed, '<', 15, 'helper returns on the 1 s bound, not the stub 30 s hang') or diag "elapsed=$elapsed";
 }
+
+# Case 14: a stranded temp in UPPERCASE (Windows copies preserve the
+# case of the source's .PGBACKUP.TMP) must not make a rescue stick look
+# non-blank, and the pre-write sweeper must clear it — the *.pgbackup
+# tolerance and the prune sweep are case-insensitive, so the temp
+# handling must match.
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ open($fh,'>',"$tmp/stick/sdb1/STRANDED.PGBACKUP.TMP") or die $!; print $fh "partial\n"; close($fh);
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'uppercase stranded temp does not block export on a rescue stick') or diag $r;
+ ok(!-f "$tmp/stick/sdb1/STRANDED.PGBACKUP.TMP", 'uppercase stranded temp is cleared before the write');
+}
+
+# Case 15: the kept corrupt-write fallback must be VALID, not merely
+# stamp-newest: a corrupt newest archive must not be kept at the price
+# of deleting the older VALID one (if the fresh write then fails, the
+# stick would hold nothing restorable). Validation falls through to the
+# newest valid archive; the corrupt one is pruned like any superseded
+# file.
+sub corrupt_copy {
+ my ($to)=@_;
+ # Copy the valid built archive and corrupt the payload (flip bytes well
+ # inside the gzip stream): tarfile still opens it, sha256 validation
+ # fails — exactly the corrupt-fresh-write shape rescue must fall back
+ # from.
+ copy_file($built_arch,$to);
+ open(my $f,'+<',$to) or die "$to: $!";
+ my $sz = -s $to;
+ seek($f,int($sz*0.6),0);
+ my $b; my $got = read($f,$b,1);
+ seek($f,int($sz*0.6),0);
+ print $f chr(($got ? ord($b) : 0)^0xFF);
+ close($f);
+}
+build_built_arch();
+{
+ my $root = build_tree();
+ clear_stick();
+ open(my $fh,'>',"$tmp/stick/sdb1/PGEN_USB_RESCUE") or die $!; print $fh "x\n"; close($fh);
+ corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.14.0_20260202-000000.pgbackup");
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup");
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh succeeds with a corrupt newest canonical on the stick') or diag $r;
+ ok(-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup", 'the fallback kept is the VALID older archive, not the corrupt stamp-newest');
+ ok(!-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.14.0_20260202-000000.pgbackup", 'the corrupt archive is pruned like any superseded file');
+ # All archives corrupt: NO fallback is kept — every invalid archive
+ # retires and only the fresh write remains (keeping a corrupt fallback
+ # buys nothing and it would fail rescue validation anyway).
+ corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.15.0_20270101-000000.pgbackup");
+ corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20240101-000000.pgbackup");
+ $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh succeeds when every existing archive is corrupt') or diag $r;
+ my @arch = grep { /\.pgbackup$/i } `ls $tmp/stick/sdb1`;
+ is(scalar(@arch), 1, 'no valid archive exists: no corrupt fallback is kept, only the fresh write remains') or diag join " ", @arch;
+}
+
+# Case 16: dead-code guard — validate_candidate replaced
+# verify_archive_hashes in the ranking consolidation; a zero-caller
+# duplicate of the validation loop must not survive on the branch.
+unlike($src, qr/def verify_archive_hashes/, 'helper no longer defines the dead verify_archive_hashes');
 
 # Case 7: the Perl route must assign _webui_system_backup_run in LIST
 # context — a scalar assignment keeps only $ok and the route answers
