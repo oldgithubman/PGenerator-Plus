@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 77;
+use Test::More tests => 87;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -771,6 +771,46 @@ build_built_arch();
 # duplicate of the validation loop must not survive on the branch.
 unlike($src, qr/def verify_archive_hashes/, 'helper no longer defines the dead verify_archive_hashes');
 
+# Case 17: the interrupted-export orphan — a crash between the archive
+# rename and the sentinel write leaves a CANONICAL-named archive with no
+# sentinel on an otherwise blank stick. The button must recover it (not
+# demand a new stick): stick_is_blank tolerates exactly this shape, the
+# sweep retires the orphan, and a VALID orphan doubles as the
+# corrupt-write fallback beside the fresh write.
+build_built_arch();
+{
+ my $root = build_tree();
+ clear_stick();
+ copy_file($built_arch,"$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup");
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'orphan canonical archive (sentinel write lost) is refreshable by the same button') or diag $r;
+ ok(-f "$tmp/stick/sdb1/PGEN_USB_RESCUE", 'retry writes the rescue sentinel');
+ ok(-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.12.0_20260101-000000.pgbackup", 'valid orphan is kept as the corrupt-write fallback beside the fresh write');
+ my @arch = grep { /\.pgbackup$/i } `ls $tmp/stick/sdb1`;
+ is(scalar(@arch), 2, 'stick holds exactly the orphan fallback plus the fresh export') or diag join " ", @arch;
+ # A CORRUPT orphan gets no fallback seat: it retires and only the
+ # fresh write remains.
+ corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.16.0_20260303-000000.pgbackup");
+ $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'refresh succeeds with a corrupt orphan canonical on the stick') or diag $r;
+ ok(!-f "$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.16.0_20260303-000000.pgbackup", 'corrupt orphan is pruned like any superseded file');
+}
+
+# Case 17b: a UPPERCASE orphan (Windows copies can rename in transit)
+# still counts as the button's own shape — the blankness tolerance and
+# the sweep are case-insensitive, matching the temp handling.
+{
+ my $root = build_tree();
+ clear_stick();
+ copy_file($built_arch,"$tmp/stick/sdb1/PGENERATOR_PLUS_SYSTEM_BACKUP_V2.12.0_20260101-000000.PGBACKUP");
+ clear_mount_log();
+ my $edriver = export_driver();
+ my $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
+ like($r, qr/"status": "ok"/, 'uppercase orphan canonical archive is refreshable too') or diag $r;
+}
+
 # Case 7: the Perl route must assign _webui_system_backup_run in LIST
 # context — a scalar assignment keeps only $ok and the route answers
 # 400 with body "1" even when the export succeeded (structure guard:
@@ -786,4 +826,17 @@ unlike($src, qr/def verify_archive_hashes/, 'helper no longer defines the dead v
   'usb-export route assigns helper result in list context');
  unlike($block, qr/my \$result=&_webui_system_backup_run/,
   'usb-export route has no scalar-context result assignment');
+ # The client-side fetch bound must cover the helper's worst case: the
+ # rescue path is bounded at 300 s (timeout 300 in pgenerator_usb_restore.sh),
+ # so a client abort below that shows a false failure while the export
+ # is still writing.
+ my $js = "$Bin/../usr/share/PGenerator/webui-app.js";
+ ok(-f $js, 'webui-app.js is present');
+ my $jsrc = do { local(@ARGV,$/); open(my $fh,'<',$js) or die "$js: $!"; <$fh> };
+ like($jsrc, qr{system-backup/usb-export.*_timeoutMs:\s*(3[1-9]\d{4}|[4-9]\d{5,})}s,
+  'usb-export client timeout is at least the 300 s helper bound');
+ my ($usb_fetch) = $jsrc =~ m{(fetchJSON\('/api/system-backup/usb-export'[^\r\n]*)};
+ my ($usb_timeout) = ($usb_fetch // '') =~ /_timeoutMs:\s*(\d+)/;
+ ok(defined($usb_timeout) && $usb_timeout >= 300000,
+  'usb-export client timeout does not undercut the 300 s helper bound');
 }

@@ -60,6 +60,18 @@ USB_SKIP_DIRS = set(["system volume information", ".trash", ".trash-info",
 # against a plant is archive validation (format, manifest, per-file
 # sha256) and the OTA trust-key strip below.
 RESCUE_SENTINEL = "PGEN_USB_RESCUE"
+# Name shape of an archive THIS button wrote (usb_export builds exactly
+# this). Orphan recovery keys on it: an interrupted export dies between
+# the archive rename and the sentinel write, and the half-prepared stick
+# must stay refreshable by the same button. A foreign-named hand-copied
+# archive is NOT an orphan signature — it stays somebody's data.
+CANONICAL_EXPORT_RE = re.compile(r"^PGenerator_plus_system_backup_.*\.pgbackup$", re.IGNORECASE)
+
+
+def canonical_rescue_archive(name):
+    return bool(CANONICAL_EXPORT_RE.match(name))
+
+
 # Conf keys the unattended USB rescue must never apply. The browser
 # import is a deliberate user action and may restore them; first-boot
 # restore runs with no user and no chance to review, so OTA trust keys
@@ -733,8 +745,16 @@ def stick_is_blank(dest):
             continue
         if entry == RESCUE_SENTINEL:
             continue
-        if has_sentinel and entry.lower().endswith(".pgbackup"):
-            continue
+        if entry.lower().endswith(".pgbackup"):
+            # A rescue stick THIS button wrote tolerates its archives.
+            # Without the sentinel, only the button's CANONICAL export
+            # name is tolerated: it is the signature of an interrupted
+            # export (crash between the archive rename and the sentinel
+            # write), which the pre-write sweep now retires on the
+            # retry. A foreign-named archive without the sentinel is
+            # somebody's data, not our orphan — export refuses it.
+            if has_sentinel or canonical_rescue_archive(entry):
+                continue
         return False
     return True
 
@@ -811,20 +831,30 @@ def usb_export(software_version):
                 # *.pgbackup, not just canonical names: rescue ranks
                 # all of them by manifest created_utc, so a hand-copied
                 # browser archive left on a rescue stick could out-rank
-                # the intended export. Only sentinel-verified rescue
-                # sticks reach this code (a data stick fails
-                # stick_is_blank first), so no user data on a foreign
-                # drive is ever deleted here. Ranking is by the embedded
-                # UTC stamp, not the whole name: a version bump like
-                # v2.9 -> v2.10 makes lexical name order disagree with
-                # chronology. The kept fallback is VALIDATED (full
-                # manifest + per-file sha256 pass): stamp order alone
-                # could keep a corrupt newest archive and delete the
-                # older VALID one, leaving nothing restorable if the
-                # fresh write then fails (ENOSPC, detached stick).
+                # the intended export. A stick reaching this code is
+                # either sentinel-verified (this button wrote it) or a
+                # blank stick plus OUR orphan from an interrupted export
+                # (crash between the archive rename and the sentinel
+                # write): canonical_rescue_archive names only, never a
+                # foreign archive — a data stick fails stick_is_blank
+                # first, so no user data on a foreign drive is ever
+                # deleted here. The valid orphan doubles as the
+                # corrupt-write fallback, and the half-prepared stick
+                # never needs manual cleanup to retry. Ranking is by
+                # the embedded UTC stamp, not the whole name: a version
+                # bump like v2.9 -> v2.10 makes lexical name order
+                # disagree with chronology. The kept fallback is
+                # VALIDATED (full manifest + per-file sha256 pass):
+                # stamp order alone could keep a corrupt newest archive
+                # and delete the older VALID one, leaving nothing
+                # restorable if the fresh write then fails (ENOSPC,
+                # detached stick).
+                entries = os.listdir(dest)
+                rescue_stick = RESCUE_SENTINEL in entries
                 ranked_archives = sorted(
-                    [name for name in os.listdir(dest)
-                     if name.lower().endswith(".pgbackup")],
+                    [name for name in entries
+                     if name.lower().endswith(".pgbackup")
+                     and (rescue_stick or canonical_rescue_archive(name))],
                     key=lambda name: (archive_name_stamp(name), name),
                     reverse=True)
                 keep_fallback = None
