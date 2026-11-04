@@ -8,6 +8,7 @@ use warnings;
 no warnings qw(once redefine);
 my @system;
 BEGIN { *CORE::GLOBAL::system = sub { push @system, join(' ',@_); return 0; }; }
+our @LAUNCH_ARGV;
 use File::Temp qw(tempdir);
 use Test::More;
 my $WT;BEGIN{require FindBin;$WT="$FindBin::Bin/.."}
@@ -24,12 +25,17 @@ local *main::webui_meter_series_alive=sub {0};
 local *main::webui_meter_session_alive=sub {0};
 local *main::webui_meter_session_stop_only=sub {1};
 local *main::lg_automation_guard_json=sub {''};
+# Issue #53: the series worker launches shell-free via
+# webui_launch_detached_root; capture the argv so the "worker launch
+# captured, not executed" guard survives. Stubbed AFTER the require so
+# webui.pm's own definition does not overwrite it.
+local *main::webui_launch_detached_root=sub { push @LAUNCH_ARGV,[@_]; return 1; };
 my $body=PGAutomation::encode_json({type=>'greyscale',points=>21,display_type=>'lcd',signal_mode=>'sdr',target_gamma=>'bt1886',
   delay_ms=>1000,patch_size=>10,automation_worker_id=>'runA-0-20260917-010203-abcdef',automation_token=>'tok'});
 my $r=eval {PGAutomation::decode_json(main::webui_meter_series_start($body))};
 diag($@) if $@;
 is($r->{status},'started','real series start route accepts payload') or diag explain $r;
-ok(scalar(@system)>=1,'worker launch captured, not executed');
+ok(scalar(@main::LAUNCH_ARGV)>=1,'worker launch captured, not executed');
 my $seed=PGAutomation::read_json_file($main::_meter_series_file)||{};
 is($seed->{automation_worker_id},'runA-0-20260917-010203-abcdef','seeded state carries the attempt id (first poll)');
 ok(exists $seed->{points},'seed carries points so the shell writer will re-splice identity');
@@ -38,11 +44,11 @@ is(PGAutomation::worker_id($st),'runA-0-20260917-010203-abcdef','very first stat
 my $st2=PGAutomation::decode_json(main::webui_meter_series_status(1));
 is(PGAutomation::worker_id($st2),'runA-0-20260917-010203-abcdef','summary status poll returns the id');
 # replay of the same start (lost reply) must not launch again
-my $n=scalar(@system);
+my $n=scalar(@main::LAUNCH_ARGV);
 my $again=PGAutomation::decode_json(main::webui_meter_series_start($body));
 is($again->{status},'started','replayed start answers started');
 ok($again->{replayed},'replay flagged');
-is(scalar(@system),$n,'replayed start launches nothing');
+is(scalar(@main::LAUNCH_ARGV),$n,'replayed start launches nothing');
 # "process died" rewrite after 3 s keeps id
 utime(time()-10,time()-10,$main::_meter_series_file);
 my $died=PGAutomation::decode_json(main::webui_meter_series_status(0));
