@@ -4066,9 +4066,11 @@ async function usbExportSystemSettings(){
   // the 300 s rescue-path bound — the only documented wall-clock
   // bound on the helper surface — with margin, so ordinary sticks
   // never see a false abort mid-write. A stick slower than this
-  // still aborts client-side while the server keeps writing; the
-  // status text tells the operator to check the archive before
-  // retrying.
+  // still aborts client-side while the server keeps writing. On that
+  // abort fetchJSON returns null, so the status/toast show the
+  // generic 'USB backup failed'; the stick may hold a completed or
+  // half-written archive, and re-pressing the button recovers either
+  // (blankness tolerates the canonical orphan, the sweep retires it).
   const response=await fetchJSON('/api/system-backup/usb-export',{method:'POST',_quiet:true,_timeoutMs:310000});
   if(!response||response.status!=='ok')throw new Error(response&&response.message?response.message:'USB backup failed');
   systemBackupSetStatus('Backup written to USB ('+response.usb_archive+'). Keep this drive: a re-flashed device restores it automatically on first boot.',false);
