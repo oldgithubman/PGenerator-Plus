@@ -36,6 +36,14 @@ like($block,qr/incomplete read recovery/,'block contains the recovery log line')
 for my $needle ('RETRY_TIMEOUT_SCALE=1','restart_spotread_session','INCOMPLETE_RECOVERIES','RETRY_TIMEOUT=$((RETRY_TIMEOUT * RETRY_TIMEOUT_SCALE))') {
  like($block,qr/\Q$needle\E/,"block contains $needle");
 }
+# The no-reading log must report whole-cycle elapsed: READ_START is re-armed
+# by comm-retry/manual-prompt waits, so the cycle start is captured separately.
+my $cycle_def=index($source,'READ_CYCLE_START=$SECONDS');
+ok($cycle_def>0 && $cycle_def<$anchor,'READ_CYCLE_START captured before the primary read loop');
+ok(index($source,'READ_CYCLE_START=$SECONDS')<index($source,'while (( SECONDS - READ_START < READ_TIMEOUT ))'),'READ_CYCLE_START is set before the primary read loop');
+like($block,qr/elapsed=\$\(\(SECONDS - READ_CYCLE_START\)\)/,'timeout log reports elapsed from the true cycle start');
+my $cap_msg='stall $INCOMPLETE_RECOVERIES, after $INCOMPLETE_RECOVERY_MAX recoveries';
+like($block,qr/\Q$cap_msg\E/,'cap message distinguishes the current stall from the completed recoveries');
 unlike($block,qr/kill -9|pkill/,'recovery retires the child through restart_spotread_session only');
 # The doubling must be consumed for exactly one read: the scale resets to 1
 # right after the multiply, so a second ordinary retry cannot inherit 2x.
@@ -62,6 +70,7 @@ sub run_scenario {
  $ENV{INIT_INCOMPLETE}=$s{INIT_INCOMPLETE};$ENV{INIT_COMM}=$s{INIT_COMM};
  $ENV{INIT_RECOVERIES}=$s{INIT_RECOVERIES};$ENV{SR_CMD_BASE_VAL}=$s{SR_CMD_BASE};
  $ENV{REQUIRE_RDY}=$s{REQUIRE_RDY};$ENV{NO_READ}=$s{NO_READ};
+ $ENV{INIT_SECONDS}=$s{INIT_SECONDS};
  $ENV{PARSE_OK}=defined $s{PARSE_OK} ? $s{PARSE_OK} : 1;
  my $script=<<'BASH';
 OUTFILE="$D/output"; touch "$OUTFILE"
@@ -69,6 +78,7 @@ exec 3>"$D/keys"
 STEP_NUM=7; IRE=100; NAME='Red 100%'; SERIES_ID=t; TOTAL=21; READINGS=''; WHITE_READING='null'
 R=255; G=0; B=0; INPUT_MAX=255; i=6; IRE=100
 READ_TIMEOUT=10; READ_START=$SECONDS; SECONDS=0; READ_POLL_SEC=1
+READ_CYCLE_START=$((SECONDS - ${INIT_SECONDS:-0}))
 PATTERN_DELAY_SEC=0; STEP_DELAY=0; STEP_PATCH_SIZE=10; SIGNAL_MODE=tv; MAX_LUMA=100
 PATTERN_SIGNAL_RANGE=''; TRANSPORT_SIGNAL_RANGE=''
 COMM_RETRY_SEEN=$INIT_COMM
@@ -145,7 +155,15 @@ unlike($out,qr/could not be restarted/,'device-ready meters also keep the origin
  SC_RESTART=>'ok',SC_READ=>'ok',INIT_INCOMPLETE=>1,INIT_COMM=>0,
  INIT_RECOVERIES=>5,SR_CMD_BASE=>'spotread -x',REQUIRE_RDY=>0,NO_READ=>1);
 like($out,qr/FATAL:.*after 5 recoveries/,'recovery cap stops a flaky-meter series');
+like($out,qr/stall 6, after 5 recoveries this series/,'cap message names the current stall separately from the 5 completed recoveries');
 unlike($out,qr/DONE/,'cap scenario stops before continuing');
+
+# Whole-cycle elapsed: the log line at block entry must measure from the true
+# read-cycle start, not the re-armable READ_START (scenario enters at t=3).
+($out,$errs,$dbg,$rc)=run_scenario(
+ SC_RESTART=>'fail',SC_READ=>'fail',INIT_INCOMPLETE=>1,INIT_COMM=>0,
+ INIT_RECOVERIES=>0,INIT_SECONDS=>3,SR_CMD_BASE=>'spotread -x',REQUIRE_RDY=>0,NO_READ=>1);
+like($dbg,qr/read timeout:.*elapsed=3s/,'timeout log elapsed is measured from the cycle start');
 
 ($out,$errs,$dbg,$rc)=run_scenario(
  SC_RESTART=>'ok',SC_READ=>'fail',INIT_INCOMPLETE=>1,INIT_COMM=>0,

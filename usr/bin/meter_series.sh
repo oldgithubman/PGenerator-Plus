@@ -2454,6 +2454,9 @@ EOJSON
  # problem in a 25-step sat sweep killed 21 already-good reads -- see
  # series-comm-error-must-retry-not-failfast memory note.)
  READ_START=$SECONDS
+ # The no-reading log below reports whole-cycle elapsed; READ_START is
+ # re-armed by comm-retry and manual-prompt waits, so capture the true start.
+ READ_CYCLE_START=$SECONDS
  GOT_RESULT=false
  RETRIED_COMM=0
  COMM_RETRY_SEEN=0
@@ -2526,7 +2529,7 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
-  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s incomplete=$READ_INCOMPLETE elapsed=$((SECONDS - READ_START))s name=$NAME" >> /tmp/meter_series_debug.log
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s incomplete=$READ_INCOMPLETE elapsed=$((SECONDS - READ_CYCLE_START))s name=$NAME" >> /tmp/meter_series_debug.log
   RETRY_TIMEOUT_SCALE=1
   if (( READ_INCOMPLETE == 1 )); then
    # Issue #59: a stalled trigger at a 100% patch ended the whole series.
@@ -2542,7 +2545,9 @@ EOJSON
    # that stalls on every patch must end the run, not restart forever.
    INCOMPLETE_RECOVERIES=$((INCOMPLETE_RECOVERIES + 1))
    if (( INCOMPLETE_RECOVERIES > INCOMPLETE_RECOVERY_MAX )); then
-    series_meter_read_failure_exit "Meter read did not complete for $NAME after $INCOMPLETE_RECOVERY_MAX recoveries this series; series stopped"
+    # INCOMPLETE_RECOVERIES already counts this (uncap-recoverable) stall,
+    # so report both numbers instead of conflating them.
+    series_meter_read_failure_exit "Meter read did not complete for $NAME (stall $INCOMPLETE_RECOVERIES, after $INCOMPLETE_RECOVERY_MAX recoveries this series); series stopped"
    fi
    # Stall recovery wants a progress label that names the stall, not the
    # integration-mode wording meant for low-light switches.
