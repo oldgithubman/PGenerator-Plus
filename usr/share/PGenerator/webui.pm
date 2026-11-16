@@ -13686,6 +13686,18 @@ sub webui_pattern (@) {
    $stabilization_size=$configured_size;
   }
  }
+ elsif($name eq "stabilization") {
+  # An explicit stabilization request is not the idle policy: the operator
+  # named this patch, so honor the durable stimulus/size without the
+  # meter-detection gate active() adds. Before this, the configured values
+  # were only ever resolved through the stop-conversion above, so explicit
+  # requests always drew at the hardcoded defaults above.
+  my ($stabilization_enabled,$configured_stimulus,$configured_size)=&webui_meter_stabilization_settings();
+  if($stabilization_enabled) {
+   $stabilization_stimulus=$configured_stimulus;
+   $stabilization_size=$configured_size;
+  }
+ }
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  my ($signal_range)=$body=~/"signal_range"\s*:\s*"?(\d+)"?/;
