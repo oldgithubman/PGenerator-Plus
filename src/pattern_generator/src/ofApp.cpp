@@ -20,6 +20,8 @@
 
 #include "ofApp.h"
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 /* Start Patch RPI P4 */
 #include "rgb2ycbcr.h"
@@ -57,6 +59,25 @@ inline bool usesDolbyVisionTransport() {
 
 }
 
+// Pattern-file TEXT/IMAGE fields feed fixed-size buffers and the font/image
+// draw paths; a load-time cap keeps over-long values out of every consumer.
+// Over-long fields are truncated with a logged notice instead of crashing.
+static const size_t MAX_PATTERN_FIELD_LEN = 240;
+static std::string checked_field(const std::string& value, const char* field) {
+ if(value.size() <= MAX_PATTERN_FIELD_LEN)
+  return value;
+ // Cut on a UTF-8 boundary: byte 240 belongs to the dropped tail when it is
+ // a continuation byte (10xxxxxx), so back off to the next start byte.
+ size_t cut = MAX_PATTERN_FIELD_LEN;
+ while(cut > 0 && (static_cast<unsigned char>(value[cut]) & 0xC0) == 0x80)
+  --cut;
+ std::string msg = std::string("Pattern file: ") + field +
+  " field truncated from " + std::to_string(value.size()) +
+  " to " + std::to_string(cut) + " bytes";
+ ofLogWarning("ofApp") << msg;
+ return value.substr(0, cut);
+}
+
 /*
  ##########################################################
  #                           Setup                        #
@@ -66,6 +87,16 @@ void ofApp::setup(){
  ofSetBackgroundAuto(true); 
  /* Start Patch RPI P4 */
  setBackground(def_r,def_g,def_b);
+ /* Unity CSC (patched vc4, issue 74): the kernel no longer turns
+  * framebuffer 0 into wire 16, so the default idle surround must be
+  * Limited black itself. Explicit pattern background codes still pass
+  * through untouched (0 stays super-black, as sent). */
+ if(ofxRPI4Window::rgbLimitedPassthrough() && def_r==0 && def_g==0 && def_b==0) {
+  int depth=ofxRPI4Window::bit_depth;
+  if(depth != 10 && depth != 12) depth=8;
+  background_color[0]=background_color[1]=background_color[2]=
+   float(16 << (depth-8)) / float((1 << depth) - 1);
+ }
  /* End Patch RPI P4 */
  ofHideCursor();
 
@@ -119,13 +150,13 @@ void ofApp::update(){
     draw_type=el[1];
    }
    if(el[0] == "TEXT")
-    text_to_write=el[1];
+    text_to_write=checked_field(el[1], "TEXT");
    if(el[0] == "PATTERN_NAME")
     p_name=el[1];
    if(el[0] == "MOVIE_NAME")
     m_name=el[1];
    if(el[0] == "IMAGE") {
-    img_file=el[1]; 
+    img_file=checked_field(el[1], "IMAGE");
    }
    if(el[0] == "ROTATE")
     img_rotate=boost::lexical_cast<int>(el[1]);
@@ -234,30 +265,30 @@ void ofApp::draw(){
  restoreBackground();
  for(to_draw=0;to_draw<n_draw[i];to_draw++) {
   char buffer[255];
-  sprintf(buffer,"Doing the frame %d and the Draw %d",i,to_draw);
+  snprintf(buffer, sizeof(buffer),"Doing the frame %d and the Draw %d",i,to_draw);
   ofApp::log(buffer);
-  sprintf(buffer,"RGB: %d %d %d",arr_red[i][to_draw],arr_green[i][to_draw],arr_blue[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"RGB: %d %d %d",arr_red[i][to_draw],arr_green[i][to_draw],arr_blue[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Background: %d %d %d",arr_redbg[i][to_draw],arr_greenbg[i][to_draw],arr_bluebg[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Background: %d %d %d",arr_redbg[i][to_draw],arr_greenbg[i][to_draw],arr_bluebg[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"DrawType: %d",arr_draw[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"DrawType: %d",arr_draw[i][to_draw]);
   ofApp::log(buffer);
   if(arr_draw[i][to_draw] == 4) {
-   sprintf(buffer,"DrawImage: %s",arr_text[i][to_draw].c_str());
+   snprintf(buffer, sizeof(buffer),"DrawImage: %s",arr_text[i][to_draw].c_str());
    ofApp::log(buffer);
   }
   if(arr_draw[i][to_draw] == 5) {
-   sprintf(buffer,"DrawImage: %s",arr_image[i][to_draw].c_str());
+   snprintf(buffer, sizeof(buffer),"DrawImage: %s",arr_image[i][to_draw].c_str());
    ofApp::log(buffer);
   }
-  sprintf(buffer,"Dim: %d %d",arr_dim1[i][to_draw],arr_dim2[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Dim: %d %d",arr_dim1[i][to_draw],arr_dim2[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Resolution: %d",arr_resolution[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Resolution: %d",arr_resolution[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Position: %d %d",arr_posx[i][to_draw],arr_posy[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Position: %d %d",arr_posx[i][to_draw],arr_posy[i][to_draw]);
   ofApp::log(buffer);
 
-  sprintf(buffer,"Bits: %d",arr_bits[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Bits: %d",arr_bits[i][to_draw]);
   ofApp::log(buffer);
 
   if(arr_draw[i][to_draw] == 0) 
@@ -596,8 +627,6 @@ void ofApp::setColor(int red, int green, int blue) {
 }
 
 int ofApp::normalizeSourceValue(int value, int source_range_mode) {
- if(source_range_mode != 1)
-  return value;
  if(ofxRPI4Window::avi_info.output_format != 0)
   return value;
  // Standard DV source codes are already the 12-bit values consumed by
@@ -606,6 +635,30 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
   return value;
  if(ofxRPI4Window::avi_info.rgb_quant_range != 1)
   return value;
+ int bit_depth=ofxRPI4Window::bit_depth;
+ int shift=bit_depth - 8;
+ int limited_min=16 << shift;
+ int limited_span=219 << shift;
+ int max_value=(1 << bit_depth) - 1;
+ /*
+  * Passthrough (patched vc4, see ofxRPI4Window::rgbLimitedPassthrough):
+  * no CSC after the framebuffer, so SOURCE_RANGE=LIMITED wire codes go out
+  * as drawn and full-range sources are compressed here, exactly.
+  */
+ if(ofxRPI4Window::rgbLimitedPassthrough()) {
+  if(source_range_mode == 1)
+   return value;
+  /* Out-of-range full-range input clamps to framebuffer black/white here;
+   * the legacy Limited expansion path below historically leaves them
+   * untouched for the kernel CSC to fold. */
+  if(value < 0)
+   value=0;
+  if(value > max_value)
+   value=max_value;
+  return limited_min + (int)(((long long)value * limited_span + max_value / 2) / max_value);
+ }
+ if(source_range_mode != 1)
+  return value;
  /*
   * The vc4 HDMI CSC compresses the full-range RGB framebuffer to the
   * configured Limited wire range. SOURCE_RANGE=LIMITED values are wire
@@ -613,11 +666,6 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
   * code 16 through unchanged would make the CSC output about code 30 and
   * visibly lift black.
   */
- int bit_depth=ofxRPI4Window::bit_depth;
- int shift=bit_depth - 8;
- int limited_min=16 << shift;
- int limited_span=219 << shift;
- int max_value=(1 << bit_depth) - 1;
  int normalized=(int)(((long long)(value - limited_min) * max_value +
                        limited_span / 2) / limited_span);
  if(normalized < 0)
@@ -628,13 +676,47 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
 }
 
 void ofApp::normalizeImageSourcePixels(int source_range_mode) {
- if(source_range_mode != 1)
-  return;
  if(ofxRPI4Window::avi_info.output_format != 0)
   return;
  if(ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi)
   return;
  if(ofxRPI4Window::avi_info.rgb_quant_range != 1)
+  return;
+ /* Passthrough: studio-range texels are already wire codes; full-range
+    texels are compressed here as vc4 no longer does it. */
+ if(ofxRPI4Window::rgbLimitedPassthrough()) {
+  if(source_range_mode == 1)
+   return;
+  if(ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) {
+   ofFloatPixels &pixels=float_img.getPixels();
+   int channels=pixels.getNumChannels();
+   int color_channels=(channels == 2) ? 1 : std::min(3,channels);
+   float *data=pixels.getData();
+   size_t pixel_count=(size_t)pixels.getWidth() * pixels.getHeight();
+   for(size_t pixel=0;pixel<pixel_count;pixel++) {
+    for(int channel=0;channel<color_channels;channel++) {
+     float value=ofClamp(data[pixel*channels+channel],0.0f,1.0f);
+     data[pixel*channels+channel]=(16.0f + value * 219.0f) / 255.0f;
+    }
+   }
+   float_img.update();
+  } else {
+   ofPixels &pixels=img.getPixels();
+   int channels=pixels.getNumChannels();
+   int color_channels=(channels == 2) ? 1 : std::min(3,channels);
+   unsigned char *data=pixels.getData();
+   size_t pixel_count=(size_t)pixels.getWidth() * pixels.getHeight();
+   for(size_t pixel=0;pixel<pixel_count;pixel++) {
+    for(int channel=0;channel<color_channels;channel++) {
+     int value=data[pixel*channels+channel];
+     data[pixel*channels+channel]=(unsigned char)(16 + (value * 219 + 127) / 255);
+    }
+   }
+   img.update();
+  }
+  return;
+ }
+ if(source_range_mode != 1)
   return;
 
  /*

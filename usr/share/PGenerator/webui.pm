@@ -1818,6 +1818,26 @@ sub webui_handle_request (@) {
     my $code=($result=~/"status":"ok"/) ? 200 : 400;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/system-backup/usb-export" && $method eq "POST") {
+    # Write a fresh backup onto an empty USB stick, so a re-flash can
+    # restore settings without a browser (first-boot USB rescue). The
+    # helper only writes to a USB partition that is completely empty;
+    # a stick with any files is left untouched. sudoers already gates
+    # the helper through the PGENERATOR_BACKUP alias.
+    if(&_webui_system_backup_busy()) {
+     my $r='{"status":"error","message":"Stop the active calibration, meter read, or profile build before writing to USB"}';
+     print $client "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: ".length($r)."\r\n$cors\r\n$r";
+    } else {
+    my $safe_version=$version||"unknown";
+    $safe_version=~s/[^A-Za-z0-9._-]+/_/g;
+    # List context: _webui_system_backup_run returns (output,ok); a
+    # scalar assignment would keep only $ok, never match the JSON, and
+    # the route would answer 400 with body "1" even on success.
+    my ($result,$ok)=&_webui_system_backup_run("usb-export","--version",$safe_version);
+    my $code=($ok && $result=~/"status":"ok"/) ? 200 : 400;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+    }
+   }
    elsif($path eq "/api/reboot") {
     my $r='{"status":"ok","message":"Rebooting..."}';
     my $len=length($r);
@@ -12447,7 +12467,13 @@ sub webui_pattern_scale_value (@) {
   my $dst_bits=$bit_depth_for_max{$target_max};
   return $target_max if($value >= $input_max);
   return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
-  return $value >> ($src_bits - $dst_bits) if($dst_bits < $src_bits);
+  # Same convention as calman_scale_value: a power-of-two shift rounded
+  # half-up (283 -> 71, 940 -> 235, 3760 -> 940), clamped at the
+  # near-white carry. The endpoint map put aligned codes above 683 one
+  # step low.
+  my $shift=$src_bits - $dst_bits;
+  my $rounded=($value + (1 << ($shift - 1))) >> $shift;
+  return $rounded > $target_max ? $target_max : $rounded;
  }
  return int($value/$input_max*$target_max + 0.5);
 }
@@ -12458,7 +12484,6 @@ sub webui_pattern_scale_triplet (@) {
  my $b=shift;
  my $input_max=int(shift);
  my $target_bits=int(shift);
- return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return &webui_pattern_scale_value($r,$input_max,$target_bits).",".&webui_pattern_scale_value($g,$input_max,$target_bits).",".&webui_pattern_scale_value($b,$input_max,$target_bits);
 }
 
