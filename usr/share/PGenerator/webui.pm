@@ -503,13 +503,17 @@ my $_meter_diagnostic_read_lock="/tmp/meter_diagnostic_read.lock";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_meter_series_stop_glob="/tmp/meter_series_stop_*.signal";
 my $_webui_pattern_stop_guard_file="/tmp/webui_pattern_stop_guard";
-my $_ccss_create_state_file="/tmp/ccss_create.json";
-my $_ccss_create_pid_file="/tmp/ccss_create.pid";
-my $_ccss_create_log_file="/tmp/ccss_create.log";
-my $_ccss_create_continue_file="/tmp/ccss_create.cont";
-my $_ccss_create_runner="/usr/bin/ccss_create.py";
-my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
-my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
+# Package-visible (not my) so tests can point the profile-creation paths at
+# a temp directory and drive webui_ccss_create_start's launch/refusal branch
+# for real (t/meter_ccss_root_launch_handlers.t); same precedent as
+# $_meter_lg_3d_autocal_luts_dir and $_meter_read_file above.
+our $_ccss_create_state_file="/tmp/ccss_create.json";
+our $_ccss_create_pid_file="/tmp/ccss_create.pid";
+our $_ccss_create_log_file="/tmp/ccss_create.log";
+our $_ccss_create_continue_file="/tmp/ccss_create.cont";
+our $_ccss_create_runner="/usr/bin/ccss_create.py";
+our $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
+our $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
 our $_icc_profile_builder="/usr/bin/icc_profile_builder.py";
 our $_icc_profile_dir="$var_dir/icc";
 our $_icc_companion_packager="/usr/bin/icc_companion_package.py";
@@ -3167,8 +3171,17 @@ sub webui_root_argv_arg_ok (@) {
 # statuses from the system()/backtick checks all over command.pm), and the
 # synchronous waitpid below is only for the intermediate child, which
 # exits at once. Keep the sudoers rule shape in mind: the NOPASSWD entries
-# glob "/bin/bash /usr/bin/meter_series.sh *" etc., so argv[0..2] must
-# arrive at sudo unmodified and with no env prefix.
+# glob "/bin/bash /usr/bin/meter_series.sh *" etc., so the authorized
+# command prefix must arrive at sudo unmodified and with no env prefix.
+# Two matching subtleties callers rely on (review of PR 65):
+#  - sudo joins argv with single spaces for the glob match, and '*' in a
+#    sudoers pattern matches ACROSS spaces: an unanchored *token* rule could
+#    match a different argv combination if any element carries a space
+#    (legitimate here: ccss/profile filenames may). No shipped rule has that
+#    shape; when adding one, anchor it at the command path.
+#  - an element after "sudo" that begins with '-' would be parsed as a sudo
+#    OPTION, so all sudo call sites pass "sudo","--" (the option boundary
+#    stops at sudo; the authorized "/bin/bash ..." prefix still matches).
 sub webui_launch_detached_root (@) {
  my @argv=map { defined($_) ? "$_" : "" } @_;
  return 0 if(!@argv);
@@ -3210,6 +3223,21 @@ sub webui_launch_detached_root (@) {
   return 0;
  }
  return 1;
+}
+
+# Named wrappers for the two shell probes webui_ccss_create_start needs
+# before it assembles a launch argv. Backticks cannot be hooked from a
+# test (CORE::GLOBAL::qx never intercepted them and the override feature
+# was removed from Perl), so leaving them inline makes the handler's
+# pre-launch branches untestable; named subs are stubbable the usual way.
+# Behavior is identical to the inline ops they replaced.
+sub webui_python_runner_bin () {
+ return `command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
+}
+
+sub webui_meter_detect_probe_json () {
+ my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
+ return defined($json) ? $json : "";
 }
 
 sub webui_meter_session_start_ready () {
@@ -3614,7 +3642,17 @@ sub webui_meter_session_start (@) {
   # files once it grabs the lock; wait for an actionable startup state
   # before reporting success.
   my $started_at=time();
-  return 0 if(!&webui_launch_detached_root("sudo","/bin/bash",$_meter_session,$display_type,$ccss_file,$refresh_rate,$aio_flag,$signal_mode,$max_luma,$meter_port,"900",$require_device_ready,$averaging,$meter_usb_id,$observer,$pattern_provider));
+  # "sudo","--": option boundary so no user-derived element is ever parsed
+  # as a sudo option (PR 65 review). On launch refusal the worker never
+  # existed: skip the stop/pkill teardown (nothing to reap), but replace
+  # the "starting" read-state we wrote above — the shared error helper
+  # echoes an EXISTING error state and does not rewrite "starting", so the
+  # explicit error is written here or the UI would poll a phantom start.
+  if(!&webui_launch_detached_root("sudo","--","/bin/bash",$_meter_session,$display_type,$ccss_file,$refresh_rate,$aio_flag,$signal_mode,$max_luma,$meter_port,"900",$require_device_ready,$averaging,$meter_usb_id,$observer,$pattern_provider)) {
+   &log("WebUI: meter session launch refused (worker never spawned)");
+   &webui_meter_read_state_write('{"status":"error","message":"Meter session launch refused"}');
+   return &webui_meter_session_start_error_json($config);
+  }
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -6272,10 +6310,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # command) makes the sudo invocation match no rule, so sudo demands a
  # password and the launch silently fails ("Process died unexpectedly").
  # Trailing args keep the authorized command intact. The shell-free
- # launcher (issue #53) keeps that guarantee structurally: argv[0..2] are
- # the literal sudoers prefix and no shell ever re-splits the arguments,
- # so request-derived values cannot reassemble into command syntax.
- my @series_argv=("sudo","/bin/bash","/usr/bin/meter_series.sh",$series_id,$display_type,$delay_ms,$patch_size,$steps_file,$_meter_series_file,$ccss_file,$patch_insert,$refresh_rate,$disable_aio,$signal_mode,$max_luma,$dv_map_mode,$measurement_meter_port,$ready_file,$require_device_ready,$pattern_signal_range,$transport_signal_range,$pattern_delay_ms,$patch_insert_patch_enabled,$patch_insert_patch_every,$patch_insert_patch_duration_ms,$patch_insert_patch_level,$patch_insert_time_enabled,$patch_insert_time_frequency_ms,$patch_insert_time_duration_ms,$patch_insert_time_level,$low_light_mode,"${insert_patch_code}:${insert_patch_input_max}","${insert_time_code}:${insert_time_input_max}",$series_color_format,$measurement_meter_usb_id,$observer,$pattern_provider,$min_luma,$max_cll,$max_fall,$low_light_trigger,$low_light_requested_sample_count);
+ # launcher (issue #53) keeps that guarantee structurally: argv[0] is
+ # sudo, argv[1] is the "--" option boundary (a dash-initial value must
+ # never reach sudo as an option), argv[2..3] are the literal sudoers
+ # prefix, and no shell ever re-splits the arguments, so request-derived
+ # values cannot reassemble into command syntax.
+ my @series_argv=("sudo","--","/bin/bash","/usr/bin/meter_series.sh",$series_id,$display_type,$delay_ms,$patch_size,$steps_file,$_meter_series_file,$ccss_file,$patch_insert,$refresh_rate,$disable_aio,$signal_mode,$max_luma,$dv_map_mode,$measurement_meter_port,$ready_file,$require_device_ready,$pattern_signal_range,$transport_signal_range,$pattern_delay_ms,$patch_insert_patch_enabled,$patch_insert_patch_every,$patch_insert_patch_duration_ms,$patch_insert_patch_level,$patch_insert_time_enabled,$patch_insert_time_frequency_ms,$patch_insert_time_duration_ms,$patch_insert_time_level,$low_light_mode,"${insert_patch_code}:${insert_patch_input_max}","${insert_time_code}:${insert_time_input_max}",$series_color_format,$measurement_meter_usb_id,$observer,$pattern_provider,$min_luma,$max_cll,$max_fall,$low_light_trigger,$low_light_requested_sample_count);
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -9428,7 +9468,7 @@ sub webui_ccss_create_start (@) {
  return '{"status":"error","message":"Profile name must be 80 characters or fewer"}' if(length($name)>80);
  return '{"status":"error","message":"Interactive meter profile creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
  return '{"status":"error","message":"Meter profile create helper is missing"}' if(!-x $_ccss_create_runner || !-x $_ccss_create_patch_cmd);
- my $python_runner=`command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
+ my $python_runner=&webui_python_runner_bin();
  chomp($python_runner);
  $python_runner=~s/[^A-Za-z0-9_\/.-]//g;
  return '{"status":"error","message":"python2 or python3 is required for live meter profile creation on this image"}' if($python_runner eq "");
@@ -9436,7 +9476,7 @@ sub webui_ccss_create_start (@) {
  my $disptech=&_webui_ccss_ccxxmake_disptech($display_type_key);
  return '{"status":"error","message":"Choose a concrete display technology before creating the profile"}' if($disptech eq "");
 
- my $status_json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
+ my $status_json=&webui_meter_detect_probe_json();
  my @meters;
  while($status_json=~/\{"port_num":"([^"]*)","port":"([^"]*)","usb_id":(?:null|"([^"]*)"),"name":"([^"]*)","meter_type":"([^"]*)"(?:,"physical_port":"([^"]*)")?\}/g) {
   push @meters,{port_num=>$1,port=>$2,usb_id=>$3||"",name=>$4,meter_type=>lc($5||""),physical_port=>$6||""};
@@ -9520,7 +9560,10 @@ sub webui_ccss_create_start (@) {
   push @ccss_create_argv,("--target-comport",$target_port,"--target-label",$target_label,"--target-display-type",$target_yflag);
  }
  push @ccss_create_argv,("--continue-file","$_ccss_create_continue_file");
- if(!&webui_launch_detached_root("sudo",@ccss_create_argv)) {
+ # "sudo","--": option boundary (PR 65 review). Refusal here happens
+ # BEFORE the worker exists, so unlike the pre-launch teardown above there
+ # is nothing to reap: just surface the error state and answer.
+ if(!&webui_launch_detached_root("sudo","--",@ccss_create_argv)) {
   &_webui_ccss_create_write_state('{"status":"error","message":"Profile creation launch refused"}');
   return '{"status":"error","message":"Profile creation launch refused"}';
  }
