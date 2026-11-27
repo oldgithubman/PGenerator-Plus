@@ -81,9 +81,13 @@ is_deeply([@{$argv}[0..3]],['sudo','--','/bin/bash','/usr/bin/meter_session.sh']
  'session: sudo + "--" option boundary + authorized meter_session.sh prefix');
 ok((grep {!ref && $_ eq "lcd'; \"id\" #"} @$argv),'session: printable-hostile display_type reaches argv verbatim (the argv boundary protects it; no escaping layer)');
 is(scalar(@$argv),17,'session: full 14 worker positional args plus the sudo/--/bash/script prefix');
-ok(!ref($ret),'session: refusal returns the error JSON string, not bare 0');
-my $r=eval { PGAutomation::decode_json($ret) };
-is($r->{status},'error','session: refusal answers an explicit error');
+ok(!$ret,'session: refusal returns false (boolean contract: both callers in webui_meter_read test if(!&webui_meter_session_start(...)); a truthy JSON string would look like a successful start)');
+# The refusal reaches the UI through the read-state file: on false the
+# caller builds its reply with webui_meter_session_start_error_json, which
+# echoes the explicit error state written by the refusal branch.
+my $caller_json=main::webui_meter_session_start_error_json("cfgjson");
+my $r=eval { PGAutomation::decode_json($caller_json) };
+is($r->{status},'error','session: caller-side error helper answers an explicit error');
 like($r->{message},qr/refused/i,'session: error message names the refusal');
 # The phantom-start bug: the handler writes {"status":"starting"} before
 # launching; a refusal must replace it or the UI polls a start that never

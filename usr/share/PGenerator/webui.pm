@@ -3651,7 +3651,14 @@ sub webui_meter_session_start (@) {
   if(!&webui_launch_detached_root("sudo","--","/bin/bash",$_meter_session,$display_type,$ccss_file,$refresh_rate,$aio_flag,$signal_mode,$max_luma,$meter_port,"900",$require_device_ready,$averaging,$meter_usb_id,$observer,$pattern_provider)) {
    &log("WebUI: meter session launch refused (worker never spawned)");
    &webui_meter_read_state_write('{"status":"error","message":"Meter session launch refused"}');
-   return &webui_meter_session_start_error_json($config);
+   # Boolean contract: every other failure path here returns 0 and both
+   # callers (webui_meter_read and its FIFO-restart path) test
+   # if(!&webui_meter_session_start(...)) and build their own reply via
+   # webui_meter_session_start_error_json, which echoes the error state
+   # written above. Returning that JSON from here would be truthy -- the
+   # caller would treat a refused launch as a successful start and send a
+   # READ to a worker that never existed.
+   return 0;
   }
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
