@@ -559,7 +559,11 @@ require $_icc_module_path;
 # through each window instead of one read total.
 my $_meter_last_read_time :shared = 0;
 my $_ccss_dir="/usr/share/PGenerator/ccss";
-my $_custom_ccss_dir="$var_dir/ccss/custom";
+# Package-visible (not my) so tests can localize the custom storage roots to
+# a temp directory and have webui_ccss_create_start's --output-path actually
+# honor them (t/meter_ccss_root_launch_handlers.t); same precedent as the
+# $_ccss_create_* globals above.
+our $_custom_ccss_dir="$var_dir/ccss/custom";
 
 sub webui_prepare_tmp_worker_log (@) {
  my ($preferred,$prefix)=@_;
@@ -579,7 +583,7 @@ sub webui_prepare_tmp_worker_log (@) {
  }
  return "/dev/null";
 }
-my $_custom_ccss_legacy_dir="$_ccss_dir/custom";
+our $_custom_ccss_legacy_dir="$_ccss_dir/custom"; # package-visible: see $_custom_ccss_dir
 
 # Display technology map: key => [spotread_y_flag, ccss_filename]
 my $_dtype_info={
@@ -2994,7 +2998,7 @@ sub webui_meter_status (@) {
  if($busy && &webui_meter_simulation_enabled()) {
   return &webui_meter_status_apply_overrides(&webui_meter_simulated_status_json());
  }
- my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
+ my $json=&webui_meter_detect_probe_json();
  chomp($json);
  $json='{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}' if($json eq "" || $json!~/^\{/);
  # Keep the last known-good detection through transient startup hiccups, but
@@ -3182,6 +3186,12 @@ sub webui_root_argv_arg_ok (@) {
 #  - an element after "sudo" that begins with '-' would be parsed as a sudo
 #    OPTION, so all sudo call sites pass "sudo","--" (the option boundary
 #    stops at sudo; the authorized "/bin/bash ..." prefix still matches).
+# Return-value semantics: 1 means the worker was SPAWNED, not that it ran.
+# The intermediate child exits before the worker reaches exec(), so an exec
+# failure (sudo missing, sudoers tightened) is reported here as success —
+# byte-for-byte the old `system("setsid ... &")` semantics. The real error
+# channel for "spawned but died" is the worker's own state file and the
+# UI pollers, same as always.
 sub webui_launch_detached_root (@) {
  my @argv=map { defined($_) ? "$_" : "" } @_;
  return 0 if(!@argv);
@@ -3225,12 +3235,14 @@ sub webui_launch_detached_root (@) {
  return 1;
 }
 
-# Named wrappers for the two shell probes webui_ccss_create_start needs
-# before it assembles a launch argv. Backticks cannot be hooked from a
-# test (CORE::GLOBAL::qx never intercepted them and the override feature
-# was removed from Perl), so leaving them inline makes the handler's
-# pre-launch branches untestable; named subs are stubbable the usual way.
-# Behavior is identical to the inline ops they replaced.
+# Named wrappers for the shell probes webui_ccss_create_start needs before it
+# assembles a launch argv (webui_meter_detect_probe_json is also reused by the
+# meter status handler, so both --detect call sites are stubbable). Backticks
+# cannot be hooked from a test (CORE::GLOBAL::qx never intercepted them and
+# the override feature was removed from Perl), so leaving them inline makes
+# the handlers' pre-launch branches untestable; named subs are stubbable the
+# usual way. Behavior is identical to the inline ops they replaced (the
+# defined()-guard only upgrades a fork-failure undef to "" before regex use).
 sub webui_python_runner_bin () {
  return `command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
 }

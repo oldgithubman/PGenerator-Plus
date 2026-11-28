@@ -137,6 +137,13 @@ ok(defined $di,'ccss-create: --display-name present');
 is($cargv->[$di+1],$name_ok,'ccss-create: hostile display name reaches argv byte-identically (the old hand-rolled escape is gone)');
 ok(!(grep {defined && !ref && /\n|\x00/} @$cargv),'ccss-create: no control characters in argv');
 is($cargv->[-2],'--continue-file','ccss-create: continue file remains the final flag pair');
+# The localized custom storage roots must be honored: _custom_ccss_dir /
+# _custom_ccss_legacy_dir are package globals (webui.pm) precisely so this
+# localization is real, not dead. Reverting them to file-scoped my silently
+# sends --output-path back to the $var_dir-derived lexical and this fails.
+my ($oi)=grep { defined $cargv->[$_] && $cargv->[$_] eq "--output-path" } 0..$#{$cargv};
+ok(defined $oi && $cargv->[$oi+1]=~m{^\Q$tmp\E/custom/},
+ 'ccss-create: --output-path lands under the test-localized custom dir (package globals honored)');
 # State after refusal: the handler must leave the error state, not the
 # "starting" state it wrote just before launching.
 my $cstate="";
